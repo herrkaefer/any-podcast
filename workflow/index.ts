@@ -505,9 +505,16 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         return await getStoryContent(story, maxTokens, this.env)
       })
 
-      console.info(`get story ${story.id} content success`)
+      console.info(`get story ${story.id} content success`, {
+        title: story.title,
+        chars: storyResponse.length,
+      })
 
       const summaryResult = await step.do(`summarize story ${story.id}: ${story.title}`, { ...retryConfig, retries: { ...retryConfig.retries, limit: 1 } }, async () => {
+        console.info(`summarize story ${story.id} start`, {
+          title: story.title,
+          inputChars: storyResponse.length,
+        })
         try {
           const { result, usage, finishReason } = await summarizeStoryWithRelevance({
             env: this.env,
@@ -591,19 +598,58 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       return summaries
     })
 
-    const podcastContent = await step.do('create podcast content', retryConfig, async () => {
-      const { text, usage, finishReason } = await createResponseText({
-        env: this.env,
-        model: thinkingModel,
-        instructions: summarizePodcastPrompt,
-        input: allStories.join('\n\n---\n\n'),
-        maxOutputTokens: maxTokens,
-      })
+    const podcastContent = await step.do('create podcast content', { ...retryConfig, retries: { ...retryConfig.retries, limit: 1 } }, async () => {
+      const attemptInputs: { label: string, stories: string[] }[] = [
+        { label: 'all', stories: allStories },
+      ]
+      if (allStories.length > 6) {
+        attemptInputs.push({ label: 'first-6', stories: allStories.slice(0, 6) })
+      }
 
-      console.info(`create hacker podcast content success`, { text, usage, finishReason })
+      for (const attempt of attemptInputs) {
+        const input = attempt.stories.join('\n\n---\n\n')
+        console.info('create podcast content attempt', {
+          attempt: attempt.label,
+          stories: attempt.stories.length,
+          inputChars: input.length,
+        })
+        try {
+          const { text, usage, finishReason } = await createResponseText({
+            env: this.env,
+            model: thinkingModel,
+            instructions: summarizePodcastPrompt,
+            input,
+            maxOutputTokens: maxTokens,
+          })
 
-      return text
+          console.info(`create podcast content success`, {
+            attempt: attempt.label,
+            stories: attempt.stories.length,
+            inputChars: input.length,
+            usage,
+            finishReason,
+          })
+
+          return text
+        }
+        catch (error) {
+          console.warn('create podcast content failed', {
+            attempt: attempt.label,
+            stories: attempt.stories.length,
+            inputChars: input.length,
+            error: formatError(error),
+          })
+        }
+      }
+
+      console.warn('create podcast content failed after retries, skip workflow')
+      return ''
     })
+
+    if (!podcastContent) {
+      console.warn('podcast content is empty, exit workflow run')
+      return
+    }
 
     console.info('podcast content:\n', isDev ? podcastContent : podcastContent.slice(0, 100))
 

@@ -673,9 +673,19 @@ export async function listGmailMessageRefs(
   const windowEnd = window?.end || endUtc || now
   const query = buildGmailQuery(source.label, windowStart, windowEnd)
   let maxMessages = source.maxMessages || 50
-  if (env.NODE_ENV && env.NODE_ENV !== 'production') {
+  if (env.NODE_ENV === 'production') {
+    maxMessages = Math.min(maxMessages, 1)
+  }
+  else if (env.NODE_ENV) {
     maxMessages = Math.min(maxMessages, 3)
   }
+
+  console.info('gmail list messages', {
+    label: source.label,
+    windowStart: windowStart.toISOString(),
+    windowEnd: windowEnd.toISOString(),
+    maxMessages,
+  })
 
   const messageRefs = await listMessages(userId, query, maxMessages, token)
   return messageRefs.map(ref => ({
@@ -700,6 +710,13 @@ export async function processGmailMessage(params: {
   const windowStart = window?.start || startUtc || new Date(now.getTime() - Math.max(lookbackDays, 2) * ONE_DAY_MS)
   const windowEnd = window?.end || endUtc || now
 
+  console.info('process gmail message', {
+    id: messageId,
+    source: source.name,
+    windowStart: windowStart.toISOString(),
+    windowEnd: windowEnd.toISOString(),
+  })
+
   const message = await getMessage(userId, messageId, token)
   const html = extractHtml(message)
   if (!html) {
@@ -710,6 +727,12 @@ export async function processGmailMessage(params: {
   const subject = getHeader(message.payload?.headers, 'Subject')
   const receivedAt = message.internalDate ? new Date(Number(message.internalDate)) : now
   const receivedAtIso = receivedAt.toISOString()
+  console.info('gmail message loaded', {
+    id: message.id,
+    subject,
+    receivedAt: receivedAtIso,
+    htmlLength: html.length,
+  })
   if (receivedAt < windowStart || receivedAt > windowEnd) {
     return [] as Story[]
   }
@@ -724,6 +747,7 @@ export async function processGmailMessage(params: {
   const archiveLink = findArchiveLink(html)
   let newsletterContent = ''
   if (archiveLink) {
+    console.info('newsletter archive link found', { id: message.id, subject, receivedAt: receivedAtIso, archiveLink })
     try {
       newsletterContent = await getContentFromJinaWithRetry(archiveLink, 'markdown', {}, env.JINA_KEY)
     }
@@ -745,6 +769,12 @@ export async function processGmailMessage(params: {
     console.warn('newsletter content is empty, skip message', { id: message.id, subject, receivedAt: receivedAtIso })
     return [] as Story[]
   }
+  console.info('newsletter content prepared', {
+    id: message.id,
+    subject,
+    receivedAt: receivedAtIso,
+    length: newsletterContent.length,
+  })
 
   try {
     const links = await extractNewsletterLinksWithAi({
@@ -759,6 +789,7 @@ export async function processGmailMessage(params: {
       console.warn('newsletter has no matching links', { id: message.id, subject, receivedAt: receivedAtIso })
       return [] as Story[]
     }
+    console.info('newsletter links extracted', { id: message.id, subject, receivedAt: receivedAtIso, count: links.length })
     return links.map((link, index) => ({
       id: `${message.id}:${index}`,
       title: link.title || subject,
