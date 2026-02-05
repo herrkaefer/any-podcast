@@ -598,6 +598,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       return summaries
     })
 
+    await step.sleep('Give AI a break', breakTime)
+
     const podcastContent = await step.do('create podcast content', { ...retryConfig, retries: { ...retryConfig.retries, limit: 1 } }, async () => {
       const attemptInputs: { label: string, stories: string[] }[] = [
         { label: 'all', stories: allStories },
@@ -720,24 +722,39 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         promptChars: prompt.length,
       })
       try {
-        const result = await step.do('create gemini podcast audio', { ...retryConfig, timeout: '5 minutes' }, async () => {
-          const { audio, extension } = await synthesizeGeminiTTS(prompt, this.env)
-          if (!audio.size) {
-            throw new Error('podcast audio size is 0')
+        const result = await step.do('create gemini podcast audio', { ...retryConfig, retries: { ...retryConfig.retries, limit: 0 }, timeout: '15 minutes' }, async () => {
+          const retryLimit = 1
+          for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
+            try {
+              const { audio, extension } = await synthesizeGeminiTTS(prompt, this.env)
+              if (!audio.size) {
+                throw new Error('podcast audio size is 0')
+              }
+              const finalKey = `${podcastKeyBase}.${extension}`
+              try {
+                await this.env.PODCAST_R2.put(finalKey, audio)
+              }
+              catch (error) {
+                console.error('Gemini TTS upload to R2 failed', {
+                  key: finalKey,
+                  error: formatError(error),
+                })
+                throw error
+              }
+              const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${finalKey}?t=${Date.now()}`
+              return { podcastKey: finalKey, audioUrl }
+            }
+            catch (error) {
+              console.warn('Gemini TTS attempt failed', {
+                attempt: attempt + 1,
+                error: formatError(error),
+              })
+              if (attempt >= retryLimit) {
+                throw error
+              }
+            }
           }
-          const finalKey = `${podcastKeyBase}.${extension}`
-          try {
-            await this.env.PODCAST_R2.put(finalKey, audio)
-          }
-          catch (error) {
-            console.error('Gemini TTS upload to R2 failed', {
-              key: finalKey,
-              error: formatError(error),
-            })
-            throw error
-          }
-          const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${finalKey}?t=${Date.now()}`
-          return { podcastKey: finalKey, audioUrl }
+          throw new Error('Gemini TTS failed after retries')
         })
 
         podcastKey = result.podcastKey
@@ -754,7 +771,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
     else {
       for (const [index, conversation] of conversations.entries()) {
         try {
-          await step.do(`create audio ${index}: ${conversation.substring(0, 20)}...`, { ...retryConfig, timeout: '5 minutes' }, async () => {
+          await step.do(`create audio ${index}: ${conversation.substring(0, 20)}...`, { ...retryConfig, retries: { ...retryConfig.retries, limit: 0 }, timeout: '15 minutes' }, async () => {
             if (
               !(conversation.startsWith('男') || conversation.startsWith('女'))
               || !conversation.substring(2).trim()
@@ -763,40 +780,57 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
               return conversation
             }
 
-            console.info('create conversation audio', conversation)
-            const audio = await synthesize(conversation.substring(2), conversation[0], this.env)
+            const retryLimit = 1
+            for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
+              try {
+                console.info('create conversation audio', conversation)
+                const audio = await synthesize(conversation.substring(2), conversation[0], this.env)
 
-            if (!audio.size) {
-              throw new Error('podcast audio size is 0')
+                if (!audio.size) {
+                  throw new Error('podcast audio size is 0')
+                }
+
+                const audioKey = `tmp/${podcastKey}-${index}.mp3`
+                const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${audioKey}?t=${Date.now()}`
+
+                try {
+                  await this.env.PODCAST_R2.put(audioKey, audio)
+                }
+                catch (error) {
+                  console.error('TTS upload to R2 failed', {
+                    index,
+                    key: audioKey,
+                    error: formatError(error),
+                  })
+                  throw error
+                }
+
+                try {
+                  await this.env.PODCAST_KV.put(`tmp:${event.instanceId}:audio:${index}`, audioUrl, { expirationTtl: 3600 })
+                }
+                catch (error) {
+                  console.error('TTS write to KV failed', {
+                    index,
+                    key: `tmp:${event.instanceId}:audio:${index}`,
+                    error: formatError(error),
+                  })
+                  throw error
+                }
+                return audioUrl
+              }
+              catch (error) {
+                console.warn('TTS attempt failed', {
+                  index,
+                  attempt: attempt + 1,
+                  error: formatError(error),
+                })
+                if (attempt >= retryLimit) {
+                  throw error
+                }
+              }
             }
 
-            const audioKey = `tmp/${podcastKey}-${index}.mp3`
-            const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${audioKey}?t=${Date.now()}`
-
-            try {
-              await this.env.PODCAST_R2.put(audioKey, audio)
-            }
-            catch (error) {
-              console.error('TTS upload to R2 failed', {
-                index,
-                key: audioKey,
-                error: formatError(error),
-              })
-              throw error
-            }
-
-            try {
-              await this.env.PODCAST_KV.put(`tmp:${event.instanceId}:audio:${index}`, audioUrl, { expirationTtl: 3600 })
-            }
-            catch (error) {
-              console.error('TTS write to KV failed', {
-                index,
-                key: `tmp:${event.instanceId}:audio:${index}`,
-                error: formatError(error),
-              })
-              throw error
-            }
-            return audioUrl
+            throw new Error('TTS failed after retries')
           })
         }
         catch (error) {

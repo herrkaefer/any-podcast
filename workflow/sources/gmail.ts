@@ -674,7 +674,7 @@ export async function listGmailMessageRefs(
   const query = buildGmailQuery(source.label, windowStart, windowEnd)
   let maxMessages = source.maxMessages || 50
   if (env.NODE_ENV === 'production') {
-    maxMessages = Math.min(maxMessages, 1)
+    maxMessages = Math.min(maxMessages, 2)
   }
   else if (env.NODE_ENV) {
     maxMessages = Math.min(maxMessages, 3)
