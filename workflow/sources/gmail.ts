@@ -250,18 +250,6 @@ function findArchiveLink(html: string) {
   return href
 }
 
-async function fetchHtml(url: string) {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 15000)
-  try {
-    const response = await fetch(url, { signal: controller.signal })
-    return await response.text()
-  }
-  finally {
-    clearTimeout(timeout)
-  }
-}
-
 async function resolveTrackingRedirect(href: string, cache: Map<string, string>) {
   if (cache.has(href)) {
     return cache.get(href) || href
@@ -723,20 +711,12 @@ export async function fetchGmailItems(
       }
 
       if (!newsletterContent) {
-        try {
-          const archiveHtml = await fetchHtml(archiveLink)
-          newsletterContent = await htmlToPlainText(archiveHtml)
-        }
-        catch (error) {
-          console.warn('failed to fetch archive html, fallback to email html', { error, id: message.id, subject, receivedAt: receivedAtIso })
-        }
+        console.warn('newsletter archive content is empty, skip message', { id: message.id, subject, receivedAt: receivedAtIso, archiveLink })
+        continue
       }
     }
     else {
       console.info('newsletter missing archive link, use email html', { id: message.id, subject, receivedAt: receivedAtIso })
-    }
-
-    if (!newsletterContent) {
       newsletterContent = await htmlToPlainText(html)
     }
 

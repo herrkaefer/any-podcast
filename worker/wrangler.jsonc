@@ -42,14 +42,21 @@
       "class_name": "HackerNewsWorkflow"
     }
   ],
-  "kv_namespaces": [{
-    "binding": "PODCAST_KV",
-    "id": "39eea2627b91464fa9346344c8426066"
-  }],
+  "kv_namespaces": [
+    {
+      "binding": "PODCAST_KV",
+      "id": "39eea2627b91464fa9346344c8426066"
+    }
+  ],
   "r2_buckets": [
     {
       "binding": "PODCAST_R2",
       "bucket_name": "spectrum-podcast"
     }
-  ]
+  ],
+  "vars": {
+    "PODCAST_DESCRIPTION": "“谱系之间”是一档面向大众的对话型播客，关注自闭症、ADHD 及相关的神经发展差异。我们定期整理来自研究、新闻、Newsletter 和社区讨论的内容，用双人对话的方式，把复杂的信息讲清楚，帮助听众理解诊断背后的真实生活，以及自闭症与 ADHD 等差异之间的连续性与交叉点。",
+    "PODCAST_ID": "spectrum-podcast",
+    "PODCAST_TITLE": "谱系之间"
+  }
 }

@@ -14,11 +14,14 @@ export default {
     const createWorkflow = async () => {
       const now = new Date()
       const isScheduled = 'scheduledTime' in event
+      const isLocalRequest = event instanceof Request
+        && ['localhost', '127.0.0.1'].includes(new URL(event.url).hostname)
+      const useRolling = !isScheduled && isLocalRequest
       const instance = await env.PODCAST_WORKFLOW.create({
         params: {
           nowIso: isScheduled ? new Date(event.scheduledTime).toISOString() : now.toISOString(),
-          windowMode: isScheduled ? 'calendar' : 'rolling',
-          windowHours: isScheduled ? undefined : 48,
+          windowMode: useRolling ? 'rolling' : 'calendar',
+          windowHours: useRolling ? 48 : undefined,
         },
       })
 
