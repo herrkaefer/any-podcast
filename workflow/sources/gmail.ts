@@ -374,7 +374,7 @@ function getUrlKey(input: string) {
   }
 }
 
-async function htmlToPlainText(html: string) {
+async function _htmlToPlainText(html: string) {
   const sanitizedHtml = html
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
@@ -738,7 +738,7 @@ export async function processGmailMessage(params: {
   }
   else {
     console.info('newsletter missing archive link, use email html', { id: message.id, subject, receivedAt: receivedAtIso })
-    newsletterContent = await htmlToPlainText(html)
+    newsletterContent = html
   }
 
   if (!newsletterContent) {

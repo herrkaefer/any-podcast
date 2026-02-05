@@ -507,24 +507,39 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
       console.info(`get story ${story.id} content success`)
 
-      const summaryResult = await step.do(`summarize story ${story.id}: ${story.title}`, retryConfig, async () => {
-        const { result, usage, finishReason } = await summarizeStoryWithRelevance({
-          env: this.env,
-          model: primaryModel,
-          instructions: summarizeStoryPrompt,
-          input: storyResponse,
-          maxOutputTokens: maxTokens,
-        })
+      const summaryResult = await step.do(`summarize story ${story.id}: ${story.title}`, { ...retryConfig, retries: { ...retryConfig.retries, limit: 1 } }, async () => {
+        try {
+          const { result, usage, finishReason } = await summarizeStoryWithRelevance({
+            env: this.env,
+            model: primaryModel,
+            instructions: summarizeStoryPrompt,
+            input: storyResponse,
+            maxOutputTokens: maxTokens,
+          })
 
-        console.info(`get story ${story.id} summary success`, {
-          relevant: result.relevant,
-          reason: result.reason,
-          summaryLength: result.summary?.length || 0,
-          usage,
-          finishReason,
-        })
-        return result
+          console.info(`get story ${story.id} summary success`, {
+            relevant: result.relevant,
+            reason: result.reason,
+            summaryLength: result.summary?.length || 0,
+            usage,
+            finishReason,
+          })
+          return result
+        }
+        catch (error) {
+          console.warn(`get story ${story.id} summary failed`, {
+            title: story.title,
+            error: formatError(error),
+          })
+          return null
+        }
       })
+
+      if (!summaryResult) {
+        console.info(`story ${story.id} skipped due to summary error`, { title: story.title })
+        await step.sleep('Give AI a break', breakTime)
+        continue
+      }
 
       if (!summaryResult.relevant) {
         console.info(`story ${story.id} filtered out`, {
