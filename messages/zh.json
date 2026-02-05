@@ -1,0 +1,79 @@
+{
+  "common": {
+    "home": "首页",
+    "toggleTheme": "切换主题",
+    "language": "语言",
+    "selectLanguage": "选择语言",
+    "externalLinkTitle": "在新标签页打开外部链接"
+  },
+  "aside": {
+    "hostedBy": "主 播",
+    "hostLinkTitle": "访问 {{name}} 的主页",
+    "githubLinkTitle": "打开 GitHub 仓库"
+  },
+  "podcastInfo": {
+    "about": "关于",
+    "listen": "播放",
+    "showMore": "展开更多",
+    "showLess": "收起",
+    "coverAlt": "{{title}} 封面",
+    "homeLinkTitle": "返回首页：{{title}}",
+    "platformLinkTitle": "在 {{platform}} 中打开播客"
+  },
+  "episodes": {
+    "title": "节目列表",
+    "noEpisodes": "暂无节目",
+    "listen": "播放",
+    "pause": "暂停",
+    "showNotes": "查看详情",
+    "back": "返回",
+    "playEpisode": "播放节目",
+    "pauseEpisode": "暂停播放",
+    "listHeading": "最近更新",
+    "openEpisodeTitle": "查看《{{title}}》详情",
+    "readEpisodeDescription": "阅读《{{title}}》简介",
+    "showNotesLinkTitle": "打开《{{title}}》的节目详情页",
+    "backLinkTitle": "返回节目列表",
+    "enterFullscreen": "进入全屏阅读",
+    "exitFullscreen": "退出全屏阅读"
+  },
+  "pagination": {
+    "previous": "上一页",
+    "next": "下一页"
+  },
+  "cmdk": {
+    "searchPlaceholder": "搜索命令...",
+    "noResults": "未找到结果",
+    "suggestions": "建议",
+    "commands": "导航",
+    "toggle": "切换",
+    "light": "浅色",
+    "dark": "深色",
+    "mode": "模式",
+    "command": "命令",
+    "episodes": "节目列表",
+    "application": "应用",
+    "openApplication": "打开",
+    "actions": "操作"
+  },
+  "player": {
+    "play": "播放",
+    "pause": "暂停",
+    "seekForward": "快进 15 秒",
+    "seekBackward": "快退 15 秒",
+    "speed": "倍速",
+    "volume": "音量",
+    "mute": "静音",
+    "unmute": "开启声音"
+  },
+  "lightbox": {
+    "openImage": "在灯箱中打开图片",
+    "previous": "上一张图片",
+    "next": "下一张图片",
+    "zoomIn": "放大",
+    "zoomOut": "缩小",
+    "close": "关闭灯箱",
+    "viewImage": "查看第 {{index}} 张图片",
+    "imageAltFallback": "第 {{index}} 张图片"
+  }
+}

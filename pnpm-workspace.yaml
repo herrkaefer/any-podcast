@@ -1,0 +1,8 @@
+onlyBuiltDependencies:
+  - esbuild
+  - puppeteer
+  - rclone.js
+  - sharp
+  - simple-git-hooks
+  - unrs-resolver
+  - workerd

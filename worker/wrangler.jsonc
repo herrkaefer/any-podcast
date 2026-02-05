@@ -1,0 +1,55 @@
+/**
+ * For more details on how to configure Wrangler, refer to:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "spectrum-podcast-worker",
+  "main": "./index.ts",
+  "minify": true,
+  "upload_source_maps": true,
+  "compatibility_date": "2025-11-15",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./static"
+  },
+  "observability": {
+    "traces": {
+      "enabled": true
+    },
+    "logs": {
+      "enabled": true
+    }
+  },
+  "triggers": {
+    "crons": [
+      // Chicago 00:30 local time (UTC 05:30 or 06:30 depending on DST)
+      "30 5 * * *",
+      "30 6 * * *"
+    ]
+  },
+  "keep_vars": true,
+  "browser": {
+    "binding": "BROWSER"
+  },
+  "workflows": [
+    {
+      "name": "podcast-workflow",
+      "binding": "PODCAST_WORKFLOW",
+      "class_name": "HackerNewsWorkflow"
+    }
+  ],
+  "kv_namespaces": [{
+    "binding": "PODCAST_KV",
+    "id": "39eea2627b91464fa9346344c8426066"
+  }],
+  "r2_buckets": [
+    {
+      "binding": "PODCAST_R2",
+      "bucket_name": "spectrum-podcast"
+    }
+  ]
+}

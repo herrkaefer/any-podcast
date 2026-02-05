@@ -1,0 +1,73 @@
+/**
+ * For more details on how to configure Wrangler, refer to:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "spectrum-podcast",
+  "main": ".open-next/worker.js",
+  "minify": true,
+  "upload_source_maps": true,
+  "compatibility_date": "2025-11-15",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": ".open-next/assets"
+  },
+  "observability": {
+    "traces": {
+      "enabled": true
+    },
+    "logs": {
+      "enabled": true
+    }
+  },
+  "placement": {
+    "mode": "smart"
+  },
+  "keep_vars": true,
+  "kv_namespaces": [{
+    "binding": "PODCAST_KV",
+    "id": "39eea2627b91464fa9346344c8426066"
+  }],
+  "r2_buckets": [
+    {
+      "binding": "PODCAST_R2",
+      "bucket_name": "spectrum-podcast"
+    },
+    {
+      "binding": "NEXT_INC_CACHE_R2_BUCKET",
+      "bucket_name": "spectrum-podcast"
+    }
+  ],
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "spectrum-podcast"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "NEXT_CACHE_DO_QUEUE",
+        "class_name": "DOQueueHandler"
+      },
+      {
+        "name": "NEXT_TAG_CACHE_DO_SHARDED",
+        "class_name": "DOShardedTagCache"
+      },
+      {
+        "name": "NEXT_CACHE_DO_PURGE",
+        "class_name": "BucketCachePurge"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "open-next",
+      "new_sqlite_classes": ["DOQueueHandler", "DOShardedTagCache", "BucketCachePurge"]
+    }
+  ]
+}
