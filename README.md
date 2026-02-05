@@ -1,5 +1,7 @@
 # Any Podcast
 
+<img src="public/logo.png" alt="Any Podcast" height="240" />
+
 An AI-powered, configurable podcast platform that aggregates content sources, generates summaries, and produces podcast audio. You can define different sources per topic and build your own podcast flow.
 
 ## Philosophy

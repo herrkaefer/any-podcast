@@ -1,7 +1,7 @@
 import type { PodcastInfo } from '@/types/podcast'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { Podcast } from '@/components/podcast'
-import { keepDays, podcast, site } from '@/config'
+import { buildContentPrefix, keepDays, podcast, site } from '@/config'
 import { buildEpisodesFromArticles } from '@/lib/episodes'
 import { getPastDays } from '@/lib/utils'
 
@@ -18,7 +18,7 @@ export default async function Home({
   const requestedPage = Number.parseInt(query.page ?? '1', 10)
   const currentPage = Number.isNaN(requestedPage) ? 1 : Math.max(1, requestedPage)
   const pastDays = getPastDays(keepDays)
-  const kvPrefix = `content:${runEnv}:hacker-podcast:`
+  const kvPrefix = buildContentPrefix(runEnv)
   const totalEpisodes = pastDays.length
   const totalPages = Math.max(1, Math.ceil(totalEpisodes / site.pageSize))
   const safePage = Math.min(currentPage, totalPages)

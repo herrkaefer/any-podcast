@@ -1,10 +1,14 @@
 /* eslint-disable node/prefer-global/process */
 import type { Podcast, Site } from '@/types/podcast'
 
-const defaultTitle = 'Any Podcast'
+const defaultTitle = process.env.PODCAST_TITLE ?? 'Any Podcast'
 const defaultDescription
-  = '一个可配置的 AI 播客平台：自动聚合内容源，生成中文摘要并输出播客音频。'
+  = process.env.PODCAST_DESCRIPTION
+    ?? '一个可配置的 AI 播客平台：自动聚合内容源，生成中文摘要并输出播客音频。'
 const defaultBaseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000'
+
+export const podcastId = process.env.PODCAST_ID ?? 'any-podcast'
+export const podcastContactEmail = process.env.PODCAST_CONTACT_EMAIL ?? 'podcast@any-podcast.local'
 
 export const keepDays = 30
 
@@ -56,3 +60,15 @@ export const externalLinks = {
 
 export const podcastTitle = podcast.base.title
 export const podcastDescription = podcast.base.description
+
+export function buildContentPrefix(runEnv: string) {
+  return `content:${runEnv}:${podcastId}:`
+}
+
+export function buildContentKey(runEnv: string, day: string) {
+  return `${buildContentPrefix(runEnv)}${day}`
+}
+
+export function buildPodcastKeyBase(runEnv: string, day: string) {
+  return `${day.replaceAll('-', '/')}/${runEnv}/${podcastId}-${day}`
+}

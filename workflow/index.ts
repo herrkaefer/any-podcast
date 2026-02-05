@@ -3,7 +3,7 @@ import type { AiEnv } from './ai'
 
 import { WorkflowEntrypoint } from 'cloudflare:workers'
 
-import { podcastTitle } from '@/config'
+import { buildContentKey, buildPodcastKeyBase, podcastTitle } from '@/config'
 import { createResponseText, getAiProvider, getMaxTokens, getPrimaryModel, getThinkingModel } from './ai'
 import { introPrompt, summarizeBlogPrompt, summarizePodcastPrompt, summarizeStoryPrompt } from './prompt'
 import { getStoriesFromSources } from './sources'
@@ -443,8 +443,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       return text
     })
 
-    const contentKey = `content:${runEnv}:hacker-podcast:${today}`
-    const podcastKeyBase = `${today.replaceAll('-', '/')}/${runEnv}/hacker-podcast-${today}`
+    const contentKey = buildContentKey(runEnv, today)
+    const podcastKeyBase = buildPodcastKeyBase(runEnv, today)
     let podcastKey = `${podcastKeyBase}.mp3`
 
     const ttsInputOverride = this.env.WORKFLOW_TTS_INPUT?.trim()

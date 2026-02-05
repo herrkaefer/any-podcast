@@ -60,7 +60,7 @@ export default {
       })
       return new Response(file?.body)
     }
-    const siteUrl = env.PODCAST_SITE_URL ?? 'https://hacker-podcast.agi.li'
+    const siteUrl = env.PODCAST_SITE_URL ?? 'http://localhost:3000'
     return Response.redirect(new URL(pathname, siteUrl).toString(), 302)
   },
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {

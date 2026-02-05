@@ -1,9 +1,8 @@
-import process from 'node:process'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import markdownit from 'markdown-it'
 import { NextResponse } from 'next/server'
 import { Podcast } from 'podcast'
-import { podcast } from '@/config'
+import { buildContentKey, podcast, podcastContactEmail } from '@/config'
 import { getPastDays } from '@/lib/utils'
 
 const md = markdownit()
@@ -25,7 +24,7 @@ function getAudioMimeType(audioPath: string): string {
 }
 
 export async function GET() {
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? ''
+  const baseUrl = podcast.base.link || ''
 
   // 如果没有缓存，生成新的响应
   const feed = new Podcast({
@@ -44,10 +43,10 @@ export async function GET() {
     itunesCategory: [{ text: 'Technology' }, { text: 'News' }],
     itunesOwner: {
       name: podcast.base.title,
-      email: 'hacker-podcast@agi.li',
+      email: podcastContactEmail,
     },
-    managingEditor: 'hacker-podcast@agi.li',
-    webMaster: 'hacker-podcast@agi.li',
+    managingEditor: podcastContactEmail,
+    webMaster: podcastContactEmail,
   })
 
   const { env } = await getCloudflareContext({ async: true })
@@ -55,7 +54,7 @@ export async function GET() {
   const pastDays = getPastDays(10)
   const posts = (await Promise.all(
     pastDays.map(async (day) => {
-      const post = await env.PODCAST_KV.get(`content:${runEnv}:hacker-podcast:${day}`, 'json')
+      const post = await env.PODCAST_KV.get(buildContentKey(runEnv, day), 'json')
       return post as unknown as Article
     }),
   )).filter(Boolean)
