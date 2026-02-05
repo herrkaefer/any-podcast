@@ -52,6 +52,12 @@ interface GmailEnv extends AiEnv {
   NODE_ENV?: string
 }
 
+export interface GmailMessageRef {
+  id: string
+  source: SourceConfig
+  lookbackDays: number
+}
+
 function decodeBase64Url(data: string) {
   const normalized = data.replace(/-/g, '+').replace(/_/g, '/')
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
@@ -648,7 +654,7 @@ async function getMessage(userId: string, id: string, token: string) {
   })
 }
 
-export async function fetchGmailItems(
+export async function listGmailMessageRefs(
   source: SourceConfig,
   now: Date,
   lookbackDays: number,
@@ -657,12 +663,12 @@ export async function fetchGmailItems(
 ) {
   if (!source.label) {
     console.warn('gmail source missing label', source)
-    return []
+    return [] as GmailMessageRef[]
   }
 
   const userId = env.GMAIL_USER_EMAIL || 'me'
   const token = await fetchAccessToken(env)
-  const { dateKey: targetDateKey, startUtc, endUtc } = getYesterdayRangeInChicago(now)
+  const { startUtc, endUtc } = getYesterdayRangeInChicago(now)
   const windowStart = window?.start || startUtc || new Date(now.getTime() - Math.max(lookbackDays, 2) * ONE_DAY_MS)
   const windowEnd = window?.end || endUtc || now
   const query = buildGmailQuery(source.label, windowStart, windowEnd)
@@ -672,90 +678,102 @@ export async function fetchGmailItems(
   }
 
   const messageRefs = await listMessages(userId, query, maxMessages, token)
+  return messageRefs.map(ref => ({
+    id: ref.id,
+    source,
+    lookbackDays,
+  }))
+}
 
-  const messages = await Promise.all(
-    messageRefs.map(ref => getMessage(userId, ref.id, token)),
-  )
+export async function processGmailMessage(params: {
+  messageId: string
+  source: SourceConfig
+  now: Date
+  lookbackDays: number
+  env: GmailEnv
+  window?: { start: Date, end: Date, timeZone: string }
+}) {
+  const { messageId, source, now, lookbackDays, env, window } = params
+  const userId = env.GMAIL_USER_EMAIL || 'me'
+  const token = await fetchAccessToken(env)
+  const { dateKey: targetDateKey, startUtc, endUtc } = getYesterdayRangeInChicago(now)
+  const windowStart = window?.start || startUtc || new Date(now.getTime() - Math.max(lookbackDays, 2) * ONE_DAY_MS)
+  const windowEnd = window?.end || endUtc || now
 
-  const items = [] as Story[]
+  const message = await getMessage(userId, messageId, token)
+  const html = extractHtml(message)
+  if (!html) {
+    console.warn('gmail message missing html body', { id: message.id })
+    return [] as Story[]
+  }
 
-  for (const message of messages) {
-    const html = extractHtml(message)
-    if (!html) {
-      console.warn('gmail message missing html body', { id: message.id })
-      continue
-    }
+  const subject = getHeader(message.payload?.headers, 'Subject')
+  const receivedAt = message.internalDate ? new Date(Number(message.internalDate)) : now
+  const receivedAtIso = receivedAt.toISOString()
+  if (receivedAt < windowStart || receivedAt > windowEnd) {
+    return [] as Story[]
+  }
 
-    const subject = getHeader(message.payload?.headers, 'Subject')
-    const receivedAt = message.internalDate ? new Date(Number(message.internalDate)) : now
-    const receivedAtIso = receivedAt.toISOString()
-    if (receivedAt < windowStart || receivedAt > windowEnd) {
-      continue
-    }
-
-    if (!window) {
-      const receivedDateKey = getDateKeyInTimeZone(receivedAt, CHICAGO_TIMEZONE)
-      if (receivedDateKey !== targetDateKey) {
-        continue
-      }
-    }
-
-    const archiveLink = findArchiveLink(html)
-    let newsletterContent = ''
-    if (archiveLink) {
-      try {
-        newsletterContent = await getContentFromJinaWithRetry(archiveLink, 'markdown', {}, env.JINA_KEY)
-      }
-      catch (error) {
-        console.warn('newsletter archive jina failed', { error, id: message.id, subject, receivedAt: receivedAtIso, archiveLink })
-      }
-
-      if (!newsletterContent) {
-        console.warn('newsletter archive content is empty, skip message', { id: message.id, subject, receivedAt: receivedAtIso, archiveLink })
-        continue
-      }
-    }
-    else {
-      console.info('newsletter missing archive link, use email html', { id: message.id, subject, receivedAt: receivedAtIso })
-      newsletterContent = await htmlToPlainText(html)
-    }
-
-    if (!newsletterContent) {
-      console.warn('newsletter content is empty, skip message', { id: message.id, subject, receivedAt: receivedAtIso })
-      continue
-    }
-
-    try {
-      const links = await extractNewsletterLinksWithAi({
-        subject,
-        content: newsletterContent,
-        source,
-        env,
-        messageId: message.id,
-        receivedAt: receivedAtIso,
-      })
-      if (links.length === 0) {
-        console.warn('newsletter has no matching links', { id: message.id, subject, receivedAt: receivedAtIso })
-        continue
-      }
-      links.forEach((link, index) => {
-        items.push({
-          id: `${message.id}:${index}`,
-          title: link.title || subject,
-          url: link.link,
-          hackerNewsUrl: link.link,
-          sourceName: source.name,
-          sourceUrl: source.url,
-          publishedAt: receivedAt.toISOString(),
-          sourceItemId: message.id,
-          sourceItemTitle: subject,
-        })
-      })
-    }
-    catch (error) {
-      console.warn('newsletter ai extraction failed, skip message', { error, id: message.id, subject, receivedAt: receivedAtIso })
+  if (!window) {
+    const receivedDateKey = getDateKeyInTimeZone(receivedAt, CHICAGO_TIMEZONE)
+    if (receivedDateKey !== targetDateKey) {
+      return [] as Story[]
     }
   }
 
-  return items
+  const archiveLink = findArchiveLink(html)
+  let newsletterContent = ''
+  if (archiveLink) {
+    try {
+      newsletterContent = await getContentFromJinaWithRetry(archiveLink, 'markdown', {}, env.JINA_KEY)
+    }
+    catch (error) {
+      console.warn('newsletter archive jina failed', { error, id: message.id, subject, receivedAt: receivedAtIso, archiveLink })
+    }
+
+    if (!newsletterContent) {
+      console.warn('newsletter archive content is empty, skip message', { id: message.id, subject, receivedAt: receivedAtIso, archiveLink })
+      return [] as Story[]
+    }
+  }
+  else {
+    console.info('newsletter missing archive link, use email html', { id: message.id, subject, receivedAt: receivedAtIso })
+    newsletterContent = await htmlToPlainText(html)
+  }
+
+  if (!newsletterContent) {
+    console.warn('newsletter content is empty, skip message', { id: message.id, subject, receivedAt: receivedAtIso })
+    return [] as Story[]
+  }
+
+  try {
+    const links = await extractNewsletterLinksWithAi({
+      subject,
+      content: newsletterContent,
+      source,
+      env,
+      messageId: message.id,
+      receivedAt: receivedAtIso,
+    })
+    if (links.length === 0) {
+      console.warn('newsletter has no matching links', { id: message.id, subject, receivedAt: receivedAtIso })
+      return [] as Story[]
+    }
+    return links.map((link, index) => ({
+      id: `${message.id}:${index}`,
+      title: link.title || subject,
+      url: link.link,
+      hackerNewsUrl: link.link,
+      sourceName: source.name,
+      sourceUrl: source.url,
+      publishedAt: receivedAt.toISOString(),
+      sourceItemId: message.id,
+      sourceItemTitle: subject,
+    }))
+  }
+  catch (error) {
+    console.warn('newsletter ai extraction failed, skip message', { error, id: message.id, subject, receivedAt: receivedAtIso })
+  }
+
+  return [] as Story[]
 }

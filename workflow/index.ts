@@ -6,7 +6,7 @@ import { WorkflowEntrypoint } from 'cloudflare:workers'
 import { buildContentKey, buildPodcastKeyBase, podcastTitle } from '@/config'
 import { createResponseText, getAiProvider, getMaxTokens, getPrimaryModel, getThinkingModel } from './ai'
 import { introPrompt, summarizeBlogPrompt, summarizePodcastPrompt, summarizeStoryPrompt } from './prompt'
-import { getStoriesFromSources } from './sources'
+import { getStoryCandidatesFromSources, processGmailMessage } from './sources'
 import synthesize, { buildGeminiTtsPrompt, synthesizeGeminiTTS } from './tts'
 import { concatAudioFiles, getStoryContent } from './utils'
 
@@ -350,8 +350,20 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         }
 
         if (testStep === 'story') {
-          const stories = await getStoriesFromSources({ now, env: this.env })
-          const story = stories[0]
+          const candidates = await getStoryCandidatesFromSources({ now, env: this.env, window: { start: windowStart, end: windowEnd, timeZone } })
+          let story = candidates.stories[0]
+          if (!story && candidates.gmailMessages.length > 0) {
+            const messageRef = candidates.gmailMessages[0]
+            const messageStories = await processGmailMessage({
+              messageId: messageRef.id,
+              source: messageRef.source,
+              now,
+              lookbackDays: messageRef.lookbackDays,
+              env: this.env,
+              window: { start: windowStart, end: windowEnd, timeZone },
+            })
+            story = messageStories[0]
+          }
           if (!story) {
             throw new Error('workflow test step "story": no stories found')
           }
@@ -418,8 +430,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       return
     }
 
-    const stories = await step.do(`get stories ${today}`, retryConfig, async () => {
-      const topStories = await getStoriesFromSources({
+    const candidates = await step.do(`list story candidates ${today}`, retryConfig, async () => {
+      const result = await getStoryCandidatesFromSources({
         now,
         env: this.env,
         window: {
@@ -429,13 +441,38 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         },
       })
 
-      if (!topStories.length) {
-        console.warn('no stories found, skip workflow run')
-        return []
+      if (!result.stories.length && !result.gmailMessages.length) {
+        console.warn('no story candidates found, skip workflow run')
+        return { stories: [], gmailMessages: [] }
       }
 
-      return topStories
+      return result
     })
+
+    const stories: Story[] = [...candidates.stories]
+    const gmailMessages = candidates.gmailMessages
+
+    if (gmailMessages.length > 0) {
+      for (const messageRef of gmailMessages) {
+        const messageStories = await step.do(`process gmail ${messageRef.id}`, retryConfig, async () => {
+          return await processGmailMessage({
+            messageId: messageRef.id,
+            source: messageRef.source,
+            now,
+            lookbackDays: messageRef.lookbackDays,
+            env: this.env,
+            window: {
+              start: windowStart,
+              end: windowEnd,
+              timeZone,
+            },
+          })
+        })
+        if (messageStories.length > 0) {
+          stories.push(...messageStories)
+        }
+      }
+    }
 
     if (!stories.length) {
       console.info('no stories found after filtering, exit workflow run')

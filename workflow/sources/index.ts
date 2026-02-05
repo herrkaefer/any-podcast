@@ -1,8 +1,13 @@
-import type { SourceConfig } from './types'
+import type { GmailMessageRef } from './gmail'
 
+import type { SourceConfig } from './types'
 import { loadSourceConfig } from './config'
-import { fetchGmailItems } from './gmail'
+
+import { listGmailMessageRefs } from './gmail'
 import { fetchRssItems } from './rss'
+
+export { processGmailMessage } from './gmail'
+export type { GmailMessageRef } from './gmail'
 
 function isEnabled(source: SourceConfig) {
   return source.enabled !== false
@@ -12,7 +17,12 @@ function getLookbackDays(source: SourceConfig, defaultLookbackDays: number) {
   return source.lookbackDays ?? defaultLookbackDays
 }
 
-export async function getStoriesFromSources(options?: { now?: Date, env?: CloudflareEnv, window?: { start: Date, end: Date, timeZone: string } }) {
+export interface StoryCandidates {
+  stories: Story[]
+  gmailMessages: GmailMessageRef[]
+}
+
+export async function getStoryCandidatesFromSources(options?: { now?: Date, env?: CloudflareEnv, window?: { start: Date, end: Date, timeZone: string } }) {
   const now = options?.now ?? new Date()
   const { sources, lookbackDays } = await loadSourceConfig()
   const enabledSources = sources.filter(isEnabled)
@@ -22,32 +32,45 @@ export async function getStoriesFromSources(options?: { now?: Date, env?: Cloudf
       const days = getLookbackDays(source, lookbackDays)
       switch (source.type) {
         case 'rss': {
-          return await fetchRssItems(source, now, days, options?.window)
+          return {
+            stories: await fetchRssItems(source, now, days, options?.window),
+            gmailMessages: [] as GmailMessageRef[],
+          }
         }
         case 'gmail': {
           if (!options?.env) {
             console.warn('gmail source requires env, skip', source)
-            return []
+            return { stories: [] as Story[], gmailMessages: [] as GmailMessageRef[] }
           }
-          return await fetchGmailItems(source, now, days, options.env, options?.window)
+          return {
+            stories: [] as Story[],
+            gmailMessages: await listGmailMessageRefs(source, now, days, options.env, options?.window),
+          }
         }
         case 'url':
-          return [
-            {
-              id: source.id,
-              title: source.name,
-              url: source.url,
-              hackerNewsUrl: source.url,
-              sourceName: source.name,
-              sourceUrl: source.url,
-            },
-          ]
+          return {
+            stories: [
+              {
+                id: source.id,
+                title: source.name,
+                url: source.url,
+                hackerNewsUrl: source.url,
+                sourceName: source.name,
+                sourceUrl: source.url,
+              },
+            ],
+            gmailMessages: [] as GmailMessageRef[],
+          }
         default:
           console.warn('unknown source type', source)
-          return []
+          return { stories: [] as Story[], gmailMessages: [] as GmailMessageRef[] }
       }
     }),
   )
 
-  return groups.flat()
+  return groups.reduce<StoryCandidates>((acc, group) => {
+    acc.stories.push(...group.stories)
+    acc.gmailMessages.push(...group.gmailMessages)
+    return acc
+  }, { stories: [], gmailMessages: [] })
 }
