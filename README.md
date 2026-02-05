@@ -1,13 +1,17 @@
 # Any Podcast
 
-一个可配置的 AI 播客平台：自动聚合内容源，生成中文摘要并输出播客音频。你可以为不同主题配置独立的内容源，组合成自己的播客流。
+An AI-powered, configurable podcast platform that aggregates content sources, generates summaries, and produces podcast audio. You can define different sources per topic and build your own podcast flow.
 
-## 理念
+## Philosophy
 
-- 内容源可配置，主题与平台无关
-- 自动化生成，降低内容生产门槛
-- 让每个人都能拥有自己的播客管道
+- Source-configurable, topic-agnostic
+- Automation lowers the barrier to content creation
+- Everyone should be able to run their own podcast pipeline
 
-## 来源
+## Origin
 
-本项目演化自 [hacker-podcast](https://github.com/miantiao-me/hacker-podcast) ，感谢原作者的开源分享。
+This project evolved from [hacker-podcast](https://github.com/miantiao-me/hacker-podcast). Thanks to the original author for open-sourcing it.
+
+## 中文版本
+
+查看中文说明请见 [README.zh-CN.md](README.zh-CN.md)。
