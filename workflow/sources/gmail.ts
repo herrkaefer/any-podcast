@@ -738,15 +738,6 @@ export async function fetchGmailItems(
 
     if (!newsletterContent) {
       newsletterContent = await htmlToPlainText(html)
-      if (source.linkRules?.debug) {
-        console.info('newsletter html cleaned content', {
-          subject,
-          messageId: message.id,
-          receivedAt: receivedAtIso,
-          length: newsletterContent.length,
-          content: newsletterContent,
-        })
-      }
     }
 
     if (!newsletterContent) {

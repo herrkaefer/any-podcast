@@ -35,6 +35,22 @@ interface Env extends CloudflareEnv, AiEnv {
   WORKFLOW_TTS_INPUT?: string
 }
 
+interface StorySummaryResult {
+  relevant: boolean
+  summary: string | null
+  reason: string
+}
+
+const storySummarySchema = {
+  type: 'OBJECT',
+  properties: {
+    relevant: { type: 'BOOLEAN' },
+    summary: { type: 'STRING', nullable: true },
+    reason: { type: 'STRING' },
+  },
+  required: ['relevant', 'summary', 'reason'],
+} as const
+
 function formatError(error: unknown) {
   const err = error as {
     name?: string
@@ -55,6 +71,93 @@ function formatError(error: unknown) {
     cause: err?.cause,
     data: err?.data,
   }
+}
+
+function stripCodeFences(text: string) {
+  return text.replace(/```(?:json)?/gi, '').trim()
+}
+
+function extractJsonObject(text: string) {
+  const trimmed = text.trim()
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    return trimmed
+  }
+  const match = trimmed.match(/\{[\s\S]*\}/)
+  return match ? match[0] : ''
+}
+
+function parseStorySummary(text: string): StorySummaryResult | null {
+  const cleaned = stripCodeFences(text)
+  const json = extractJsonObject(cleaned)
+  if (!json) {
+    return null
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(json)
+  }
+  catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return null
+  }
+  const record = parsed as Record<string, unknown>
+  if (typeof record.relevant !== 'boolean') {
+    return null
+  }
+  const reason = typeof record.reason === 'string' ? record.reason.trim() : ''
+  const summary = typeof record.summary === 'string' ? record.summary.trim() : ''
+  if (!reason) {
+    return null
+  }
+  if (record.relevant && !summary) {
+    return null
+  }
+  return {
+    relevant: record.relevant,
+    summary: summary || null,
+    reason,
+  }
+}
+
+async function summarizeStoryWithRelevance(params: {
+  env: AiEnv
+  model: string
+  instructions: string
+  input: string
+  maxOutputTokens: number
+}) {
+  const { env, model, instructions, input, maxOutputTokens } = params
+  const response = await createResponseText({
+    env,
+    model,
+    instructions,
+    input,
+    maxOutputTokens,
+    responseMimeType: 'application/json',
+    responseSchema: storySummarySchema,
+  })
+  let parsed = parseStorySummary(response.text)
+  if (parsed) {
+    return { result: parsed, usage: response.usage, finishReason: response.finishReason }
+  }
+
+  const retryInstructions = `${instructions}\n\n【重要】上一次输出不是有效 JSON，请只输出一个完整 JSON 对象，不要代码块或多余文字。`
+  const retryResponse = await createResponseText({
+    env,
+    model,
+    instructions: retryInstructions,
+    input,
+    maxOutputTokens,
+    responseMimeType: 'application/json',
+    responseSchema: storySummarySchema,
+  })
+  parsed = parseStorySummary(retryResponse.text)
+  if (!parsed) {
+    throw new Error('story summary output is not valid JSON')
+  }
+  return { result: parsed, usage: retryResponse.usage, finishReason: retryResponse.finishReason }
 }
 
 function buildTimeWindow(
@@ -253,12 +356,17 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
             throw new Error('workflow test step "story": no stories found')
           }
           const storyResponse = await getStoryContent(story, maxTokens, this.env)
-          return (await createResponseText({
+          const { result } = await summarizeStoryWithRelevance({
             env: this.env,
             model: primaryModel,
             instructions: summarizeStoryPrompt,
             input: storyResponse,
-          })).text
+            maxOutputTokens: maxTokens,
+          })
+          if (!result.relevant) {
+            return `NOT_RELEVANT: ${result.reason}`
+          }
+          return result.summary || ''
         }
 
         if (testStep === 'podcast') {
@@ -354,6 +462,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       console.info(`newsletter: ${group.label} (${groupKey}) -> ${group.count} articles`)
     }
 
+    const keptStories: Story[] = []
     for (const story of stories) {
       const storyResponse = await step.do(`get story ${story.id}: ${story.title}`, retryConfig, async () => {
         return await getStoryContent(story, maxTokens, this.env)
@@ -361,30 +470,66 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
       console.info(`get story ${story.id} content success`)
 
-      const text = await step.do(`summarize story ${story.id}: ${story.title}`, retryConfig, async () => {
-        const { text, usage, finishReason } = await createResponseText({
+      const summaryResult = await step.do(`summarize story ${story.id}: ${story.title}`, retryConfig, async () => {
+        const { result, usage, finishReason } = await summarizeStoryWithRelevance({
           env: this.env,
           model: primaryModel,
           instructions: summarizeStoryPrompt,
           input: storyResponse,
+          maxOutputTokens: maxTokens,
         })
 
-        console.info(`get story ${story.id} summary success`, { text, usage, finishReason })
-        return text
+        console.info(`get story ${story.id} summary success`, {
+          relevant: result.relevant,
+          reason: result.reason,
+          summaryLength: result.summary?.length || 0,
+          usage,
+          finishReason,
+        })
+        return result
+      })
+
+      if (!summaryResult.relevant) {
+        console.info(`story ${story.id} filtered out`, {
+          title: story.title,
+          reason: summaryResult.reason,
+        })
+        await step.sleep('Give AI a break', breakTime)
+        continue
+      }
+
+      const summaryText = summaryResult.summary?.trim()
+      if (!summaryText) {
+        console.warn(`story ${story.id} summary empty, skip`, { title: story.title })
+        await step.sleep('Give AI a break', breakTime)
+        continue
+      }
+
+      console.info(`story ${story.id} kept`, {
+        title: story.title,
+        reason: summaryResult.reason,
+        summaryLength: summaryText.length,
       })
 
       await step.do(`store story ${story.id} summary`, retryConfig, async () => {
         const storyKey = `tmp:${event.instanceId}:story:${story.id}`
-        await this.env.PODCAST_KV.put(storyKey, `<story>${text}</story>`, { expirationTtl: 3600 })
+        await this.env.PODCAST_KV.put(storyKey, `<story>${summaryText}</story>`, { expirationTtl: 3600 })
         return storyKey
       })
+
+      keptStories.push(story)
 
       await step.sleep('Give AI a break', breakTime)
     }
 
+    if (!keptStories.length) {
+      console.info('no relevant stories after summarization, exit workflow run')
+      return
+    }
+
     const allStories = await step.do('collect all story summaries', retryConfig, async () => {
       const summaries: string[] = []
-      for (const story of stories) {
+      for (const story of keptStories) {
         const storyKey = `tmp:${event.instanceId}:story:${story.id}`
         const summary = await this.env.PODCAST_KV.get(storyKey)
         if (summary) {
@@ -417,7 +562,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         env: this.env,
         model: thinkingModel,
         instructions: summarizeBlogPrompt,
-        input: `<stories>${JSON.stringify(stories)}</stories>\n\n---\n\n${allStories.join('\n\n---\n\n')}`,
+        input: `<stories>${JSON.stringify(keptStories)}</stories>\n\n---\n\n${allStories.join('\n\n---\n\n')}`,
         maxOutputTokens: maxTokens,
       })
 
