@@ -1015,7 +1015,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           date: publishDateKey,
           publishedAt,
           title: `${podcastTitle} ${publishDateKey}`,
-          stories,
+          stories: keptStories,
           podcastContent,
           blogContent,
           introContent,
