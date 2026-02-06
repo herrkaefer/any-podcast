@@ -93,7 +93,7 @@ export async function GET(request: Request) {
       content: finalContent,
       url: `${baseUrl}/episode/${post.date}`,
       guid: `${baseUrl}/episode/${post.date}`,
-      date: new Date(post.updatedAt || post.date),
+      date: new Date(post.publishedAt || post.date),
       itunesExplicit: false,
       enclosure: {
         url: `${env.NEXT_STATIC_HOST}/${post.audio}?t=${post.updatedAt}`,
