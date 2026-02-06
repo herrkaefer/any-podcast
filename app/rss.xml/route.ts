@@ -41,8 +41,9 @@ export async function GET(request: Request) {
     generator: podcast.base.title,
     author: podcast.base.title,
     categories: ['technology', 'news'],
+    itunesExplicit: 'no',
     itunesImage: `${baseUrl}/logo.png`,
-    itunesCategory: [{ text: 'Technology' }, { text: 'News' }],
+    itunesCategory: [{ text: 'Health & Fitness' }, { text: 'Education' }],
     itunesOwner: {
       name: podcast.base.title,
       email: podcastContactEmail,
