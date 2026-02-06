@@ -33,8 +33,8 @@ function buildReferencesSection(stories?: Story[]): string {
 
   const items = stories
     .map((story) => {
-      const title = story.title || story.url || story.hackerNewsUrl || ''
-      const href = story.url || story.hackerNewsUrl || '#'
+      const title = story.title || story.url || ''
+      const href = story.url || '#'
       if (!title || !href)
         return null
       return `- [${title}](${href})`

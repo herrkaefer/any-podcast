@@ -54,7 +54,6 @@ export async function getStoryCandidatesFromSources(options?: { now?: Date, env?
                 id: source.id,
                 title: source.name,
                 url: source.url,
-                hackerNewsUrl: source.url,
                 sourceName: source.name,
                 sourceUrl: source.url,
               },

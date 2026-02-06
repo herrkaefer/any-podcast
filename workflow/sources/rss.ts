@@ -118,7 +118,6 @@ export async function fetchRssItems(
         id: item.guid || item.link,
         title: item.title,
         url: item.link,
-        hackerNewsUrl: item.link,
         sourceName: source.name,
         sourceUrl: source.url,
         publishedAt: item.pubDate,

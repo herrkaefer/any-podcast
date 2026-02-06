@@ -728,7 +728,6 @@ export async function processGmailMessage(params: {
       id: `${message.id}:${index}`,
       title: link.title || subject,
       url: link.link,
-      hackerNewsUrl: link.link,
       sourceName: source.name,
       sourceUrl: source.url,
       publishedAt: receivedAt.toISOString(),

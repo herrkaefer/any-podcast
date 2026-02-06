@@ -70,7 +70,7 @@ export async function GET(request: Request) {
     const audioInfo = audioInfos[index]
 
     const links = post.stories
-      .map(s => `<li><a href="${s.hackerNewsUrl || s.url || ''}" title="${s.title || ''}">${s.title || ''}</a></li>`)
+      .map(s => `<li><a href="${s.url || ''}" title="${s.title || ''}">${s.title || ''}</a></li>`)
       .join('')
     const linkContent = `<p><b>相关链接：</b></p><ul>${links}</ul>`
     const blogContentHtml = md.render(post.blogContent || '')

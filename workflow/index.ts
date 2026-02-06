@@ -623,7 +623,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
     }
 
     const blogStories = keptStories.map((story) => {
-      const resolvedLink = story.url || story.hackerNewsUrl || ''
+      const resolvedLink = story.url || ''
       return {
         title: story.title || '',
         link: resolvedLink,

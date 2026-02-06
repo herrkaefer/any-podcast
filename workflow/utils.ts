@@ -137,7 +137,6 @@ export async function getHackerNewsTopStories(today: string, { JINA_KEY, FIRECRA
     id: $(el).attr('id'),
     title: $(el).find('.titleline > a').text(),
     url: $(el).find('.titleline > a').attr('href'),
-    hackerNewsUrl: `https://news.ycombinator.com/item?id=${$(el).attr('id')}`,
   })).get()
 
   return stories.filter(story => story.id && story.url)
