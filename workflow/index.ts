@@ -542,6 +542,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
     }
 
     const keptStories: Story[] = []
+    const allStories: string[] = []
     for (const story of stories) {
       const storyResponse = await step.do(`get story ${story.id}: ${story.title}`, retryConfig, async () => {
         return await getStoryContent(story, maxTokens, this.env)
@@ -612,12 +613,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         summaryLength: summaryText.length,
       })
 
-      await step.do(`store story ${story.id} summary`, retryConfig, async () => {
-        const storyKey = `tmp:${event.instanceId}:story:${story.id}`
-        await this.env.PODCAST_KV.put(storyKey, `<story>${summaryText}</story>`, { expirationTtl: 3600 })
-        return storyKey
-      })
-
+      allStories.push(`<story>${summaryText}</story>`)
       keptStories.push(story)
 
       await step.sleep('Give AI a break', breakTime)
@@ -628,16 +624,14 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       return
     }
 
-    const allStories = await step.do('collect all story summaries', retryConfig, async () => {
-      const summaries: string[] = []
-      for (const story of keptStories) {
-        const storyKey = `tmp:${event.instanceId}:story:${story.id}`
-        const summary = await this.env.PODCAST_KV.get(storyKey)
-        if (summary) {
-          summaries.push(summary)
-        }
+    const blogStories = keptStories.map((story) => {
+      const resolvedLink = story.url || story.hackerNewsUrl || ''
+      return {
+        title: story.title || '',
+        link: resolvedLink,
+        url: resolvedLink,
+        publishedAt: story.publishedAt || '',
       }
-      return summaries
     })
 
     await step.sleep('Give AI a break', breakTime)
@@ -699,19 +693,65 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
     await step.sleep('Give AI a break', breakTime)
 
-    const blogContent = await step.do('create blog content', retryConfig, async () => {
-      const { text, usage, finishReason } = await createResponseText({
-        env: this.env,
-        model: thinkingModel,
-        instructions: summarizeBlogPrompt,
-        input: `<stories>${JSON.stringify(keptStories)}</stories>\n\n---\n\n${allStories.join('\n\n---\n\n')}`,
-        maxOutputTokens: maxTokens,
-      })
+    const blogContent = await step.do('create blog content', { ...retryConfig, retries: { ...retryConfig.retries, limit: 1 } }, async () => {
+      const attemptInputs: { label: string, storyMeta: typeof blogStories, stories: string[] }[] = [
+        { label: 'all', storyMeta: blogStories, stories: allStories },
+      ]
+      if (allStories.length > 6) {
+        attemptInputs.push({
+          label: 'first-6',
+          storyMeta: blogStories.slice(0, 6),
+          stories: allStories.slice(0, 6),
+        })
+      }
 
-      console.info(`create hacker daily blog content success`, { text, usage, finishReason })
+      for (const attempt of attemptInputs) {
+        const input = `<stories>${JSON.stringify(attempt.storyMeta)}</stories>\n\n---\n\n${attempt.stories.join('\n\n---\n\n')}`
+        console.info('create blog content attempt', {
+          attempt: attempt.label,
+          stories: attempt.stories.length,
+          metaStories: attempt.storyMeta.length,
+          inputChars: input.length,
+        })
+        try {
+          const { text, usage, finishReason } = await createResponseText({
+            env: this.env,
+            model: thinkingModel,
+            instructions: summarizeBlogPrompt,
+            input,
+            maxOutputTokens: maxTokens,
+          })
 
-      return text
+          console.info('create blog content success', {
+            attempt: attempt.label,
+            stories: attempt.stories.length,
+            metaStories: attempt.storyMeta.length,
+            inputChars: input.length,
+            usage,
+            finishReason,
+          })
+
+          return text
+        }
+        catch (error) {
+          console.warn('create blog content failed', {
+            attempt: attempt.label,
+            stories: attempt.stories.length,
+            metaStories: attempt.storyMeta.length,
+            inputChars: input.length,
+            error: formatError(error),
+          })
+        }
+      }
+
+      console.warn('create blog content failed after retries, skip workflow')
+      return ''
     })
+
+    if (!blogContent) {
+      console.warn('blog content is empty, exit workflow run')
+      return
+    }
 
     console.info('blog content:\n', isDev ? blogContent : blogContent.slice(0, 100))
 
@@ -1002,12 +1042,6 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
     await step.do('clean up temporary data', retryConfig, async () => {
       const deletePromises = []
-
-      // Clean up story temporary data
-      for (const story of stories) {
-        const storyKey = `tmp:${event.instanceId}:story:${story.id}`
-        deletePromises.push(this.env.PODCAST_KV.delete(storyKey))
-      }
 
       if (!skipTTS && !useGeminiTTS) {
         // Clean up audio temporary data
