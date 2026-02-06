@@ -40,9 +40,11 @@ export async function GET(request: Request) {
     ttl: 60,
     generator: podcast.base.title,
     author: podcast.base.title,
-    categories: ['technology', 'news'],
-    itunesExplicit: 'no',
+    categories: ['Health & Fitness', 'Education'],
+    itunesExplicit: false,
     itunesImage: `${baseUrl}/logo.png`,
+    itunesType: 'episodic',
+    itunesAuthor: podcast.base.title,
     itunesCategory: [{ text: 'Health & Fitness' }, { text: 'Education' }],
     itunesOwner: {
       name: podcast.base.title,
@@ -68,6 +70,9 @@ export async function GET(request: Request) {
 
   posts.forEach((post, index) => {
     const audioInfo = audioInfos[index]
+    if (!post.audio || !audioInfo) {
+      return
+    }
 
     const links = post.stories
       .map(s => `<li><a href="${s.url || ''}" title="${s.title || ''}">${s.title || ''}</a></li>`)
@@ -79,17 +84,21 @@ export async function GET(request: Request) {
       ${env.NEXT_TRACKING_IMAGE ? `<img src="${env.NEXT_TRACKING_IMAGE}/${post.date}" alt="${post.title}" width="1" height="1" loading="lazy" aria-hidden="true" style="opacity: 0;pointer-events: none;" />` : ''}
     `
 
+    // Apple Podcasts limits itunes:summary to 4000 characters
+    const summary = (post.introContent || post.podcastContent || '').slice(0, 3999)
+
     feed.addItem({
       title: post.title || '',
-      description: post.introContent || post.podcastContent || '',
+      description: summary,
       content: finalContent,
       url: `${baseUrl}/episode/${post.date}`,
-      guid: `/episode/${post.date}`,
+      guid: `${baseUrl}/episode/${post.date}`,
       date: new Date(post.updatedAt || post.date),
+      itunesExplicit: false,
       enclosure: {
         url: `${env.NEXT_STATIC_HOST}/${post.audio}?t=${post.updatedAt}`,
         type: getAudioMimeType(post.audio),
-        size: audioInfo?.size,
+        size: audioInfo.size,
       },
     })
   })

@@ -820,7 +820,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         attemptRetries: 1,
       })
       try {
-        const result = await step.do('create gemini podcast audio', { ...retryConfig, retries: { ...retryConfig.retries, limit: 0 }, timeout: '30 minutes' }, async () => {
+        const geminiResult = await step.do('create gemini podcast audio', { ...retryConfig, retries: { ...retryConfig.retries, limit: 0 }, timeout: '30 minutes' }, async () => {
           const startedAt = Date.now()
           const retryLimit = 1
           for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
@@ -833,26 +833,26 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
               if (!audio.size) {
                 throw new Error('podcast audio size is 0')
               }
-              const finalKey = `${podcastKeyBase}.${extension}`
+              const tempKey = `tmp/${podcastKeyBase}.${extension}`
               try {
                 const uploadStartedAt = Date.now()
-                await this.env.PODCAST_R2.put(finalKey, audio)
+                await this.env.PODCAST_R2.put(tempKey, audio)
                 console.info('Gemini TTS upload done', {
-                  key: finalKey,
+                  key: tempKey,
                   size: audio.size,
                   ms: Date.now() - uploadStartedAt,
                 })
               }
               catch (error) {
                 console.error('Gemini TTS upload to R2 failed', {
-                  key: finalKey,
+                  key: tempKey,
                   error: formatError(error),
                 })
                 throw error
               }
-              const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${finalKey}?t=${Date.now()}`
+              const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${tempKey}?t=${Date.now()}`
               console.info('Gemini TTS duration', { ms: Date.now() - startedAt })
-              return { podcastKey: finalKey, audioUrl }
+              return { tempKey, audioUrl }
             }
             catch (error) {
               console.warn('Gemini TTS attempt failed', {
@@ -867,8 +867,24 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           throw new Error('Gemini TTS failed after retries')
         })
 
-        podcastKey = result.podcastKey
-        console.info('podcast audio url', result.audioUrl)
+        // Convert WAV to MP3 via browser-based FFmpeg
+        await step.do('convert gemini audio to mp3', retryConfig, async () => {
+          if (!this.env.BROWSER) {
+            console.warn('browser is not configured, storing raw audio without conversion')
+            podcastKey = geminiResult.tempKey
+            return
+          }
+          const mp3Blob = await concatAudioFiles([geminiResult.audioUrl], this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
+          await this.env.PODCAST_R2.put(podcastKey, mp3Blob)
+          console.info('Gemini audio converted to MP3', {
+            key: podcastKey,
+            size: mp3Blob.size,
+          })
+          // Clean up temp WAV file
+          await this.env.PODCAST_R2.delete(geminiResult.tempKey)
+        })
+
+        console.info('podcast audio url', `${this.env.PODCAST_R2_BUCKET_URL}/${podcastKey}`)
       }
       catch (error) {
         console.error('Gemini TTS failed', {
