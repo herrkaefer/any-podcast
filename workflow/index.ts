@@ -294,6 +294,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
     const timeZone = 'America/Chicago'
     const { windowStart, windowEnd, windowDateKey } = buildTimeWindow(now, windowMode, windowHours, timeZone)
     const today = event.payload?.today || windowDateKey || todayFallback
+    const publishedAt = now.toISOString()
+    const publishDateKey = getDateKeyInTimeZone(now, timeZone)
     const skipTTS = this.env.SKIP_TTS === 'true'
     const aiProvider = getAiProvider(this.env)
     const maxTokens = getMaxTokens(this.env, aiProvider)
@@ -766,8 +768,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       return text
     })
 
-    const contentKey = buildContentKey(runEnv, today)
-    const podcastKeyBase = buildPodcastKeyBase(runEnv, today)
+    const contentKey = buildContentKey(runEnv, publishDateKey)
+    const podcastKeyBase = buildPodcastKeyBase(runEnv, publishDateKey)
     let podcastKey = `${podcastKeyBase}.mp3`
 
     const ttsInputOverride = this.env.WORKFLOW_TTS_INPUT?.trim()
@@ -1008,11 +1010,9 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
     await step.do('save content to kv', retryConfig, async () => {
       try {
-        const publishedAt = new Date().toISOString()
-        const publishDateKey = getDateKeyInTimeZone(new Date(publishedAt), timeZone)
         const updatedAt = Date.now()
         await this.env.PODCAST_KV.put(contentKey, JSON.stringify({
-          date: today,
+          date: publishDateKey,
           publishedAt,
           title: `${podcastTitle} ${publishDateKey}`,
           stories,
