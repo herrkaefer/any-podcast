@@ -83,11 +83,15 @@ export function EpisodesPagination({ currentPage, totalPages }: EpisodesPaginati
     `}
     >
       <Pagination>
-        <PaginationContent>
+        <PaginationContent className={`
+          gap-2
+          md:gap-3
+        `}
+        >
           <PaginationItem>
             <PaginationLink
               className={cn(
-                'cursor-pointer gap-1 pl-2.5',
+                'cursor-pointer',
                 currentPage === 1 && 'pointer-events-none opacity-50',
               )}
               aria-label={t('pagination.previous')}
@@ -96,13 +100,7 @@ export function EpisodesPagination({ currentPage, totalPages }: EpisodesPaginati
               onClick={() => setPage(Math.max(1, currentPage - 1))}
             >
               <ChevronLeftIcon className="size-4" />
-              <span className={`
-                hidden
-                sm:block
-              `}
-              >
-                {t('pagination.previous')}
-              </span>
+              <span className="sr-only">{t('pagination.previous')}</span>
             </PaginationLink>
           </PaginationItem>
 
@@ -138,7 +136,7 @@ export function EpisodesPagination({ currentPage, totalPages }: EpisodesPaginati
           <PaginationItem>
             <PaginationLink
               className={cn(
-                'cursor-pointer gap-1 pr-2.5',
+                'cursor-pointer',
                 currentPage === totalPages && 'pointer-events-none opacity-50',
               )}
               aria-label={t('pagination.next')}
@@ -146,13 +144,7 @@ export function EpisodesPagination({ currentPage, totalPages }: EpisodesPaginati
               tabIndex={currentPage === totalPages ? -1 : undefined}
               onClick={() => setPage(Math.min(totalPages, currentPage + 1))}
             >
-              <span className={`
-                hidden
-                sm:block
-              `}
-              >
-                {t('pagination.next')}
-              </span>
+              <span className="sr-only">{t('pagination.next')}</span>
               <ChevronRightIcon className="size-4" />
             </PaginationLink>
           </PaginationItem>
