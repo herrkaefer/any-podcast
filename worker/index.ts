@@ -14,14 +14,10 @@ export default {
     const createWorkflow = async () => {
       const now = new Date()
       const isScheduled = 'scheduledTime' in event
-      const isLocalRequest = event instanceof Request
-        && ['localhost', '127.0.0.1'].includes(new URL(event.url).hostname)
-      const useRolling = !isScheduled && isLocalRequest
       const instance = await env.PODCAST_WORKFLOW.create({
         params: {
           nowIso: isScheduled ? new Date(event.scheduledTime).toISOString() : now.toISOString(),
-          windowMode: useRolling ? 'rolling' : 'calendar',
-          windowHours: useRolling ? 48 : undefined,
+          windowMode: 'calendar',
         },
       })
 
@@ -67,22 +63,6 @@ export default {
     return Response.redirect(new URL(pathname, siteUrl).toString(), 302)
   },
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    const scheduledAt = new Date(event.scheduledTime)
-    const timeParts = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/Chicago',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).formatToParts(scheduledAt)
-
-    const hour = Number(timeParts.find(part => part.type === 'hour')?.value || '0')
-    const minute = Number(timeParts.find(part => part.type === 'minute')?.value || '0')
-
-    if (hour !== 0 || minute !== 30) {
-      console.info('skip schedule outside Chicago 00:30', { hour, minute })
-      return
-    }
-
     return this.runWorkflow(event, env, ctx)
   },
 }

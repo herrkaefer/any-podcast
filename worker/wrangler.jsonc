@@ -26,8 +26,7 @@
   },
   "triggers": {
     "crons": [
-      // Chicago 00:30 local time (UTC 05:30 or 06:30 depending on DST)
-      "30 5 * * *",
+      // Fixed UTC schedule: 06:30 daily
       "30 6 * * *"
     ]
   },

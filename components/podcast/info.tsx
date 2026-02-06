@@ -145,6 +145,7 @@ function PodcastInfoContent({ podcastInfo }: PodcastInfoContentProps) {
             alt={coverAlt}
             width={640}
             height={640}
+            unoptimized
             referrerPolicy="no-referrer"
             itemProp="image"
           />

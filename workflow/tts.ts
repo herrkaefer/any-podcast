@@ -137,6 +137,13 @@ export async function synthesizeGeminiTTS(text: string, env: Env): Promise<Gemin
 
   const model = env.TTS_MODEL || 'gemini-2.5-flash-preview-tts'
   const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY })
+  const startedAt = Date.now()
+  console.info('Gemini TTS request start', {
+    model,
+    promptChars: text.length,
+  })
+
+  const generateStartedAt = Date.now()
   const response = await ai.models.generateContent({
     model,
     contents: [{ parts: [{ text }] }],
@@ -166,7 +173,13 @@ export async function synthesizeGeminiTTS(text: string, env: Env): Promise<Gemin
       },
     },
   })
+  const generateMs = Date.now() - generateStartedAt
+  console.info('Gemini TTS generate done', {
+    model,
+    ms: generateMs,
+  })
 
+  const decodeStartedAt = Date.now()
   const inlineData = extractInlineData(response)
   if (!inlineData?.data) {
     throw new Error('Gemini TTS returned empty audio data')
@@ -184,6 +197,15 @@ export async function synthesizeGeminiTTS(text: string, env: Env): Promise<Gemin
   }
 
   const audio = new Blob([buffer], { type: finalMimeType })
+  const decodeMs = Date.now() - decodeStartedAt
+  const totalMs = Date.now() - startedAt
+  console.info('Gemini TTS decode done', {
+    model,
+    mimeType: finalMimeType,
+    bytes: buffer.length,
+    decodeMs,
+    totalMs,
+  })
   return { audio, extension, mimeType: finalMimeType }
 }
 

@@ -1,5 +1,6 @@
 interface Article {
   date: string
+  publishedAt?: string
   title: string
   stories: Story[]
   podcastContent: string

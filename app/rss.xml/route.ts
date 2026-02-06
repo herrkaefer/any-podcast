@@ -23,8 +23,10 @@ function getAudioMimeType(audioPath: string): string {
   return 'audio/mpeg'
 }
 
-export async function GET() {
-  const baseUrl = podcast.base.link || ''
+export async function GET(request: Request) {
+  const configuredBaseUrl = (podcast.base.link || '').replace(/\/$/, '')
+  const requestBaseUrl = new URL(request.url).origin
+  const baseUrl = /^https?:\/\//.test(configuredBaseUrl) ? configuredBaseUrl : requestBaseUrl
 
   // 如果没有缓存，生成新的响应
   const feed = new Podcast({

@@ -374,69 +374,6 @@ function getUrlKey(input: string) {
   }
 }
 
-async function _htmlToPlainText(html: string) {
-  const sanitizedHtml = html
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<head[\s\S]*?<\/head>/gi, ' ')
-  const out: string[] = []
-  const rewriter = new HTMLRewriter()
-    .on('script, style, noscript, img, svg, footer, head', {
-      element(element) {
-        element.remove()
-      },
-    })
-    .on('a', {
-      element(element) {
-        const href = element.getAttribute('href')?.trim() || ''
-        const { href: unwrapped } = unwrapTrackingUrl(href)
-        if (unwrapped && /^https?:\/\//i.test(unwrapped)) {
-          out.push(` (${unwrapped})`)
-        }
-      },
-      text(text) {
-        if (text.text) {
-          out.push(text.text)
-        }
-      },
-    })
-    .on('h1, h2, h3', {
-      element() {
-        out.push('\n\n')
-      },
-      text(text) {
-        if (text.text) {
-          out.push(text.text.toUpperCase())
-        }
-      },
-    })
-    .on('p, li, blockquote', {
-      element() {
-        out.push('\n\n')
-      },
-      text(text) {
-        if (text.text) {
-          out.push(text.text)
-        }
-      },
-    })
-    .on('br', {
-      element() {
-        out.push('\n')
-      },
-    })
-    .on('*', {
-      text(text) {
-        if (text.text) {
-          out.push(text.text)
-        }
-      },
-    })
-  await rewriter.transform(new Response(sanitizedHtml)).text()
-  const text = out.join('').replace(/\s+/g, ' ').trim()
-  return text.replace(/[.#]?[\w-]+[^{}]{0,80}\{[^}]{1,200}\}/g, ' ').replace(/\s+/g, ' ').trim()
-}
-
 function buildNewsletterInput(params: {
   subject: string
   content: string
@@ -475,7 +412,7 @@ async function extractNewsletterLinksWithAi(params: {
   const provider = getAiProvider(env)
   const model = getPrimaryModel(env, provider)
   const input = buildNewsletterInput({ subject, content, rules })
-  const maxOutputTokens = 4096
+  const maxOutputTokens = 8192
 
   const response = await createResponseText({
     env,
@@ -673,10 +610,7 @@ export async function listGmailMessageRefs(
   const windowEnd = window?.end || endUtc || now
   const query = buildGmailQuery(source.label, windowStart, windowEnd)
   let maxMessages = source.maxMessages || 50
-  if (env.NODE_ENV === 'production') {
-    maxMessages = Math.min(maxMessages, 2)
-  }
-  else if (env.NODE_ENV) {
+  if (env.NODE_ENV && env.NODE_ENV !== 'production') {
     maxMessages = Math.min(maxMessages, 3)
   }
 
@@ -761,7 +695,7 @@ export async function processGmailMessage(params: {
     }
   }
   else {
-    console.info('newsletter missing archive link, use email html', { id: message.id, subject, receivedAt: receivedAtIso })
+    console.info('newsletter missing archive link, use raw email html', { id: message.id, subject, receivedAt: receivedAtIso })
     newsletterContent = html
   }
 

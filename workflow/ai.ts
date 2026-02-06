@@ -75,8 +75,8 @@ export function getThinkingModel(env: AiEnv, provider: AiProvider): string {
 
 export function getMaxTokens(env: AiEnv, provider: AiProvider): number {
   const raw = provider === 'gemini' ? env.GEMINI_MAX_TOKENS : env.OPENAI_MAX_TOKENS
-  const parsed = Number.parseInt(raw || '4096')
-  return Number.isFinite(parsed) ? parsed : 4096
+  const parsed = Number.parseInt(raw || '8192')
+  return Number.isFinite(parsed) ? parsed : 8192
 }
 
 function buildResponsesUrl(baseUrl?: string): string {

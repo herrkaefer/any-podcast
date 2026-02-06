@@ -5,7 +5,8 @@ const defaultTitle = process.env.PODCAST_TITLE ?? 'Any Podcast'
 const defaultDescription
   = process.env.PODCAST_DESCRIPTION
     ?? '一个可配置的 AI 播客平台：自动聚合内容源，生成中文摘要并输出播客音频。'
-const defaultBaseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000'
+const defaultBaseUrl = process.env.NEXT_PUBLIC_BASE_URL
+  ?? (process.env.NODE_ENV === 'development' ? 'http://localhost:3000' : '')
 
 export const podcastId = process.env.PODCAST_ID ?? 'any-podcast'
 export const podcastContactEmail = process.env.PODCAST_CONTACT_EMAIL ?? 'podcast@any-podcast.local'
@@ -33,7 +34,7 @@ export const podcast: Podcast = {
     {
       id: 'rss',
       name: 'RSS',
-      link: `${defaultBaseUrl}/rss.xml`,
+      link: '/rss.xml',
     },
   ],
 }
