@@ -236,39 +236,35 @@ function getDateKeyInTimeZone(date: Date, timeZone: string) {
 }
 
 function getTimeZoneOffsetMs(date: Date, timeZone: string) {
-  const timeZoneParts = new Intl.DateTimeFormat('en-US', {
+  const parts = new Intl.DateTimeFormat('en-US', {
     timeZone,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-    hour12: false,
   }).formatToParts(date)
 
-  const dateParts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'UTC',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).formatToParts(date)
+  const get = (type: string) => parts.find(part => part.type === type)?.value || '00'
+  const utcTime = Date.UTC(
+    Number(get('year')),
+    Number(get('month')) - 1,
+    Number(get('day')),
+    Number(get('hour')),
+    Number(get('minute')),
+    Number(get('second')),
+  )
 
-  const getValue = (parts: Intl.DateTimeFormatPart[], type: string) => Number(parts.find(part => part.type === type)?.value || '0')
-
-  const tzTime = getValue(timeZoneParts, 'hour') * 3600
-    + getValue(timeZoneParts, 'minute') * 60
-    + getValue(timeZoneParts, 'second')
-  const utcTime = getValue(dateParts, 'hour') * 3600
-    + getValue(dateParts, 'minute') * 60
-    + getValue(dateParts, 'second')
-
-  return (utcTime - tzTime) * 1000
+  return utcTime - date.getTime()
 }
 
 function zonedTimeToUtc(dateKey: string, timeZone: string, hour: number, minute: number, second: number) {
   const [year, month, day] = dateKey.split('-').map(Number)
-  const utcDate = new Date(Date.UTC(year, month - 1, day, hour, minute, second))
-  const offset = getTimeZoneOffsetMs(utcDate, timeZone)
-  return new Date(utcDate.getTime() + offset)
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, second)
+  const offset = getTimeZoneOffsetMs(new Date(utcGuess), timeZone)
+  return new Date(utcGuess - offset)
 }
 
 const retryConfig: WorkflowStepConfig = {
