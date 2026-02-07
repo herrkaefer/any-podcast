@@ -81,6 +81,7 @@
     "pre-commit": "pnpm lint-staged"
   },
   "lint-staged": {
-    "*": "eslint --fix"
+    "*.{ts,tsx,js,jsx,mjs,cjs,cts,mts}": "eslint --fix --cache",
+    "*.{json,md,mdx,yml,yaml}": "eslint --fix --cache"
   }
 }
