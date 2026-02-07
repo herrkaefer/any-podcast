@@ -23,6 +23,11 @@ function isTimeoutError(error: unknown) {
   return message.includes('timeout') || message.includes('timed out') || message.includes('aborted')
 }
 
+export function isSubrequestLimitError(error: unknown) {
+  const message = (error as { message?: string })?.message || ''
+  return message.includes('Too many subrequests') || message.includes('too many subrequests')
+}
+
 export async function getContentFromJinaWithRetry(
   url: string,
   format: 'html' | 'markdown',
@@ -30,14 +35,18 @@ export async function getContentFromJinaWithRetry(
   JINA_KEY?: string,
   options?: { retryLimit?: number, retryDelayMs?: number },
 ) {
-  const retryLimit = options?.retryLimit ?? 2
-  let retryDelayMs = options?.retryDelayMs ?? 2000
+  const retryLimit = options?.retryLimit ?? 3
+  let retryDelayMs = options?.retryDelayMs ?? 3000
 
   for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
     try {
       return await getContentFromJina(url, format, selector, JINA_KEY)
     }
     catch (error) {
+      // Subrequest limit is fatal — retrying in the same invocation is pointless
+      if (isSubrequestLimitError(error)) {
+        throw error
+      }
       const status = getErrorStatus(error)
       const timeout = isTimeoutError(error)
       if ((status !== 429 && !timeout) || attempt >= retryLimit) {
@@ -123,6 +132,8 @@ export async function getHackerNewsTopStories(today: string, { JINA_KEY, FIRECRA
 
   const html = await getContentFromJinaWithRetry(url, 'html', {}, JINA_KEY)
     .catch((error) => {
+      if (isSubrequestLimitError(error))
+        throw error
       console.error('getTopStories from Jina failed', error)
       if (!FIRECRAWL_KEY) {
         return ''
@@ -154,6 +165,8 @@ export async function getHackerNewsStory(story: Story, maxTokens: number, { JINA
   const [article, comments] = await Promise.all([
     getContentFromJinaWithRetry(story.url!, 'markdown', {}, JINA_KEY)
       .catch((error) => {
+        if (isSubrequestLimitError(error))
+          throw error
         console.error('getStoryContent from Jina failed', error)
         if (!FIRECRAWL_KEY) {
           return ''
@@ -162,6 +175,8 @@ export async function getHackerNewsStory(story: Story, maxTokens: number, { JINA
       }),
     getContentFromJinaWithRetry(`https://news.ycombinator.com/item?id=${story.id}`, 'markdown', { include: '.comment-tree', exclude: '.navs' }, JINA_KEY)
       .catch((error) => {
+        if (isSubrequestLimitError(error))
+          throw error
         console.error('getStoryComments from Jina failed', error)
         if (!FIRECRAWL_KEY) {
           return ''
@@ -202,6 +217,8 @@ export async function getStoryContent(story: Story, maxTokens: number, { JINA_KE
   const storyUrl = story.url
   const article = await getContentFromJinaWithRetry(storyUrl, 'markdown', {}, JINA_KEY)
     .catch((error) => {
+      if (isSubrequestLimitError(error))
+        throw error
       console.error('getStoryContent from Jina failed', error)
       if (!FIRECRAWL_KEY) {
         return ''

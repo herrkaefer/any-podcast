@@ -7,7 +7,7 @@ import { $fetch } from 'ofetch'
 
 import { createResponseText, getAiProvider, getPrimaryModel } from '../ai'
 import { extractNewsletterLinksPrompt } from '../prompt'
-import { getContentFromJinaWithRetry } from '../utils'
+import { getContentFromJinaWithRetry, isSubrequestLimitError } from '../utils'
 
 interface GmailAccessTokenResponse {
   access_token: string
@@ -739,6 +739,8 @@ export async function processGmailMessage(params: {
       newsletterContent = await getContentFromJinaWithRetry(archiveLink, 'markdown', {}, env.JINA_KEY)
     }
     catch (error) {
+      if (isSubrequestLimitError(error))
+        throw error
       console.warn('newsletter archive jina failed', { error, id: message.id, subject, receivedAt: receivedAtIso, archiveLink })
     }
 

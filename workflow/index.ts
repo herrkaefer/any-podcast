@@ -8,7 +8,7 @@ import { createResponseText, getAiProvider, getMaxTokens, getPrimaryModel, getTh
 import { introPrompt, summarizeBlogPrompt, summarizePodcastPrompt, summarizeStoryPrompt } from './prompt'
 import { getStoryCandidatesFromSources, processGmailMessage } from './sources'
 import synthesize, { buildGeminiTtsPrompt, synthesizeGeminiTTS } from './tts'
-import { concatAudioFiles, getStoryContent } from './utils'
+import { concatAudioFiles, getStoryContent, isSubrequestLimitError } from './utils'
 
 interface Params {
   today?: string
@@ -183,6 +183,8 @@ async function summarizeStoryWithRelevance(params: {
       return { result: parsed, usage: response.usage, finishReason: response.finishReason }
     }
     catch (error) {
+      if (isSubrequestLimitError(error))
+        throw error
       lastError = error
     }
   }
@@ -487,11 +489,14 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       return result
     })
 
+    await step.sleep('reset quota after candidates', breakTime)
+
     const stories: Story[] = [...candidates.stories]
     const gmailMessages = candidates.gmailMessages
 
     if (gmailMessages.length > 0) {
       for (const messageRef of gmailMessages) {
+        await step.sleep('reset quota before gmail', breakTime)
         const gmailResult = await step.do(`process gmail ${messageRef.id}`, retryConfig, async () => {
           const result = await processGmailMessage({
             messageId: messageRef.id,
@@ -565,6 +570,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         chars: storyResponse.length,
       })
 
+      await step.sleep('reset quota before summarize', breakTime)
+
       let summaryResult: StorySummaryResult | null = null
       try {
         summaryResult = await step.do(`summarize story ${story.id}: ${story.title}`, { ...retryConfig, retries: { ...retryConfig.retries, limit: 2 } }, async () => {
@@ -591,6 +598,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         })
       }
       catch (error) {
+        if (isSubrequestLimitError(error))
+          throw error
         console.warn(`get story ${story.id} summary failed after retries`, {
           title: story.title,
           error: formatError(error),
@@ -648,7 +657,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
     await step.sleep('Give AI a break', breakTime)
 
-    const podcastContent = await step.do('create podcast content', { ...retryConfig, retries: { ...retryConfig.retries, limit: 1 } }, async () => {
+    const podcastContent = await step.do('create podcast content', { ...retryConfig, retries: { ...retryConfig.retries, limit: 3 } }, async () => {
       const attemptInputs: { label: string, stories: string[] }[] = [
         { label: 'all', stories: allStories },
       ]
@@ -683,6 +692,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           return text
         }
         catch (error) {
+          if (isSubrequestLimitError(error))
+            throw error
           console.warn('create podcast content failed', {
             attempt: attempt.label,
             stories: attempt.stories.length,
@@ -705,7 +716,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
     await step.sleep('Give AI a break', breakTime)
 
-    const blogContent = await step.do('create blog content', { ...retryConfig, retries: { ...retryConfig.retries, limit: 1 } }, async () => {
+    const blogContent = await step.do('create blog content', { ...retryConfig, retries: { ...retryConfig.retries, limit: 3 } }, async () => {
       const attemptInputs: { label: string, storyMeta: typeof blogStories, stories: string[] }[] = [
         { label: 'all', storyMeta: blogStories, stories: allStories },
       ]
@@ -746,6 +757,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           return text
         }
         catch (error) {
+          if (isSubrequestLimitError(error))
+            throw error
           console.warn('create blog content failed', {
             attempt: attempt.label,
             stories: attempt.stories.length,
@@ -781,6 +794,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
       return text
     })
+
+    await step.sleep('reset quota before TTS', breakTime)
 
     const contentKey = buildContentKey(runEnv, publishDateKey)
     const podcastKeyBase = buildPodcastKeyBase(runEnv, publishDateKey)
@@ -834,7 +849,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         attemptRetries: 1,
       })
       try {
-        await step.do('create gemini podcast audio and convert to mp3', { ...retryConfig, retries: { ...retryConfig.retries, limit: 0 }, timeout: '30 minutes' }, async () => {
+        await step.do('create gemini podcast audio and convert to mp3', { ...retryConfig, retries: { ...retryConfig.retries, limit: 2 }, timeout: '30 minutes' }, async () => {
           const startedAt = Date.now()
           const retryLimit = 1
           let audio: Blob | null = null
