@@ -494,8 +494,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
     if (gmailMessages.length > 0) {
       for (const messageRef of gmailMessages) {
-        const messageStories = await step.do(`process gmail ${messageRef.id}`, retryConfig, async () => {
-          return await processGmailMessage({
+        const gmailResult = await step.do(`process gmail ${messageRef.id}`, retryConfig, async () => {
+          const result = await processGmailMessage({
             messageId: messageRef.id,
             source: messageRef.source,
             now,
@@ -507,9 +507,17 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
               timeZone,
             },
           })
+          return {
+            messageId: messageRef.id,
+            subject: messageRef.subject,
+            receivedAt: messageRef.receivedAt,
+            count: result.length,
+            stories: result.map(s => ({ title: s.title, url: s.url })),
+            _raw: result,
+          }
         })
-        if (messageStories.length > 0) {
-          stories.push(...messageStories)
+        if (gmailResult._raw.length > 0) {
+          stories.push(...gmailResult._raw)
         }
       }
     }

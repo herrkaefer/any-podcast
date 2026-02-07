@@ -56,6 +56,8 @@ export interface GmailMessageRef {
   id: string
   source: SourceConfig
   lookbackDays: number
+  subject?: string
+  receivedAt?: string
 }
 
 function decodeBase64Url(data: string) {
@@ -586,8 +588,11 @@ async function fetchAccessToken(env: GmailEnv) {
 }
 
 function buildGmailQuery(label: string, start: Date, end: Date) {
-  const startSec = Math.floor(start.getTime() / 1000)
-  const endSec = Math.floor(end.getTime() / 1000)
+  // Gmail after:/before: 时间过滤存在已知精度问题，向外各扩一天确保不漏
+  const paddedStart = new Date(start.getTime() - ONE_DAY_MS)
+  const paddedEnd = new Date(end.getTime() + ONE_DAY_MS)
+  const startSec = Math.floor(paddedStart.getTime() / 1000)
+  const endSec = Math.floor(paddedEnd.getTime() / 1000)
   return `label:"${label}" after:${startSec} before:${endSec}`
 }
 
@@ -646,11 +651,35 @@ export async function listGmailMessageRefs(
   })
 
   const messageRefs = await listMessages(userId, query, maxMessages, token)
-  return messageRefs.map(ref => ({
-    id: ref.id,
-    source,
-    lookbackDays,
+
+  const refs = await Promise.all(messageRefs.map(async (ref) => {
+    const meta = await $fetch<GmailMessage>(`https://gmail.googleapis.com/gmail/v1/users/${userId}/messages/${ref.id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      query: { format: 'metadata', metadataHeaders: 'Subject' },
+    })
+    const subject = getHeader(meta.payload?.headers, 'Subject')
+    const receivedAt = meta.internalDate ? new Date(Number(meta.internalDate)).toISOString() : ''
+    return {
+      id: ref.id,
+      source,
+      lookbackDays,
+      subject,
+      receivedAt,
+    }
   }))
+
+  const filtered = refs.filter((ref) => {
+    if (!ref.receivedAt)
+      return false
+    const t = new Date(ref.receivedAt)
+    if (t < windowStart || t > windowEnd) {
+      console.info('gmail message filtered out by time window', { id: ref.id, subject: ref.subject, receivedAt: ref.receivedAt })
+      return false
+    }
+    return true
+  })
+
+  return filtered
 }
 
 export async function processGmailMessage(params: {
