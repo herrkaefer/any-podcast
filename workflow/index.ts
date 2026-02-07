@@ -937,15 +937,6 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         })
       })
 
-      // Clean up temp audio files
-      await step.do('clean up gemini temp files', retryConfig, async () => {
-        for (let i = 0; i < batches.length; i += 1) {
-          const audioKey = `tmp/${podcastKey}-${i}.wav`
-          await this.env.PODCAST_R2.delete(audioKey)
-          await this.env.PODCAST_KV.delete(`tmp:${event.instanceId}:audio:${i}`)
-        }
-      })
-
       console.info('podcast audio url', `${this.env.PODCAST_R2_BUCKET_URL}/${podcastKey}`)
     }
     else {
@@ -1109,36 +1100,46 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
     await step.do('clean up temporary data', retryConfig, async () => {
       const deletePromises = []
 
-      if (!skipTTS && !useGeminiTTS) {
-        // Clean up audio temporary data
+      if (!skipTTS && useGeminiTTS) {
+        // Clean up Gemini TTS batch temporary data
+        const batchCount = Math.ceil(dialogLines.length / 8)
+        for (let i = 0; i < batchCount; i += 1) {
+          deletePromises.push(this.env.PODCAST_KV.delete(`tmp:${event.instanceId}:audio:${i}`))
+        }
+        for (let i = 0; i < batchCount; i += 1) {
+          deletePromises.push(
+            this.env.PODCAST_R2.delete(`tmp/${podcastKey}-${i}.wav`).catch((error) => {
+              console.error('delete gemini temp wav failed', {
+                key: `tmp/${podcastKey}-${i}.wav`,
+                error: formatError(error),
+              })
+            }),
+          )
+        }
+      }
+      else if (!skipTTS && !useGeminiTTS) {
+        // Clean up non-Gemini audio temporary data
         for (const [index] of conversations.entries()) {
           const audioKey = `tmp:${event.instanceId}:audio:${index}`
           deletePromises.push(this.env.PODCAST_KV.delete(audioKey))
         }
+        for (const index of audioFiles.keys()) {
+          deletePromises.push(
+            this.env.PODCAST_R2.delete(`tmp/${podcastKey}-${index}.mp3`).catch((error) => {
+              console.error('delete temp files failed', {
+                key: `tmp/${podcastKey}-${index}.mp3`,
+                error: formatError(error),
+              })
+            }),
+          )
+        }
       }
 
       await Promise.all(deletePromises).catch((error) => {
-        console.error('cleanup kv failed', {
+        console.error('cleanup failed', {
           error: formatError(error),
         })
       })
-
-      if (!skipTTS && !useGeminiTTS) {
-        for (const index of audioFiles.keys()) {
-          try {
-            await Promise.any([
-              this.env.PODCAST_R2.delete(`tmp/${podcastKey}-${index}.mp3`),
-              new Promise(resolve => setTimeout(resolve, 200)),
-            ])
-          }
-          catch (error) {
-            console.error('delete temp files failed', {
-              key: `tmp/${podcastKey}-${index}.mp3`,
-              error: formatError(error),
-            })
-          }
-        }
-      }
 
       return 'temporary data cleaned up'
     })
