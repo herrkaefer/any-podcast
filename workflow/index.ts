@@ -82,8 +82,10 @@ function validateTtsConfig(env: Env) {
     throw new Error('TTS_PROVIDER is required when SKIP_TTS is false (current: empty)')
   }
 
-  if (!['gemini', 'edge', 'minimax', 'murf'].includes(provider)) {
-    throw new Error(`Unsupported TTS_PROVIDER: ${provider}`)
+  const isProduction = (env.NODE_ENV || 'production') === 'production'
+  const supported = isProduction ? ['gemini', 'minimax', 'murf'] : ['gemini', 'minimax', 'murf', 'edge']
+  if (!supported.includes(provider)) {
+    throw new Error(`Unsupported TTS_PROVIDER: ${provider} (supported: ${supported.join(', ')})`)
   }
 
   if (provider === 'gemini' && !env.GEMINI_API_KEY?.trim()) {
@@ -97,10 +99,6 @@ function validateTtsConfig(env: Env) {
     if (!env.TTS_API_ID?.trim()) {
       throw new Error('TTS_API_ID is required when TTS_PROVIDER=minimax')
     }
-  }
-
-  if (provider === 'murf' && !env.TTS_API_KEY?.trim()) {
-    throw new Error('TTS_API_KEY is required when TTS_PROVIDER=murf')
   }
 
   return provider
@@ -786,7 +784,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
     const contentKey = buildContentKey(runEnv, publishDateKey)
     const podcastKeyBase = buildPodcastKeyBase(runEnv, publishDateKey)
-    let podcastKey = `${podcastKeyBase}.mp3`
+    const podcastKey = `${podcastKeyBase}.mp3`
 
     const ttsInputOverride = this.env.WORKFLOW_TTS_INPUT?.trim()
     if (ttsInputOverride) {
@@ -836,39 +834,27 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         attemptRetries: 1,
       })
       try {
-        const geminiResult = await step.do('create gemini podcast audio', { ...retryConfig, retries: { ...retryConfig.retries, limit: 0 }, timeout: '30 minutes' }, async () => {
+        await step.do('create gemini podcast audio and convert to mp3', { ...retryConfig, retries: { ...retryConfig.retries, limit: 0 }, timeout: '30 minutes' }, async () => {
           const startedAt = Date.now()
           const retryLimit = 1
+          let audio: Blob | null = null
           for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
             try {
               console.info('Gemini TTS attempt start', {
                 attempt: attempt + 1,
                 promptChars: prompt.length,
               })
-              const { audio, extension } = await synthesizeGeminiTTS(prompt, this.env)
-              if (!audio.size) {
+              const result = await synthesizeGeminiTTS(prompt, this.env)
+              if (!result.audio.size) {
                 throw new Error('podcast audio size is 0')
               }
-              const tempKey = `tmp/${podcastKeyBase}.${extension}`
-              try {
-                const uploadStartedAt = Date.now()
-                await this.env.PODCAST_R2.put(tempKey, audio)
-                console.info('Gemini TTS upload done', {
-                  key: tempKey,
-                  size: audio.size,
-                  ms: Date.now() - uploadStartedAt,
-                })
-              }
-              catch (error) {
-                console.error('Gemini TTS upload to R2 failed', {
-                  key: tempKey,
-                  error: formatError(error),
-                })
-                throw error
-              }
-              const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${tempKey}?t=${Date.now()}`
-              console.info('Gemini TTS duration', { ms: Date.now() - startedAt })
-              return { tempKey, audioUrl }
+              audio = result.audio
+              console.info('Gemini TTS done', {
+                size: audio.size,
+                extension: result.extension,
+                ms: Date.now() - startedAt,
+              })
+              break
             }
             catch (error) {
               console.warn('Gemini TTS attempt failed', {
@@ -880,24 +866,39 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
               }
             }
           }
-          throw new Error('Gemini TTS failed after retries')
-        })
+          if (!audio) {
+            throw new Error('Gemini TTS failed after retries')
+          }
 
-        // Convert WAV to MP3 via browser-based FFmpeg
-        await step.do('convert gemini audio to mp3', retryConfig, async () => {
+          // Convert WAV to MP3 via browser-based FFmpeg (pass audio as data URL, no R2 round-trip)
           if (!this.env.BROWSER) {
-            console.warn('browser is not configured, storing raw audio without conversion')
-            podcastKey = geminiResult.tempKey
+            console.warn('browser is not configured, storing raw audio directly')
+            await this.env.PODCAST_R2.put(podcastKey, audio)
             return
           }
-          const mp3Blob = await concatAudioFiles([geminiResult.audioUrl], this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
+
+          const convertStartedAt = Date.now()
+          const arrayBuffer = await audio.arrayBuffer()
+          const bytes = new Uint8Array(arrayBuffer)
+          let binary = ''
+          for (let i = 0; i < bytes.length; i += 1) {
+            binary += String.fromCharCode(bytes[i])
+          }
+          const base64 = btoa(binary)
+          const dataUrl = `data:${audio.type || 'audio/wav'};base64,${base64}`
+          console.info('Gemini audio data URL ready', {
+            originalSize: audio.size,
+            dataUrlLength: dataUrl.length,
+          })
+
+          const mp3Blob = await concatAudioFiles([dataUrl], this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
           await this.env.PODCAST_R2.put(podcastKey, mp3Blob)
           console.info('Gemini audio converted to MP3', {
             key: podcastKey,
-            size: mp3Blob.size,
+            mp3Size: mp3Blob.size,
+            convertMs: Date.now() - convertStartedAt,
+            totalMs: Date.now() - startedAt,
           })
-          // Clean up temp WAV file
-          await this.env.PODCAST_R2.delete(geminiResult.tempKey)
         })
 
         console.info('podcast audio url', `${this.env.PODCAST_R2_BUCKET_URL}/${podcastKey}`)

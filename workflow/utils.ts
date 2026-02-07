@@ -228,29 +228,72 @@ ${article.substring(0, maxTokens * 5)}
 }
 
 export async function concatAudioFiles(audioFiles: string[], BROWSER: Fetcher, { workerUrl }: { workerUrl: string }) {
+  // Rewrite external URLs to same-origin worker proxy to avoid COEP blocking
+  const workerOrigin = new URL(workerUrl).origin
+  const sameOriginFiles = audioFiles.map((url) => {
+    if (url.startsWith('data:')) {
+      return url
+    }
+    try {
+      const u = new URL(url)
+      if (u.origin !== workerOrigin) {
+        return `${workerUrl}/static${u.pathname}${u.search}`
+      }
+    }
+    catch {}
+    return url
+  })
+
   const browser = await puppeteer.launch(BROWSER)
   const page = await browser.newPage()
   await page.goto(`${workerUrl}/audio`)
 
-  console.info('start concat audio files', audioFiles)
-  const fileUrl = await page.evaluate(async (audioFiles) => {
-    // 此处 JS 运行在浏览器中
-    // @ts-expect-error 浏览器内的对象
-    const blob = await concatAudioFilesOnBrowser(audioFiles)
+  console.info('start concat audio files', sameOriginFiles)
 
-    const result = new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onloadend = () => resolve(reader.result)
-      reader.onerror = reject
-      reader.readAsDataURL(blob)
+  try {
+    const fileUrl = await page.evaluate(async (audioFiles) => {
+      // 此处 JS 运行在浏览器中
+      try {
+        // @ts-expect-error 浏览器内的对象
+        const blob = await concatAudioFilesOnBrowser(audioFiles)
+
+        const result = new Promise((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onloadend = () => resolve(reader.result)
+          reader.onerror = reject
+          reader.readAsDataURL(blob)
+        })
+        return { data: await result, error: null }
+      }
+      catch (err) {
+        return {
+          data: null,
+          error: {
+            message: (err as Error)?.message || String(err),
+            name: (err as Error)?.name,
+            audioFiles,
+          },
+        }
+      }
+    }, sameOriginFiles) as { data: string | null, error: { message: string, name?: string, audioFiles: string[] } | null }
+
+    if (fileUrl.error) {
+      throw new Error(`Browser FFmpeg failed: ${fileUrl.error.message} (files: ${fileUrl.error.audioFiles.join(', ')})`)
+    }
+
+    console.info('concat audio files result', fileUrl.data!.substring(0, 100))
+
+    await browser.close()
+
+    const response = await fetch(fileUrl.data!)
+    return await response.blob()
+  }
+  catch (error) {
+    await browser.close().catch(() => {})
+    console.error('concatAudioFiles failed', {
+      files: sameOriginFiles,
+      error: (error as Error)?.message || String(error),
     })
-    return await result
-  }, audioFiles) as string
-
-  console.info('concat audio files result', fileUrl.substring(0, 100))
-
-  await browser.close()
-
-  const response = await fetch(fileUrl)
-  return await response.blob()
+    throw error
+  }
 }
