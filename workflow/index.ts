@@ -310,7 +310,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       maxTokens,
     })
 
-    if (testStep) {
+    if (testStep && testStep !== 'stories') {
       const fallbackInput = 'Summarize the following in one sentence: This is a short test input.'
       const fallbackInstructions = 'You are a concise assistant.'
       const testInput = this.env.WORKFLOW_TEST_INPUT || fallbackInput
@@ -521,6 +521,14 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
     console.info('top stories', isDev ? stories : JSON.stringify(stories))
     console.info(`total stories: ${stories.length}`)
+
+    if (testStep === 'stories') {
+      console.info('workflow test step "stories" completed, stopping before summarization', {
+        totalStories: stories.length,
+        stories: stories.map(s => ({ id: s.id, title: s.title, url: s.url, sourceName: s.sourceName })),
+      })
+      return
+    }
 
     const storyGroups = new Map<string, { count: number, label: string }>()
     for (const story of stories) {

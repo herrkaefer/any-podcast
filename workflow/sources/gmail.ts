@@ -127,6 +127,8 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000
 
 const archiveLinkKeywords = [
   'in your browser',
+  'in a browser',
+  'in browser',
 ]
 
 const MAX_NEWSLETTER_LINKS = 10
@@ -254,6 +256,28 @@ function findArchiveLink(html: string) {
 
   const { href } = unwrapTrackingUrl(match.rawHref)
   return href
+}
+
+function cleanNewsletterHtml(html: string): string {
+  const $ = cheerio.load(html)
+  $('style, script, svg, img, meta, link, head, noscript').remove()
+
+  // 把 <a> 转成 markdown 格式，保留链接与上下文的关联
+  $('a[href]').each((_, el) => {
+    const $el = $(el)
+    const href = $el.attr('href') || ''
+    const text = $el.text().trim()
+    if (href.startsWith('http') && text) {
+      $el.replaceWith(`[${text}](${href})`)
+    }
+  })
+
+  // 用换行分隔块级元素，保留文档结构
+  $('h1, h2, h3, h4, h5, h6, p, div, tr, li, br, hr').each((_, el) => {
+    $(el).prepend('\n')
+  })
+
+  return $('body').text().replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim()
 }
 
 async function resolveTrackingRedirect(href: string, cache: Map<string, string>) {
@@ -695,8 +719,12 @@ export async function processGmailMessage(params: {
     }
   }
   else {
-    console.info('newsletter missing archive link, use raw email html', { id: message.id, subject, receivedAt: receivedAtIso })
-    newsletterContent = html
+    console.info('newsletter missing archive link, cleaning html with turndown', { id: message.id, subject, receivedAt: receivedAtIso, rawHtmlLength: html.length })
+    newsletterContent = cleanNewsletterHtml(html)
+    console.info('newsletter html cleaned', { id: message.id, subject, receivedAt: receivedAtIso, cleanedLength: newsletterContent.length, reduction: `${Math.round((1 - newsletterContent.length / html.length) * 100)}%` })
+    if (env.NODE_ENV && env.NODE_ENV !== 'production') {
+      console.info('newsletter cleaned content preview', { id: message.id, content: newsletterContent.substring(0, 2000) })
+    }
   }
 
   if (!newsletterContent) {
