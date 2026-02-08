@@ -284,16 +284,14 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
     const isDev = runEnv !== 'production'
     const breakTime = isDev ? '2 seconds' : '5 seconds'
     const payloadNow = event.payload?.nowIso ? new Date(event.payload.nowIso) : null
-    const todayFallback = event.payload?.today || new Date().toISOString().split('T')[0]
-    const runDate = new Date(`${todayFallback}T23:59:59Z`)
     const now = payloadNow && !Number.isNaN(payloadNow.getTime())
       ? payloadNow
-      : Number.isNaN(runDate.getTime()) ? new Date() : runDate
+      : new Date()
     const windowMode = event.payload?.windowMode
     const windowHours = event.payload?.windowHours ?? 24
     const timeZone = 'America/Chicago'
     const { windowStart, windowEnd, windowDateKey } = buildTimeWindow(now, windowMode, windowHours, timeZone)
-    const today = event.payload?.today || windowDateKey || todayFallback
+    const today = event.payload?.today || windowDateKey
     const publishedAt = now.toISOString()
     const publishDateKey = getDateKeyInTimeZone(now, timeZone)
     const skipTTS = this.env.SKIP_TTS === 'true'
