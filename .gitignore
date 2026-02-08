@@ -49,4 +49,6 @@ next-env.d.ts
 # Source config overrides
 workflow/sources/config.local.ts
 
+worker/node_modules/
+
 tmp/
