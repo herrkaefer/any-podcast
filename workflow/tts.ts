@@ -148,7 +148,7 @@ export async function synthesizeGeminiTTS(text: string, env: Env): Promise<Gemin
     model,
     contents: [{ parts: [{ text }] }],
     config: {
-      temperature: 0.5,
+      temperature: 1.0,
       responseModalities: ['AUDIO'],
       speechConfig: {
         multiSpeakerVoiceConfig: {
