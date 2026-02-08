@@ -838,102 +838,69 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       console.info('skip TTS enabled, skip audio generation')
     }
     else if (useGeminiTTS) {
-      // Split dialogue into batches for Gemini TTS to avoid CPU time limit
-      // (full podcast audio in one response = 100MB+ JSON, exceeds Worker CPU limit)
-      const GEMINI_BATCH_SIZE = 8
-      const batches: string[][] = []
-      for (let i = 0; i < dialogLines.length; i += GEMINI_BATCH_SIZE) {
-        batches.push(dialogLines.slice(i, i + GEMINI_BATCH_SIZE))
-      }
+      const geminiPrompt = buildGeminiTtsPrompt(dialogLines)
 
-      console.info('Gemini TTS batched input', {
+      console.info('Gemini TTS input', {
         totalLines: dialogLines.length,
-        batchSize: GEMINI_BATCH_SIZE,
-        batches: batches.length,
+        promptChars: geminiPrompt.length,
       })
 
-      for (const [batchIndex, batch] of batches.entries()) {
-        try {
-          const prompt = buildGeminiTtsPrompt(batch)
-          await step.do(`create gemini audio batch ${batchIndex}: ${batch[0].substring(0, 20)}...`, { ...retryConfig, retries: { ...retryConfig.retries, limit: 2 }, timeout: '10 minutes' }, async () => {
-            const startedAt = Date.now()
-            const retryLimit = 1
-            for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
-              try {
-                console.info('Gemini TTS batch start', {
-                  batch: batchIndex,
-                  lines: batch.length,
-                  attempt: attempt + 1,
-                  promptChars: prompt.length,
-                })
-                const result = await synthesizeGeminiTTS(prompt, this.env)
-                if (!result.audio.size) {
-                  throw new Error('podcast audio size is 0')
-                }
-
-                const audioKey = `tmp/${podcastKey}-${batchIndex}.wav`
-                const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${audioKey}?t=${Date.now()}`
-                await this.env.PODCAST_R2.put(audioKey, result.audio)
-                await this.env.PODCAST_KV.put(`tmp:${event.instanceId}:audio:${batchIndex}`, audioUrl, { expirationTtl: 3600 })
-
-                console.info('Gemini TTS batch done', {
-                  batch: batchIndex,
-                  key: audioKey,
-                  size: result.audio.size,
-                  ms: Date.now() - startedAt,
-                })
-                return audioUrl
-              }
-              catch (error) {
-                console.warn('Gemini TTS batch attempt failed', {
-                  batch: batchIndex,
-                  attempt: attempt + 1,
-                  error: formatError(error),
-                })
-                if (attempt >= retryLimit) {
-                  throw error
-                }
-              }
+      await step.do('create gemini podcast audio', { ...retryConfig, retries: { ...retryConfig.retries, limit: 2 }, timeout: '10 minutes' }, async () => {
+        const startedAt = Date.now()
+        const retryLimit = 2
+        for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
+          try {
+            console.info('Gemini TTS attempt', {
+              attempt: attempt + 1,
+              promptChars: geminiPrompt.length,
+              lines: dialogLines.length,
+            })
+            const result = await synthesizeGeminiTTS(geminiPrompt, this.env)
+            if (!result.audio.size) {
+              throw new Error('podcast audio size is 0')
             }
-            throw new Error('Gemini TTS batch failed after retries')
-          })
-        }
-        catch (error) {
-          console.error('Gemini TTS batch failed', {
-            batch: batchIndex,
-            error: formatError(error),
-          })
-          throw error
-        }
 
-        await step.sleep('reset quota between gemini batches', breakTime)
-      }
+            const audioKey = `tmp/${podcastKey}.wav`
+            const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${audioKey}?t=${Date.now()}`
+            await this.env.PODCAST_R2.put(audioKey, result.audio)
+            await this.env.PODCAST_KV.put(`tmp:${event.instanceId}:audio:gemini`, audioUrl, { expirationTtl: 3600 })
 
-      // Collect all batch audio URLs and concatenate via browser FFmpeg
-      const geminiAudioFiles = await step.do('collect gemini audio files', retryConfig, async () => {
-        const audioUrls: string[] = []
-        for (let i = 0; i < batches.length; i += 1) {
-          const audioUrl = await this.env.PODCAST_KV.get(`tmp:${event.instanceId}:audio:${i}`)
-          if (audioUrl) {
-            audioUrls.push(audioUrl)
+            console.info('Gemini TTS done', {
+              key: audioKey,
+              size: result.audio.size,
+              ms: Date.now() - startedAt,
+            })
+            return audioUrl
+          }
+          catch (error) {
+            console.error('Gemini TTS attempt failed', {
+              attempt: attempt + 1,
+              error: formatError(error),
+            })
+            if (attempt >= retryLimit) {
+              throw error
+            }
           }
         }
-        return audioUrls
+        throw new Error('Gemini TTS failed after retries')
       })
 
-      await step.sleep('reset quota before concat', breakTime)
+      await step.sleep('reset quota before convert', breakTime)
 
-      await step.do('concat gemini audio to mp3', { ...retryConfig, retries: { ...retryConfig.retries, limit: 3 } }, async () => {
+      await step.do('convert gemini audio to mp3', { ...retryConfig, retries: { ...retryConfig.retries, limit: 3 } }, async () => {
         if (!this.env.BROWSER) {
-          console.warn('browser is not configured, skip audio concat')
+          console.warn('browser is not configured, skip audio convert')
           return
         }
-        const blob = await concatAudioFiles(geminiAudioFiles, this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
+        const audioUrl = await this.env.PODCAST_KV.get(`tmp:${event.instanceId}:audio:gemini`)
+        if (!audioUrl) {
+          throw new Error('Gemini audio URL not found in KV')
+        }
+        const blob = await concatAudioFiles([audioUrl], this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
         await this.env.PODCAST_R2.put(podcastKey, blob)
-        console.info('Gemini audio concatenated to MP3', {
+        console.info('Gemini audio converted to MP3', {
           key: podcastKey,
           size: blob.size,
-          batches: geminiAudioFiles.length,
         })
       })
 
@@ -1101,21 +1068,16 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       const deletePromises = []
 
       if (!skipTTS && useGeminiTTS) {
-        // Clean up Gemini TTS batch temporary data
-        const batchCount = Math.ceil(dialogLines.length / 8)
-        for (let i = 0; i < batchCount; i += 1) {
-          deletePromises.push(this.env.PODCAST_KV.delete(`tmp:${event.instanceId}:audio:${i}`))
-        }
-        for (let i = 0; i < batchCount; i += 1) {
-          deletePromises.push(
-            this.env.PODCAST_R2.delete(`tmp/${podcastKey}-${i}.wav`).catch((error) => {
-              console.error('delete gemini temp wav failed', {
-                key: `tmp/${podcastKey}-${i}.wav`,
-                error: formatError(error),
-              })
-            }),
-          )
-        }
+        // Clean up Gemini TTS temporary data
+        deletePromises.push(this.env.PODCAST_KV.delete(`tmp:${event.instanceId}:audio:gemini`))
+        deletePromises.push(
+          this.env.PODCAST_R2.delete(`tmp/${podcastKey}.wav`).catch((error) => {
+            console.error('delete gemini temp wav failed', {
+              key: `tmp/${podcastKey}.wav`,
+              error: formatError(error),
+            })
+          }),
+        )
       }
       else if (!skipTTS && !useGeminiTTS) {
         // Clean up non-Gemini audio temporary data
