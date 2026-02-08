@@ -26,8 +26,8 @@
   },
   "triggers": {
     "crons": [
-      // Fixed UTC schedule: 06:30 daily
-      "30 6 * * *"
+      // Fixed UTC schedule: 06:05 daily
+      "5 6 * * *"
     ]
   },
   "keep_vars": true,
