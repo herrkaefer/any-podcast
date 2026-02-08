@@ -8,7 +8,7 @@ import { createResponseText, getAiProvider, getMaxTokens, getPrimaryModel, getTh
 import { introPrompt, summarizeBlogPrompt, summarizePodcastPrompt, summarizeStoryPrompt } from './prompt'
 import { getStoryCandidatesFromSources, processGmailMessage } from './sources'
 import synthesize, { buildGeminiTtsPrompt, synthesizeGeminiTTS } from './tts'
-import { concatAudioFiles, getStoryContent, isSubrequestLimitError } from './utils'
+import { addIntroMusic, concatAudioFiles, getStoryContent, isSubrequestLimitError } from './utils'
 
 interface Params {
   today?: string
@@ -385,6 +385,98 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
             audioUrls.push(audioUrl)
           }
           return `Generated ${audioUrls.length} audio files`
+        }
+
+        if (testStep === 'tts-intro') {
+          const sampleInput = this.env.WORKFLOW_TTS_INPUT
+            || this.env.WORKFLOW_TEST_INPUT
+            || [
+              '女：Hello 大家好，欢迎收听测试播客。',
+              '男：大家好，我是老冯。今天我们用一小段对话来测试 TTS 和片头音乐效果。',
+              '女：如果你能听到片头音乐淡出后接上人声，说明流程是通的。',
+            ].join('\n')
+
+          if (skipTTS) {
+            return 'skip TTS enabled, skip audio generation'
+          }
+
+          if (!this.env.BROWSER) {
+            throw new Error('BROWSER binding is required for tts-intro test')
+          }
+
+          const ttsProvider = validateTtsConfig(this.env)
+          const testPrefix = `tmp/${event.instanceId}/tts-intro`
+
+          // Step 1: Generate TTS audio (no browser needed)
+          const ttsResult = await step.do('tts-intro: generate tts', { ...retryConfig, timeout: '10 minutes' }, async () => {
+            if (ttsProvider === 'gemini') {
+              const lines = sampleInput.split('\n').map(line => line.trim()).filter(Boolean)
+              const prompt = buildGeminiTtsPrompt(lines)
+              const { audio } = await synthesizeGeminiTTS(prompt, this.env)
+              if (!audio.size) {
+                throw new Error('podcast audio size is 0')
+              }
+              const wavKey = `${testPrefix}.wav`
+              await this.env.PODCAST_R2.put(wavKey, audio)
+              const wavUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${wavKey}?t=${Date.now()}`
+              console.info('tts-intro: gemini tts done', { wavKey, size: audio.size })
+              return { type: 'gemini' as const, urls: [wavUrl] }
+            }
+
+            const conversations = sampleInput.split('\n').map(line => line.trim()).filter(Boolean)
+            const audioUrls: string[] = []
+            for (const [index, conversation] of conversations.entries()) {
+              if (!(conversation.startsWith('男') || conversation.startsWith('女')) || !conversation.substring(2).trim()) {
+                continue
+              }
+              const audio = await synthesize(conversation.substring(2), conversation[0], this.env)
+              if (!audio.size) {
+                throw new Error('podcast audio size is 0')
+              }
+              const audioKey = `${testPrefix}-${index}.mp3`
+              await this.env.PODCAST_R2.put(audioKey, audio)
+              audioUrls.push(`${this.env.PODCAST_R2_BUCKET_URL}/${audioKey}?t=${Date.now()}`)
+            }
+            console.info('tts-intro: non-gemini tts done', { count: audioUrls.length })
+            return { type: 'other' as const, urls: audioUrls }
+          })
+
+          await step.sleep('reset quota before convert', breakTime)
+
+          // Step 2: Convert/concat to MP3 (needs browser)
+          const baseUrl = await step.do('tts-intro: convert to mp3', retryConfig, async () => {
+            const mp3Blob = await concatAudioFiles(ttsResult.urls, this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
+            const baseKey = `${testPrefix}.base.mp3`
+            await this.env.PODCAST_R2.put(baseKey, mp3Blob)
+            const url = `${this.env.PODCAST_R2_BUCKET_URL}/${baseKey}?t=${Date.now()}`
+            console.info('tts-intro: mp3 conversion done', { baseKey, size: mp3Blob.size })
+            return url
+          })
+
+          await step.sleep('reset quota before intro music', '30 seconds')
+
+          // Step 3: Add intro music (needs browser)
+          const finalUrl = await step.do('tts-intro: add intro music', retryConfig, async () => {
+            const finalBlob = await addIntroMusic(baseUrl, this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
+            const finalKey = `${testPrefix}.final.mp3`
+            await this.env.PODCAST_R2.put(finalKey, finalBlob)
+            const url = `${this.env.PODCAST_R2_BUCKET_URL}/${finalKey}?t=${Date.now()}`
+            console.info('tts-intro: intro music added', { finalKey, size: finalBlob.size })
+            return url
+          })
+
+          // Clean up temp files
+          await step.do('tts-intro: clean up', retryConfig, async () => {
+            await Promise.all([
+              this.env.PODCAST_R2.delete(`${testPrefix}.base.mp3`).catch(() => {}),
+              this.env.PODCAST_R2.delete(`${testPrefix}.wav`).catch(() => {}),
+              ...ttsResult.urls.map((_, i) => this.env.PODCAST_R2.delete(`${testPrefix}-${i}.mp3`).catch(() => {})),
+            ])
+            return 'cleaned up'
+          })
+
+          console.info('tts-intro test done', { finalUrl })
+          return
         }
 
         if (testStep === 'story') {
@@ -895,12 +987,47 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           throw new Error('Gemini audio URL not found in KV')
         }
         const blob = await concatAudioFiles([audioUrl], this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
-        await this.env.PODCAST_R2.put(podcastKey, blob)
+        const basePodcastKey = `tmp/${podcastKey}.base.mp3`
+        await this.env.PODCAST_R2.put(basePodcastKey, blob)
+        await this.env.PODCAST_KV.put(`tmp:${event.instanceId}:audio:base`, `${this.env.PODCAST_R2_BUCKET_URL}/${basePodcastKey}?t=${Date.now()}`, { expirationTtl: 3600 })
         console.info('Gemini audio converted to MP3', {
-          key: podcastKey,
+          key: basePodcastKey,
           size: blob.size,
         })
       })
+
+      await step.sleep('reset quota before intro music', '30 seconds')
+
+      try {
+        await step.do('add intro music (gemini)', retryConfig, async () => {
+          if (!this.env.BROWSER) {
+            throw new Error('browser is not configured')
+          }
+          const basePodcastUrl = await this.env.PODCAST_KV.get(`tmp:${event.instanceId}:audio:base`)
+          if (!basePodcastUrl) {
+            throw new Error('Base podcast URL not found in KV')
+          }
+          const blob = await addIntroMusic(basePodcastUrl, this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
+          await this.env.PODCAST_R2.put(podcastKey, blob)
+          console.info('intro music added (gemini)', {
+            key: podcastKey,
+            size: blob.size,
+          })
+        })
+      }
+      catch (error) {
+        console.warn('add intro music failed after retries, falling back to base podcast', {
+          error: formatError(error),
+        })
+        await step.do('fallback: copy base podcast (gemini)', retryConfig, async () => {
+          const baseKey = `tmp/${podcastKey}.base.mp3`
+          const baseObj = await this.env.PODCAST_R2.get(baseKey)
+          if (baseObj) {
+            await this.env.PODCAST_R2.put(podcastKey, baseObj.body)
+            console.info('fallback: base podcast copied', { key: podcastKey })
+          }
+        })
+      }
 
       console.info('podcast audio url', `${this.env.PODCAST_R2_BUCKET_URL}/${podcastKey}`)
     }
@@ -1015,21 +1142,55 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         }
 
         const blob = await concatAudioFiles(audioFiles, this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
+        const basePodcastKey = `tmp/${podcastKey}.base.mp3`
         try {
-          await this.env.PODCAST_R2.put(podcastKey, blob)
+          await this.env.PODCAST_R2.put(basePodcastKey, blob)
+          await this.env.PODCAST_KV.put(`tmp:${event.instanceId}:audio:base`, `${this.env.PODCAST_R2_BUCKET_URL}/${basePodcastKey}?t=${Date.now()}`, { expirationTtl: 3600 })
         }
         catch (error) {
           console.error('concat audio upload to R2 failed', {
-            key: podcastKey,
+            key: basePodcastKey,
             error: formatError(error),
           })
           throw error
         }
 
-        const podcastAudioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${podcastKey}?t=${Date.now()}`
-        console.info('podcast audio url', podcastAudioUrl)
-        return podcastAudioUrl
+        console.info('concat audio files done', { key: basePodcastKey, size: blob.size })
+        return `${this.env.PODCAST_R2_BUCKET_URL}/${basePodcastKey}?t=${Date.now()}`
       })
+
+      await step.sleep('reset quota before intro music', '30 seconds')
+
+      try {
+        await step.do('add intro music', retryConfig, async () => {
+          if (!this.env.BROWSER) {
+            throw new Error('browser is not configured')
+          }
+          const basePodcastUrl = await this.env.PODCAST_KV.get(`tmp:${event.instanceId}:audio:base`)
+          if (!basePodcastUrl) {
+            throw new Error('Base podcast URL not found in KV')
+          }
+          const blob = await addIntroMusic(basePodcastUrl, this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
+          await this.env.PODCAST_R2.put(podcastKey, blob)
+          console.info('intro music added', {
+            key: podcastKey,
+            size: blob.size,
+          })
+        })
+      }
+      catch (error) {
+        console.warn('add intro music failed after retries, falling back to base podcast', {
+          error: formatError(error),
+        })
+        await step.do('fallback: copy base podcast', retryConfig, async () => {
+          const baseKey = `tmp/${podcastKey}.base.mp3`
+          const baseObj = await this.env.PODCAST_R2.get(baseKey)
+          if (baseObj) {
+            await this.env.PODCAST_R2.put(podcastKey, baseObj.body)
+            console.info('fallback: base podcast copied', { key: podcastKey })
+          }
+        })
+      }
     }
 
     console.info('save podcast to r2 success')
@@ -1064,6 +1225,19 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
     await step.do('clean up temporary data', retryConfig, async () => {
       const deletePromises = []
+
+      // Clean up base podcast with intro music (both paths)
+      if (!skipTTS) {
+        deletePromises.push(this.env.PODCAST_KV.delete(`tmp:${event.instanceId}:audio:base`))
+        deletePromises.push(
+          this.env.PODCAST_R2.delete(`tmp/${podcastKey}.base.mp3`).catch((error) => {
+            console.error('delete base podcast temp failed', {
+              key: `tmp/${podcastKey}.base.mp3`,
+              error: formatError(error),
+            })
+          }),
+        )
+      }
 
       if (!skipTTS && useGeminiTTS) {
         // Clean up Gemini TTS temporary data

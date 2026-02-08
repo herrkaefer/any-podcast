@@ -314,3 +314,71 @@ export async function concatAudioFiles(audioFiles: string[], BROWSER: Fetcher, {
     throw error
   }
 }
+
+export async function addIntroMusic(podcastAudioUrl: string, BROWSER: Fetcher, { workerUrl }: { workerUrl: string }) {
+  // Rewrite external URL to same-origin worker proxy to avoid COEP blocking
+  const workerOrigin = new URL(workerUrl).origin
+  let sameOriginPodcastUrl = podcastAudioUrl
+  if (!podcastAudioUrl.startsWith('data:')) {
+    try {
+      const u = new URL(podcastAudioUrl)
+      if (u.origin !== workerOrigin) {
+        sameOriginPodcastUrl = `${workerUrl}/static${u.pathname}${u.search}`
+      }
+    }
+    catch {}
+  }
+
+  const themeUrl = `${workerUrl}/theme.mp3`
+
+  const browser = await puppeteer.launch(BROWSER)
+  const page = await browser.newPage()
+  await page.goto(`${workerUrl}/audio`)
+
+  console.info('start add intro music', { podcastUrl: sameOriginPodcastUrl, themeUrl })
+
+  try {
+    const fileUrl = await page.evaluate(async (podcastUrl, themeAudioUrl) => {
+      try {
+        // @ts-expect-error 浏览器内的对象
+        const blob = await addIntroMusicOnBrowser(podcastUrl, themeAudioUrl)
+
+        const result = new Promise((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onloadend = () => resolve(reader.result)
+          reader.onerror = reject
+          reader.readAsDataURL(blob)
+        })
+        return { data: await result, error: null }
+      }
+      catch (err) {
+        return {
+          data: null,
+          error: {
+            message: (err as Error)?.message || String(err),
+            name: (err as Error)?.name,
+          },
+        }
+      }
+    }, sameOriginPodcastUrl, themeUrl) as { data: string | null, error: { message: string, name?: string } | null }
+
+    if (fileUrl.error) {
+      throw new Error(`Browser FFmpeg addIntroMusic failed: ${fileUrl.error.message}`)
+    }
+
+    console.info('add intro music result', fileUrl.data!.substring(0, 100))
+
+    await browser.close()
+
+    const response = await fetch(fileUrl.data!)
+    return await response.blob()
+  }
+  catch (error) {
+    await browser.close().catch(() => {})
+    console.error('addIntroMusic failed', {
+      podcastUrl: sameOriginPodcastUrl,
+      error: (error as Error)?.message || String(error),
+    })
+    throw error
+  }
+}

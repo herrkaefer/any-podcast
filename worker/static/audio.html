@@ -59,17 +59,55 @@
         return blob
       }
 
-      // async function test() {
-      //   const audioFiles = Array.from(
-      //     { length: 169 },
-      //     (_, i) => `http://localhost:8787/static/tmp/2025/09/26/development/hacker-podcast-2025-09-26.mp3-${i}.mp3`,
-      //   )
-      //   const blob = await concatAudioFilesOnBrowser(audioFiles)
-      //   const url = URL.createObjectURL(blob)
-      //   console.log(url)
-      // }
+      const addIntroMusicOnBrowser = async (podcastAudioUrl, themeAudioUrl) => {
+        const script = document.createElement('script')
+        script.src = 'https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js'
+        document.head.appendChild(script)
+        await new Promise((resolve) => (script.onload = resolve))
 
-      // test()
+        const { createFFmpeg, fetchFile } = FFmpeg
+        const ffmpeg = createFFmpeg({ log: true })
+
+        await ffmpeg.load()
+
+        // Download and write both files to FFmpeg's virtual file system
+        const themeData = await fetchFile(themeAudioUrl)
+        ffmpeg.FS('writeFile', 'theme.mp3', themeData)
+
+        const podcastData = await fetchFile(podcastAudioUrl)
+        ffmpeg.FS('writeFile', 'podcast.mp3', podcastData)
+
+        // Execute FFmpeg command to mix intro music with podcast
+        // theme music fades out starting at 12s over 10s
+        // podcast audio is delayed by 12s
+        // amix combines both, taking the longest duration
+        await ffmpeg.run(
+          '-i',
+          'theme.mp3',
+          '-i',
+          'podcast.mp3',
+          '-filter_complex',
+          '[0]afade=t=out:st=19:d=3[intro];[1]adelay=19000|19000[podcast];[intro][podcast]amix=inputs=2:duration=longest',
+          '-c:a',
+          'libmp3lame',
+          '-q:a',
+          '5',
+          'output.mp3',
+        )
+
+        // Read the output file
+        const data = ffmpeg.FS('readFile', 'output.mp3')
+
+        // Create a blob
+        const blob = new Blob([data.buffer], { type: 'audio/mp3' })
+
+        // Clean up
+        ffmpeg.FS('unlink', 'theme.mp3')
+        ffmpeg.FS('unlink', 'podcast.mp3')
+        ffmpeg.FS('unlink', 'output.mp3')
+
+        return blob
+      }
     </script>
   </body>
 </html>
