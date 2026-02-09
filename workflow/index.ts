@@ -5,7 +5,7 @@ import { WorkflowEntrypoint } from 'cloudflare:workers'
 
 import { buildContentKey, buildPodcastKeyBase, podcastTitle } from '@/config'
 import { createResponseText, getAiProvider, getMaxTokens, getPrimaryModel, getThinkingModel } from './ai'
-import { introPrompt, summarizeBlogPrompt, summarizePodcastPrompt, summarizeStoryPrompt } from './prompt'
+import { introPrompt, summarizeBlogPrompt, summarizePodcastPrompt, summarizeStoryPrompt, titlePrompt } from './prompt'
 import { getStoryCandidatesFromSources, processGmailMessage } from './sources'
 import synthesize, { buildGeminiTtsPrompt, synthesizeGeminiTTS } from './tts'
 import { addIntroMusic, concatAudioFiles, getStoryContent, isSubrequestLimitError } from './utils'
@@ -885,6 +885,22 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       return text
     })
 
+    const episodeTitle = await step.do('generate episode title', retryConfig, async () => {
+      const { text } = await createResponseText({
+        env: this.env,
+        model: primaryModel,
+        instructions: titlePrompt,
+        input: podcastContent,
+      })
+
+      console.info('title generation output:\n', text)
+
+      const match = text.match(/推荐标题[：:]\s*(.+)/)
+      return match?.[1]?.trim() || `${podcastTitle} ${publishDateKey}`
+    })
+
+    console.info('episode title:', episodeTitle)
+
     await step.sleep('reset quota before TTS', breakTime)
 
     const contentKey = buildContentKey(runEnv, publishDateKey)
@@ -1201,7 +1217,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         await this.env.PODCAST_KV.put(contentKey, JSON.stringify({
           date: publishDateKey,
           publishedAt,
-          title: `${podcastTitle} ${publishDateKey}`,
+          title: episodeTitle,
           stories: keptStories,
           podcastContent,
           blogContent,

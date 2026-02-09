@@ -1,7 +1,5 @@
 import type { Episode } from '@/types/podcast'
 
-import { podcastTitle } from '@/config'
-
 function buildAudioUrl(staticHost: string, audioPath: string, updatedAt?: number) {
   const normalizedHost = staticHost?.replace(/\/$/, '')
   if (/^https?:\/\//.test(audioPath)) {
@@ -54,17 +52,8 @@ export function buildEpisodeFromArticle(
 ): Episode {
   const publishedIso = article.publishedAt
     || (typeof article.updatedAt === 'number' ? new Date(article.updatedAt).toISOString() : article.date)
-  const publishedDateKey = (() => {
-    const publishedDate = new Date(publishedIso)
-    if (Number.isNaN(publishedDate.getTime())) {
-      return article.date
-    }
-    return publishedDate.toISOString().split('T')[0]
-  })()
 
-  const normalizedTitle = article.title?.startsWith(`${podcastTitle} `)
-    ? `${podcastTitle} ${publishedDateKey}`
-    : article.title
+  const normalizedTitle = article.title
 
   const description
     = article.introContent
