@@ -244,7 +244,11 @@ ${article.substring(0, maxTokens * 5)}
   ].filter(Boolean).join('\n\n---\n\n')
 }
 
-export async function concatAudioFiles(audioFiles: string[], BROWSER: Fetcher, { workerUrl }: { workerUrl: string }) {
+export async function concatAudioFiles(
+  audioFiles: string[],
+  BROWSER: Fetcher,
+  { workerUrl, audioQuality }: { workerUrl: string, audioQuality?: number },
+) {
   // Rewrite external URLs to same-origin worker proxy to avoid COEP blocking
   const workerOrigin = new URL(workerUrl).origin
   const sameOriginFiles = audioFiles.map((url) => {
@@ -268,11 +272,11 @@ export async function concatAudioFiles(audioFiles: string[], BROWSER: Fetcher, {
   console.info('start concat audio files', sameOriginFiles)
 
   try {
-    const fileUrl = await page.evaluate(async (audioFiles) => {
+    const fileUrl = await page.evaluate(async (audioFiles, quality) => {
       // 此处 JS 运行在浏览器中
       try {
         // @ts-expect-error 浏览器内的对象
-        const blob = await concatAudioFilesOnBrowser(audioFiles)
+        const blob = await concatAudioFilesOnBrowser(audioFiles, { audioQuality: quality })
 
         const result = new Promise((resolve, reject) => {
           const reader = new FileReader()
@@ -292,7 +296,7 @@ export async function concatAudioFiles(audioFiles: string[], BROWSER: Fetcher, {
           },
         }
       }
-    }, sameOriginFiles) as { data: string | null, error: { message: string, name?: string, audioFiles: string[] } | null }
+    }, sameOriginFiles, audioQuality) as { data: string | null, error: { message: string, name?: string, audioFiles: string[] } | null }
 
     if (fileUrl.error) {
       throw new Error(`Browser FFmpeg failed: ${fileUrl.error.message} (files: ${fileUrl.error.audioFiles.join(', ')})`)
@@ -315,7 +319,26 @@ export async function concatAudioFiles(audioFiles: string[], BROWSER: Fetcher, {
   }
 }
 
-export async function addIntroMusic(podcastAudioUrl: string, BROWSER: Fetcher, { workerUrl }: { workerUrl: string }) {
+export async function addIntroMusic(
+  podcastAudioUrl: string,
+  BROWSER: Fetcher,
+  options: {
+    workerUrl: string
+    themeUrl?: string
+    fadeOutStart?: number
+    fadeOutDuration?: number
+    podcastDelayMs?: number
+    audioQuality?: number
+  },
+) {
+  const {
+    workerUrl,
+    themeUrl: customThemeUrl,
+    fadeOutStart,
+    fadeOutDuration,
+    podcastDelayMs,
+    audioQuality,
+  } = options
   // Rewrite external URL to same-origin worker proxy to avoid COEP blocking
   const workerOrigin = new URL(workerUrl).origin
   let sameOriginPodcastUrl = podcastAudioUrl
@@ -329,7 +352,7 @@ export async function addIntroMusic(podcastAudioUrl: string, BROWSER: Fetcher, {
     catch {}
   }
 
-  const themeUrl = `${workerUrl}/theme.mp3`
+  const themeUrl = customThemeUrl || `${workerUrl}/theme.mp3`
 
   const browser = await puppeteer.launch(BROWSER)
   const page = await browser.newPage()
@@ -338,10 +361,14 @@ export async function addIntroMusic(podcastAudioUrl: string, BROWSER: Fetcher, {
   console.info('start add intro music', { podcastUrl: sameOriginPodcastUrl, themeUrl })
 
   try {
-    const fileUrl = await page.evaluate(async (podcastUrl, themeAudioUrl) => {
+    const fileUrl = await page.evaluate(async (
+      podcastUrl,
+      themeAudioUrl,
+      mixOptions,
+    ) => {
       try {
         // @ts-expect-error 浏览器内的对象
-        const blob = await addIntroMusicOnBrowser(podcastUrl, themeAudioUrl)
+        const blob = await addIntroMusicOnBrowser(podcastUrl, themeAudioUrl, mixOptions)
 
         const result = new Promise((resolve, reject) => {
           const reader = new FileReader()
@@ -360,7 +387,12 @@ export async function addIntroMusic(podcastAudioUrl: string, BROWSER: Fetcher, {
           },
         }
       }
-    }, sameOriginPodcastUrl, themeUrl) as { data: string | null, error: { message: string, name?: string } | null }
+    }, sameOriginPodcastUrl, themeUrl, {
+      fadeOutStart,
+      fadeOutDuration,
+      podcastDelayMs,
+      audioQuality,
+    }) as { data: string | null, error: { message: string, name?: string } | null }
 
     if (fileUrl.error) {
       throw new Error(`Browser FFmpeg addIntroMusic failed: ${fileUrl.error.message}`)

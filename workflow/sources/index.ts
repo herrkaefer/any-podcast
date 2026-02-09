@@ -22,9 +22,28 @@ export interface StoryCandidates {
   gmailMessages: GmailMessageRef[]
 }
 
-export async function getStoryCandidatesFromSources(options?: { now?: Date, env?: CloudflareEnv, window?: { start: Date, end: Date, timeZone: string } }) {
+interface SourceRuntimeConfig {
+  lookbackDays: number
+  sources: SourceConfig[]
+}
+
+interface SourceRuntimeOptions {
+  timeZone?: string
+  newsletterHosts?: string[]
+  archiveLinkKeywords?: string[]
+  extractNewsletterLinksPrompt?: string
+}
+
+export async function getStoryCandidatesFromSources(options?: {
+  now?: Date
+  env?: CloudflareEnv
+  window?: { start: Date, end: Date, timeZone: string }
+  sourceConfig?: SourceRuntimeConfig
+  sourceOptions?: SourceRuntimeOptions
+}) {
   const now = options?.now ?? new Date()
-  const { sources, lookbackDays } = await loadSourceConfig()
+  const loaded = options?.sourceConfig ?? await loadSourceConfig()
+  const { sources, lookbackDays } = loaded
   const enabledSources = sources.filter(isEnabled)
 
   const groups = await Promise.all(
@@ -33,7 +52,11 @@ export async function getStoryCandidatesFromSources(options?: { now?: Date, env?
       switch (source.type) {
         case 'rss': {
           return {
-            stories: await fetchRssItems(source, now, days, options?.window, options?.env),
+            stories: await fetchRssItems(source, now, days, options?.window, options?.env, {
+              timeZone: options?.sourceOptions?.timeZone,
+              newsletterHosts: options?.sourceOptions?.newsletterHosts,
+              extractNewsletterLinksPrompt: options?.sourceOptions?.extractNewsletterLinksPrompt,
+            }),
             gmailMessages: [] as GmailMessageRef[],
           }
         }
@@ -44,7 +67,9 @@ export async function getStoryCandidatesFromSources(options?: { now?: Date, env?
           }
           return {
             stories: [] as Story[],
-            gmailMessages: await listGmailMessageRefs(source, now, days, options.env, options?.window),
+            gmailMessages: await listGmailMessageRefs(source, now, days, options.env, options?.window, {
+              timeZone: options?.sourceOptions?.timeZone,
+            }),
           }
         }
         case 'url':

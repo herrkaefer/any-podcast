@@ -3,10 +3,15 @@ import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { notFound } from 'next/navigation'
 import { EpisodeDetail } from '@/components/episodes/detail'
 import { PodcastScaffold } from '@/components/podcast/scaffold'
-import { buildContentKey, podcast, site } from '@/config'
+import { buildContentKey, podcast } from '@/config'
 import { buildEpisodeFromArticle } from '@/lib/episodes'
+import { getActiveRuntimeConfig } from '@/lib/runtime-config'
 
 export const revalidate = 7200
+
+interface EpisodeEnv extends CloudflareEnv {
+  PODCAST_KV: KVNamespace
+}
 
 export async function generateMetadata({
   params,
@@ -14,7 +19,10 @@ export async function generateMetadata({
   params: Promise<{ date: string }>
 }): Promise<Metadata> {
   const { env } = await getCloudflareContext({ async: true })
+  const episodeEnv = env as EpisodeEnv
   const runEnv = env.NODE_ENV || 'production'
+  const runtimeConfig = await getActiveRuntimeConfig(episodeEnv)
+  const runtimeSite = runtimeConfig.config.site
   const { date } = await params
   const post = (await env.PODCAST_KV.get(buildContentKey(runEnv, date), 'json')) as unknown as Article | null
 
@@ -23,8 +31,8 @@ export async function generateMetadata({
   }
 
   const episode = buildEpisodeFromArticle(post, env.NEXT_STATIC_HOST)
-  const title = episode.title || site.seo.defaultTitle
-  const description = episode.description || site.seo.defaultDescription
+  const title = episode.title || runtimeSite.title
+  const description = episode.description || runtimeSite.description
   const url = `${podcast.base.link}/episode/${episode.id}`
 
   return {
@@ -38,7 +46,7 @@ export async function generateMetadata({
       publishedTime: new Date(episode.published).toISOString(),
       images: [
         {
-          url: site.seo.defaultImage,
+          url: runtimeSite.seo.defaultImage,
           alt: episode.title,
         },
       ],
@@ -47,7 +55,7 @@ export async function generateMetadata({
       card: 'summary_large_image',
       title,
       description,
-      images: [site.seo.defaultImage],
+      images: [runtimeSite.seo.defaultImage],
     },
   }
 }
@@ -60,7 +68,10 @@ export default async function PostPage({
   searchParams: Promise<{ page?: string }>
 }) {
   const { env } = await getCloudflareContext({ async: true })
+  const episodeEnv = env as EpisodeEnv
   const runEnv = env.NODE_ENV || 'production'
+  const runtimeConfig = await getActiveRuntimeConfig(episodeEnv)
+  const runtimeSite = runtimeConfig.config.site
   const { date } = await params
   const pageQuery = await searchParams
   const fallbackPage = Number.parseInt(pageQuery.page ?? '1', 10)
@@ -73,10 +84,10 @@ export default async function PostPage({
 
   const episode = buildEpisodeFromArticle(post, env.NEXT_STATIC_HOST)
   const podcastInfo = {
-    title: podcast.base.title,
-    description: podcast.base.description,
+    title: runtimeSite.title,
+    description: runtimeSite.description,
     link: podcast.base.link,
-    cover: podcast.base.cover,
+    cover: runtimeSite.coverLogoUrl,
   }
 
   const safePage = Number.isNaN(fallbackPage) ? 1 : Math.max(1, fallbackPage)

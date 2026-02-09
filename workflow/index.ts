@@ -1,12 +1,15 @@
 import type { WorkflowEvent, WorkflowStep, WorkflowStepConfig } from 'cloudflare:workers'
 import type { AiEnv } from './ai'
 
-import { WorkflowEntrypoint } from 'cloudflare:workers'
+import type { RuntimeConfigBundle } from '@/types/runtime-config'
 
-import { buildContentKey, buildPodcastKeyBase, podcastTitle } from '@/config'
+import { WorkflowEntrypoint } from 'cloudflare:workers'
+import { buildContentKey, buildPodcastKeyBase } from '@/config'
+import { getActiveRuntimeConfig } from '@/lib/runtime-config'
+import { getTemplateVariables, renderPromptTemplates } from '@/lib/template'
 import { createResponseText, getAiProvider, getMaxTokens, getPrimaryModel, getThinkingModel } from './ai'
-import { introPrompt, summarizeBlogPrompt, summarizePodcastPrompt, summarizeStoryPrompt, titlePrompt } from './prompt'
 import { getStoryCandidatesFromSources, processGmailMessage } from './sources'
+import { getDateKeyInTimeZone, zonedTimeToUtc } from './timezone'
 import synthesize, { buildGeminiTtsPrompt, synthesizeGeminiTTS } from './tts'
 import { addIntroMusic, concatAudioFiles, getStoryContent, isSubrequestLimitError } from './utils'
 
@@ -44,6 +47,31 @@ interface StorySummaryResult {
   reason: string
 }
 
+interface RuntimePromptSet {
+  summarizeStory: string
+  summarizePodcast: string
+  summarizeBlog: string
+  intro: string
+  title: string
+  extractNewsletterLinks: string
+}
+
+interface ParsedConversationLine {
+  speaker: string
+  text: string
+  raw: string
+}
+
+interface RuntimeTtsSettings {
+  provider: 'edge' | 'minimax' | 'murf' | 'gemini'
+  language: string
+  model?: string
+  speed?: string | number
+  geminiPrompt?: string
+  voicesBySpeaker: Record<string, string>
+  geminiSpeakers: { speaker: string, voice?: string }[]
+}
+
 const storySummarySchema = {
   type: 'OBJECT',
   properties: {
@@ -76,8 +104,8 @@ function formatError(error: unknown) {
   }
 }
 
-function validateTtsConfig(env: Env) {
-  const provider = (env.TTS_PROVIDER || '').trim().toLowerCase()
+function validateTtsConfig(env: Env, providerInput?: string) {
+  const provider = (providerInput || env.TTS_PROVIDER || '').trim().toLowerCase()
   if (!provider) {
     throw new Error('TTS_PROVIDER is required when SKIP_TTS is false (current: empty)')
   }
@@ -102,6 +130,81 @@ function validateTtsConfig(env: Env) {
   }
 
   return provider
+}
+
+function getSpeakerMarkers(config: RuntimeConfigBundle) {
+  const markers = config.hosts
+    .map(host => host.speakerMarker.trim())
+    .filter(Boolean)
+  if (markers.length === 0) {
+    throw new Error('No speaker markers configured in hosts. Please configure hosts with speakerMarker in admin.')
+  }
+  return markers
+}
+
+function normalizeDialogText(value: string) {
+  return value.replace(/^[:：]\s*/, '').trim()
+}
+
+function parseConversationLines(lines: string[], markers: string[]): ParsedConversationLine[] {
+  const normalizedMarkers = markers
+    .map(marker => marker.trim())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+
+  return lines
+    .map((line) => {
+      const trimmed = line.trim()
+      if (!trimmed) {
+        return null
+      }
+
+      const matched = normalizedMarkers.find(marker => trimmed.startsWith(marker))
+      if (!matched) {
+        return null
+      }
+
+      const content = normalizeDialogText(trimmed.slice(matched.length))
+      if (!content) {
+        return null
+      }
+
+      return {
+        speaker: matched,
+        text: content,
+        raw: trimmed,
+      } satisfies ParsedConversationLine
+    })
+    .filter((item): item is ParsedConversationLine => Boolean(item))
+}
+
+function buildRuntimeTtsSettings(config: RuntimeConfigBundle): RuntimeTtsSettings {
+  const provider = config.tts.provider || 'edge'
+  const voicesBySpeaker: Record<string, string> = {}
+
+  for (const host of config.hosts) {
+    const voice = config.tts.voices[host.id]
+    if (voice) {
+      voicesBySpeaker[host.speakerMarker] = voice
+    }
+  }
+
+  const geminiSpeakers = config.hosts
+    .map(host => ({
+      speaker: host.speakerMarker,
+      voice: config.tts.voices[host.id],
+    }))
+    .filter(item => item.speaker)
+
+  return {
+    provider,
+    language: config.tts.language || 'zh-CN',
+    model: config.tts.model || undefined,
+    speed: config.tts.speed,
+    geminiPrompt: config.tts.geminiPrompt || undefined,
+    voicesBySpeaker,
+    geminiSpeakers,
+  }
 }
 
 function stripCodeFences(text: string) {
@@ -220,53 +323,6 @@ function buildTimeWindow(
   }
 }
 
-function getDateKeyInTimeZone(date: Date, timeZone: string) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date)
-
-  const year = parts.find(part => part.type === 'year')?.value || '0000'
-  const month = parts.find(part => part.type === 'month')?.value || '01'
-  const day = parts.find(part => part.type === 'day')?.value || '01'
-
-  return `${year}-${month}-${day}`
-}
-
-function getTimeZoneOffsetMs(date: Date, timeZone: string) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    hour12: false,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).formatToParts(date)
-
-  const get = (type: string) => parts.find(part => part.type === type)?.value || '00'
-  const utcTime = Date.UTC(
-    Number(get('year')),
-    Number(get('month')) - 1,
-    Number(get('day')),
-    Number(get('hour')),
-    Number(get('minute')),
-    Number(get('second')),
-  )
-
-  return utcTime - date.getTime()
-}
-
-function zonedTimeToUtc(dateKey: string, timeZone: string, hour: number, minute: number, second: number) {
-  const [year, month, day] = dateKey.split('-').map(Number)
-  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, second)
-  const offset = getTimeZoneOffsetMs(new Date(utcGuess), timeZone)
-  return new Date(utcGuess - offset)
-}
-
 const retryConfig: WorkflowStepConfig = {
   retries: {
     limit: 5,
@@ -276,12 +332,34 @@ const retryConfig: WorkflowStepConfig = {
   timeout: '3 minutes',
 }
 
+function withRetryLimit(limit: number) {
+  const delay = retryConfig.retries?.delay || '10 seconds'
+  const backoff = retryConfig.retries?.backoff || 'exponential'
+  return {
+    limit,
+    delay,
+    backoff,
+  }
+}
+
 export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
   async run(event: WorkflowEvent<Params>, step: WorkflowStep) {
     console.info('trigged event: PodcastWorkflow', event)
 
     const runEnv = this.env.NODE_ENV || 'production'
     const isDev = runEnv !== 'production'
+    const runtimeState = await getActiveRuntimeConfig(this.env)
+    const runtimeConfig = runtimeState.config
+    const runtimePrompts: RuntimePromptSet = renderPromptTemplates(
+      runtimeConfig.prompts,
+      getTemplateVariables(runtimeConfig),
+    )
+    const speakerMarkers = getSpeakerMarkers(runtimeConfig)
+    const runtimeTtsSettings = buildRuntimeTtsSettings(runtimeConfig)
+    const introThemeUrl = runtimeConfig.tts.introMusic.url
+      ? new URL(runtimeConfig.tts.introMusic.url, this.env.PODCAST_WORKER_URL).toString()
+      : undefined
+    const ffmpegAudioQuality = runtimeConfig.tts.audioQuality
     const breakTime = isDev ? '2 seconds' : '5 seconds'
     const payloadNow = event.payload?.nowIso ? new Date(event.payload.nowIso) : null
     const now = payloadNow && !Number.isNaN(payloadNow.getTime())
@@ -289,7 +367,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       : new Date()
     const windowMode = event.payload?.windowMode
     const windowHours = event.payload?.windowHours ?? 24
-    const timeZone = 'America/Chicago'
+    const timeZone = runtimeConfig.locale.timezone || 'America/Chicago'
     const { windowStart, windowEnd, windowDateKey } = buildTimeWindow(now, windowMode, windowHours, timeZone)
     const today = event.payload?.today || windowDateKey
     const publishedAt = now.toISOString()
@@ -306,6 +384,11 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       primaryModel,
       thinkingModel,
       maxTokens,
+      runtimeConfigVersion: runtimeState.version,
+      runtimeConfigSource: runtimeState.source,
+      runtimeTimeZone: timeZone,
+      ttsProvider: runtimeTtsSettings.provider,
+      speakerMarkers,
     })
 
     if (testStep && testStep !== 'stories') {
@@ -313,6 +396,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       const fallbackInstructions = 'You are a concise assistant.'
       const testInput = this.env.WORKFLOW_TEST_INPUT || fallbackInput
       const testInstructions = this.env.WORKFLOW_TEST_INSTRUCTIONS || fallbackInstructions
+      const primarySpeaker = speakerMarkers[0] || '男'
+      const secondarySpeaker = speakerMarkers[1] || speakerMarkers[0] || '女'
 
       const text = await step.do(`workflow test step: ${testStep}`, retryConfig, async () => {
         if (testStep === 'openai' || testStep === 'responses') {
@@ -329,9 +414,9 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           const sampleInput = this.env.WORKFLOW_TTS_INPUT
             || this.env.WORKFLOW_TEST_INPUT
             || [
-              '女：Hello 大家好，欢迎收听测试播客。',
-              '男：大家好，我是老冯。今天我们用一小段对话来测试 TTS。',
-              '女：如果你能听到自然的男女声切换，说明流程是通的。',
+              `${primarySpeaker}：Hello 大家好，欢迎收听测试播客。`,
+              `${secondarySpeaker}：大家好，我是老冯。今天我们用一小段对话来测试 TTS。`,
+              `${primarySpeaker}：如果你能听到自然的双人声切换，说明流程是通的。`,
             ].join('\n')
 
           console.info('TTS test input', {
@@ -343,15 +428,21 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
             return 'skip TTS enabled, skip audio generation'
           }
 
-          const ttsProvider = validateTtsConfig(this.env)
+          const ttsProvider = validateTtsConfig(this.env, runtimeTtsSettings.provider)
 
           if (ttsProvider === 'gemini') {
             const lines = sampleInput
               .split('\n')
               .map(line => line.trim())
               .filter(Boolean)
-            const prompt = buildGeminiTtsPrompt(lines)
-            const { audio, extension } = await synthesizeGeminiTTS(prompt, this.env)
+            const prompt = buildGeminiTtsPrompt(lines, {
+              geminiPrompt: runtimeTtsSettings.geminiPrompt,
+              geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
+            })
+            const { audio, extension } = await synthesizeGeminiTTS(prompt, this.env, {
+              model: runtimeTtsSettings.model,
+              geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
+            })
             if (!audio.size) {
               throw new Error('podcast audio size is 0')
             }
@@ -366,16 +457,16 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
             .split('\n')
             .map(line => line.trim())
             .filter(Boolean)
+          const parsedConversations = parseConversationLines(conversations, speakerMarkers)
           const audioUrls: string[] = []
-          for (const [index, conversation] of conversations.entries()) {
-            if (
-              !(conversation.startsWith('男') || conversation.startsWith('女'))
-              || !conversation.substring(2).trim()
-            ) {
-              console.warn('conversation is not valid', conversation)
-              continue
-            }
-            const audio = await synthesize(conversation.substring(2), conversation[0], this.env)
+          for (const [index, conversation] of parsedConversations.entries()) {
+            const audio = await synthesize(conversation.text, conversation.speaker, this.env, {
+              provider: runtimeTtsSettings.provider,
+              language: runtimeTtsSettings.language,
+              model: runtimeTtsSettings.model,
+              speed: runtimeTtsSettings.speed,
+              voicesBySpeaker: runtimeTtsSettings.voicesBySpeaker,
+            })
             if (!audio.size) {
               throw new Error('podcast audio size is 0')
             }
@@ -391,9 +482,9 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           const sampleInput = this.env.WORKFLOW_TTS_INPUT
             || this.env.WORKFLOW_TEST_INPUT
             || [
-              '女：Hello 大家好，欢迎收听测试播客。',
-              '男：大家好，我是老冯。今天我们用一小段对话来测试 TTS 和片头音乐效果。',
-              '女：如果你能听到片头音乐淡出后接上人声，说明流程是通的。',
+              `${primarySpeaker}：Hello 大家好，欢迎收听测试播客。`,
+              `${secondarySpeaker}：大家好，我是老冯。今天我们用一小段对话来测试 TTS 和片头音乐效果。`,
+              `${primarySpeaker}：如果你能听到片头音乐淡出后接上人声，说明流程是通的。`,
             ].join('\n')
 
           if (skipTTS) {
@@ -404,15 +495,21 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
             throw new Error('BROWSER binding is required for tts-intro test')
           }
 
-          const ttsProvider = validateTtsConfig(this.env)
+          const ttsProvider = validateTtsConfig(this.env, runtimeTtsSettings.provider)
           const testPrefix = `tmp/${event.instanceId}/tts-intro`
 
           // Step 1: Generate TTS audio (no browser needed)
           const ttsResult = await step.do('tts-intro: generate tts', { ...retryConfig, timeout: '10 minutes' }, async () => {
             if (ttsProvider === 'gemini') {
               const lines = sampleInput.split('\n').map(line => line.trim()).filter(Boolean)
-              const prompt = buildGeminiTtsPrompt(lines)
-              const { audio } = await synthesizeGeminiTTS(prompt, this.env)
+              const prompt = buildGeminiTtsPrompt(lines, {
+                geminiPrompt: runtimeTtsSettings.geminiPrompt,
+                geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
+              })
+              const { audio } = await synthesizeGeminiTTS(prompt, this.env, {
+                model: runtimeTtsSettings.model,
+                geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
+              })
               if (!audio.size) {
                 throw new Error('podcast audio size is 0')
               }
@@ -424,12 +521,16 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
             }
 
             const conversations = sampleInput.split('\n').map(line => line.trim()).filter(Boolean)
+            const parsedConversations = parseConversationLines(conversations, speakerMarkers)
             const audioUrls: string[] = []
-            for (const [index, conversation] of conversations.entries()) {
-              if (!(conversation.startsWith('男') || conversation.startsWith('女')) || !conversation.substring(2).trim()) {
-                continue
-              }
-              const audio = await synthesize(conversation.substring(2), conversation[0], this.env)
+            for (const [index, conversation] of parsedConversations.entries()) {
+              const audio = await synthesize(conversation.text, conversation.speaker, this.env, {
+                provider: runtimeTtsSettings.provider,
+                language: runtimeTtsSettings.language,
+                model: runtimeTtsSettings.model,
+                speed: runtimeTtsSettings.speed,
+                voicesBySpeaker: runtimeTtsSettings.voicesBySpeaker,
+              })
               if (!audio.size) {
                 throw new Error('podcast audio size is 0')
               }
@@ -445,7 +546,10 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
           // Step 2: Convert/concat to MP3 (needs browser)
           const baseUrl = await step.do('tts-intro: convert to mp3', retryConfig, async () => {
-            const mp3Blob = await concatAudioFiles(ttsResult.urls, this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
+            const mp3Blob = await concatAudioFiles(ttsResult.urls, this.env.BROWSER, {
+              workerUrl: this.env.PODCAST_WORKER_URL,
+              audioQuality: ffmpegAudioQuality,
+            })
             const baseKey = `${testPrefix}.base.mp3`
             await this.env.PODCAST_R2.put(baseKey, mp3Blob)
             const url = `${this.env.PODCAST_R2_BUCKET_URL}/${baseKey}?t=${Date.now()}`
@@ -457,7 +561,14 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
           // Step 3: Add intro music (needs browser)
           const finalUrl = await step.do('tts-intro: add intro music', retryConfig, async () => {
-            const finalBlob = await addIntroMusic(baseUrl, this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
+            const finalBlob = await addIntroMusic(baseUrl, this.env.BROWSER, {
+              workerUrl: this.env.PODCAST_WORKER_URL,
+              themeUrl: introThemeUrl,
+              fadeOutStart: runtimeConfig.tts.introMusic.fadeOutStart,
+              fadeOutDuration: runtimeConfig.tts.introMusic.fadeOutDuration,
+              podcastDelayMs: runtimeConfig.tts.introMusic.podcastDelay,
+              audioQuality: ffmpegAudioQuality,
+            })
             const finalKey = `${testPrefix}.final.mp3`
             await this.env.PODCAST_R2.put(finalKey, finalBlob)
             const url = `${this.env.PODCAST_R2_BUCKET_URL}/${finalKey}?t=${Date.now()}`
@@ -476,11 +587,25 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           })
 
           console.info('tts-intro test done', { finalUrl })
-          return
+          return finalUrl
         }
 
         if (testStep === 'story') {
-          const candidates = await getStoryCandidatesFromSources({ now, env: this.env, window: { start: windowStart, end: windowEnd, timeZone } })
+          const candidates = await getStoryCandidatesFromSources({
+            now,
+            env: this.env,
+            window: { start: windowStart, end: windowEnd, timeZone },
+            sourceConfig: {
+              lookbackDays: runtimeConfig.sources.lookbackDays,
+              sources: runtimeConfig.sources.items,
+            },
+            sourceOptions: {
+              timeZone,
+              newsletterHosts: runtimeConfig.sources.newsletterHosts,
+              archiveLinkKeywords: runtimeConfig.sources.archiveLinkKeywords,
+              extractNewsletterLinksPrompt: runtimePrompts.extractNewsletterLinks,
+            },
+          })
           let story = candidates.stories[0]
           if (!story && candidates.gmailMessages.length > 0) {
             const messageRef = candidates.gmailMessages[0]
@@ -491,6 +616,9 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
               lookbackDays: messageRef.lookbackDays,
               env: this.env,
               window: { start: windowStart, end: windowEnd, timeZone },
+              timeZone,
+              archiveLinkKeywords: runtimeConfig.sources.archiveLinkKeywords,
+              extractNewsletterLinksPrompt: runtimePrompts.extractNewsletterLinks,
             })
             story = messageStories[0]
           }
@@ -501,7 +629,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           const { result } = await summarizeStoryWithRelevance({
             env: this.env,
             model: primaryModel,
-            instructions: summarizeStoryPrompt,
+            instructions: runtimePrompts.summarizeStory,
             input: storyResponse,
             maxOutputTokens: maxTokens,
           })
@@ -519,7 +647,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           return (await createResponseText({
             env: this.env,
             model: thinkingModel,
-            instructions: summarizePodcastPrompt,
+            instructions: runtimePrompts.summarizePodcast,
             input: this.env.WORKFLOW_TEST_INPUT || sampleStories,
             maxOutputTokens: maxTokens,
           })).text
@@ -534,18 +662,19 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           return (await createResponseText({
             env: this.env,
             model: thinkingModel,
-            instructions: summarizeBlogPrompt,
+            instructions: runtimePrompts.summarizeBlog,
             input: this.env.WORKFLOW_TEST_INPUT || sampleInput,
             maxOutputTokens: maxTokens,
           })).text
         }
 
         if (testStep === 'intro') {
-          const sampleInput = this.env.WORKFLOW_TEST_INPUT || '女：Hello 大家好，欢迎收听测试播客。\n男：大家好，我是老冯。'
+          const sampleInput = this.env.WORKFLOW_TEST_INPUT
+            || `${primarySpeaker}：Hello 大家好，欢迎收听测试播客。\n${secondarySpeaker}：大家好，我是老冯。`
           return (await createResponseText({
             env: this.env,
             model: primaryModel,
-            instructions: introPrompt,
+            instructions: runtimePrompts.intro,
             input: sampleInput,
             maxOutputTokens: maxTokens,
           })).text
@@ -554,8 +683,9 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         throw new Error(`workflow test step "${testStep}" is not supported`)
       })
 
+      const textOutput = typeof text === 'string' ? text : JSON.stringify(text)
       console.info(`workflow test step "${testStep}" result`, {
-        text: isDev ? text : text.slice(0, 200),
+        text: isDev ? textOutput : textOutput.slice(0, 200),
       })
       return
     }
@@ -568,6 +698,16 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           start: windowStart,
           end: windowEnd,
           timeZone,
+        },
+        sourceConfig: {
+          lookbackDays: runtimeConfig.sources.lookbackDays,
+          sources: runtimeConfig.sources.items,
+        },
+        sourceOptions: {
+          timeZone,
+          newsletterHosts: runtimeConfig.sources.newsletterHosts,
+          archiveLinkKeywords: runtimeConfig.sources.archiveLinkKeywords,
+          extractNewsletterLinksPrompt: runtimePrompts.extractNewsletterLinks,
         },
       })
 
@@ -599,6 +739,9 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
               end: windowEnd,
               timeZone,
             },
+            timeZone,
+            archiveLinkKeywords: runtimeConfig.sources.archiveLinkKeywords,
+            extractNewsletterLinksPrompt: runtimePrompts.extractNewsletterLinks,
           })
           return {
             messageId: messageRef.id,
@@ -664,7 +807,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
       let summaryResult: StorySummaryResult | null = null
       try {
-        summaryResult = await step.do(`summarize story ${story.id}: ${story.title}`, { ...retryConfig, retries: { ...retryConfig.retries, limit: 2 } }, async () => {
+        summaryResult = await step.do(`summarize story ${story.id}: ${story.title}`, { ...retryConfig, retries: withRetryLimit(2) }, async () => {
           console.info(`summarize story ${story.id} start`, {
             title: story.title,
             inputChars: storyResponse.length,
@@ -672,7 +815,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           const { result, usage, finishReason } = await summarizeStoryWithRelevance({
             env: this.env,
             model: primaryModel,
-            instructions: summarizeStoryPrompt,
+            instructions: runtimePrompts.summarizeStory,
             input: storyResponse,
             maxOutputTokens: maxTokens,
           })
@@ -747,7 +890,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
     await step.sleep('Give AI a break', breakTime)
 
-    const podcastContent = await step.do('create podcast content', { ...retryConfig, retries: { ...retryConfig.retries, limit: 3 } }, async () => {
+    const podcastContent = await step.do('create podcast content', { ...retryConfig, retries: withRetryLimit(3) }, async () => {
       const attemptInputs: { label: string, stories: string[] }[] = [
         { label: 'all', stories: allStories },
       ]
@@ -766,7 +909,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           const { text, usage, finishReason } = await createResponseText({
             env: this.env,
             model: thinkingModel,
-            instructions: summarizePodcastPrompt,
+            instructions: runtimePrompts.summarizePodcast,
             input,
             maxOutputTokens: maxTokens,
           })
@@ -806,7 +949,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
     await step.sleep('Give AI a break', breakTime)
 
-    const blogContent = await step.do('create blog content', { ...retryConfig, retries: { ...retryConfig.retries, limit: 3 } }, async () => {
+    const blogContent = await step.do('create blog content', { ...retryConfig, retries: withRetryLimit(3) }, async () => {
       const attemptInputs: { label: string, storyMeta: typeof blogStories, stories: string[] }[] = [
         { label: 'all', storyMeta: blogStories, stories: allStories },
       ]
@@ -830,7 +973,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           const { text, usage, finishReason } = await createResponseText({
             env: this.env,
             model: thinkingModel,
-            instructions: summarizeBlogPrompt,
+            instructions: runtimePrompts.summarizeBlog,
             input,
             maxOutputTokens: maxTokens,
           })
@@ -876,7 +1019,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       const { text, usage, finishReason } = await createResponseText({
         env: this.env,
         model: primaryModel,
-        instructions: introPrompt,
+        instructions: runtimePrompts.intro,
         input: podcastContent,
       })
 
@@ -889,14 +1032,14 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       const { text } = await createResponseText({
         env: this.env,
         model: primaryModel,
-        instructions: titlePrompt,
+        instructions: runtimePrompts.title,
         input: podcastContent,
       })
 
       console.info('title generation output:\n', text)
 
       const match = text.match(/推荐标题[：:]\s*(.+)/)
-      return match?.[1]?.trim() || `${podcastTitle} ${publishDateKey}`
+      return match?.[1]?.trim() || `${runtimeConfig.site.title} ${publishDateKey}`
     })
 
     console.info('episode title:', episodeTitle)
@@ -917,11 +1060,12 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-    const dialogLines = conversations.filter(line => line.startsWith('男') || line.startsWith('女'))
+    const parsedConversations = parseConversationLines(conversations, speakerMarkers)
+    const dialogLines = parsedConversations.map(item => item.raw)
     const ttsProvider = skipTTS
       ? ''
-      : await step.do('validate tts config', { ...retryConfig, retries: { ...retryConfig.retries, limit: 0 } }, async () => {
-          const provider = validateTtsConfig(this.env)
+      : await step.do('validate tts config', { ...retryConfig, retries: withRetryLimit(0) }, async () => {
+          const provider = validateTtsConfig(this.env, runtimeTtsSettings.provider)
           console.info('TTS config validated', {
             provider,
             hasGeminiApiKey: Boolean(this.env.GEMINI_API_KEY?.trim()),
@@ -936,7 +1080,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       hasOverride: Boolean(ttsInputOverride),
       chars: ttsSourceText.length,
       lines: conversations.length,
-      dialogLines: dialogLines.length,
+      dialogLines: parsedConversations.length,
       preview: ttsSourceText.slice(0, 200),
     })
 
@@ -944,14 +1088,17 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       console.info('skip TTS enabled, skip audio generation')
     }
     else if (useGeminiTTS) {
-      const geminiPrompt = buildGeminiTtsPrompt(dialogLines)
+      const geminiPrompt = buildGeminiTtsPrompt(dialogLines, {
+        geminiPrompt: runtimeTtsSettings.geminiPrompt,
+        geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
+      })
 
       console.info('Gemini TTS input', {
-        totalLines: dialogLines.length,
+        totalLines: parsedConversations.length,
         promptChars: geminiPrompt.length,
       })
 
-      await step.do('create gemini podcast audio', { ...retryConfig, retries: { ...retryConfig.retries, limit: 2 }, timeout: '10 minutes' }, async () => {
+      await step.do('create gemini podcast audio', { ...retryConfig, retries: withRetryLimit(2), timeout: '10 minutes' }, async () => {
         const startedAt = Date.now()
         const retryLimit = 2
         for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
@@ -959,9 +1106,12 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
             console.info('Gemini TTS attempt', {
               attempt: attempt + 1,
               promptChars: geminiPrompt.length,
-              lines: dialogLines.length,
+              lines: parsedConversations.length,
             })
-            const result = await synthesizeGeminiTTS(geminiPrompt, this.env)
+            const result = await synthesizeGeminiTTS(geminiPrompt, this.env, {
+              model: runtimeTtsSettings.model,
+              geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
+            })
             if (!result.audio.size) {
               throw new Error('podcast audio size is 0')
             }
@@ -993,7 +1143,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
       await step.sleep('reset quota before convert', breakTime)
 
-      await step.do('convert gemini audio to mp3', { ...retryConfig, retries: { ...retryConfig.retries, limit: 3 } }, async () => {
+      await step.do('convert gemini audio to mp3', { ...retryConfig, retries: withRetryLimit(3) }, async () => {
         if (!this.env.BROWSER) {
           console.warn('browser is not configured, skip audio convert')
           return
@@ -1002,7 +1152,10 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         if (!audioUrl) {
           throw new Error('Gemini audio URL not found in KV')
         }
-        const blob = await concatAudioFiles([audioUrl], this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
+        const blob = await concatAudioFiles([audioUrl], this.env.BROWSER, {
+          workerUrl: this.env.PODCAST_WORKER_URL,
+          audioQuality: ffmpegAudioQuality,
+        })
         const basePodcastKey = `tmp/${podcastKey}.base.mp3`
         await this.env.PODCAST_R2.put(basePodcastKey, blob)
         await this.env.PODCAST_KV.put(`tmp:${event.instanceId}:audio:base`, `${this.env.PODCAST_R2_BUCKET_URL}/${basePodcastKey}?t=${Date.now()}`, { expirationTtl: 3600 })
@@ -1023,7 +1176,14 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           if (!basePodcastUrl) {
             throw new Error('Base podcast URL not found in KV')
           }
-          const blob = await addIntroMusic(basePodcastUrl, this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
+          const blob = await addIntroMusic(basePodcastUrl, this.env.BROWSER, {
+            workerUrl: this.env.PODCAST_WORKER_URL,
+            themeUrl: introThemeUrl,
+            fadeOutStart: runtimeConfig.tts.introMusic.fadeOutStart,
+            fadeOutDuration: runtimeConfig.tts.introMusic.fadeOutDuration,
+            podcastDelayMs: runtimeConfig.tts.introMusic.podcastDelay,
+            audioQuality: ffmpegAudioQuality,
+          })
           await this.env.PODCAST_R2.put(podcastKey, blob)
           console.info('intro music added (gemini)', {
             key: podcastKey,
@@ -1048,23 +1208,21 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       console.info('podcast audio url', `${this.env.PODCAST_R2_BUCKET_URL}/${podcastKey}`)
     }
     else {
-      for (const [index, conversation] of conversations.entries()) {
+      for (const [index, conversation] of parsedConversations.entries()) {
         try {
-          await step.do(`create audio ${index}: ${conversation.substring(0, 20)}...`, { ...retryConfig, retries: { ...retryConfig.retries, limit: 0 }, timeout: '30 minutes' }, async () => {
-            if (
-              !(conversation.startsWith('男') || conversation.startsWith('女'))
-              || !conversation.substring(2).trim()
-            ) {
-              console.warn('conversation is not valid', conversation)
-              return conversation
-            }
-
+          await step.do(`create audio ${index}: ${conversation.text.substring(0, 20)}...`, { ...retryConfig, retries: withRetryLimit(0), timeout: '30 minutes' }, async () => {
             const retryLimit = 1
             const startedAt = Date.now()
             for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
               try {
-                console.info('create conversation audio', conversation)
-                const audio = await synthesize(conversation.substring(2), conversation[0], this.env)
+                console.info('create conversation audio', conversation.raw)
+                const audio = await synthesize(conversation.text, conversation.speaker, this.env, {
+                  provider: runtimeTtsSettings.provider,
+                  language: runtimeTtsSettings.language,
+                  model: runtimeTtsSettings.model,
+                  speed: runtimeTtsSettings.speed,
+                  voicesBySpeaker: runtimeTtsSettings.voicesBySpeaker,
+                })
 
                 if (!audio.size) {
                   throw new Error('podcast audio size is 0')
@@ -1119,7 +1277,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
         catch (error) {
           console.error('TTS line failed', {
             index,
-            conversation,
+            conversation: conversation.raw,
             error: formatError(error),
           })
           throw error
@@ -1131,7 +1289,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       ? []
       : await step.do('collect all audio files', retryConfig, async () => {
           const audioUrls: string[] = []
-          for (const [index] of conversations.entries()) {
+          for (const [index] of parsedConversations.entries()) {
             try {
               const audioUrl = await this.env.PODCAST_KV.get(`tmp:${event.instanceId}:audio:${index}`)
               if (audioUrl) {
@@ -1157,7 +1315,10 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           return
         }
 
-        const blob = await concatAudioFiles(audioFiles, this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
+        const blob = await concatAudioFiles(audioFiles, this.env.BROWSER, {
+          workerUrl: this.env.PODCAST_WORKER_URL,
+          audioQuality: ffmpegAudioQuality,
+        })
         const basePodcastKey = `tmp/${podcastKey}.base.mp3`
         try {
           await this.env.PODCAST_R2.put(basePodcastKey, blob)
@@ -1186,7 +1347,14 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           if (!basePodcastUrl) {
             throw new Error('Base podcast URL not found in KV')
           }
-          const blob = await addIntroMusic(basePodcastUrl, this.env.BROWSER, { workerUrl: this.env.PODCAST_WORKER_URL })
+          const blob = await addIntroMusic(basePodcastUrl, this.env.BROWSER, {
+            workerUrl: this.env.PODCAST_WORKER_URL,
+            themeUrl: introThemeUrl,
+            fadeOutStart: runtimeConfig.tts.introMusic.fadeOutStart,
+            fadeOutDuration: runtimeConfig.tts.introMusic.fadeOutDuration,
+            podcastDelayMs: runtimeConfig.tts.introMusic.podcastDelay,
+            audioQuality: ffmpegAudioQuality,
+          })
           await this.env.PODCAST_R2.put(podcastKey, blob)
           console.info('intro music added', {
             key: podcastKey,
@@ -1224,6 +1392,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           introContent,
           audio: skipTTS ? '' : podcastKey,
           updatedAt,
+          configVersion: runtimeState.version,
+          updatedBy: 'workflow',
         }))
       }
       catch (error) {
@@ -1269,7 +1439,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       }
       else if (!skipTTS && !useGeminiTTS) {
         // Clean up non-Gemini audio temporary data
-        for (const [index] of conversations.entries()) {
+        for (const [index] of parsedConversations.entries()) {
           const audioKey = `tmp:${event.instanceId}:audio:${index}`
           deletePromises.push(this.env.PODCAST_KV.delete(audioKey))
         }

@@ -5,6 +5,7 @@ import { Buffer } from 'node:buffer'
 import * as cheerio from 'cheerio'
 import { $fetch } from 'ofetch'
 
+import { getDateKeyInTimeZone, zonedTimeToUtc } from '../timezone'
 import { getContentFromJinaWithRetry, isSubrequestLimitError } from '../utils'
 import { extractNewsletterLinksWithAi, normalizeText, unwrapTrackingUrl } from './newsletter-links'
 
@@ -111,77 +112,23 @@ function extractHtml(message: GmailMessage) {
   return ''
 }
 
-const CHICAGO_TIMEZONE = 'America/Chicago'
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 
-const archiveLinkKeywords = [
+const defaultArchiveLinkKeywords = [
   'in your browser',
   'in a browser',
   'in browser',
 ]
 
-function getDateKeyInTimeZone(date: Date, timeZone: string) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date)
-
-  const year = parts.find(part => part.type === 'year')?.value || '0000'
-  const month = parts.find(part => part.type === 'month')?.value || '01'
-  const day = parts.find(part => part.type === 'day')?.value || '01'
-
-  return `${year}-${month}-${day}`
-}
-
-function getTimeZoneOffsetMs(date: Date, timeZone: string) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    hour12: false,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).formatToParts(date)
-
-  const get = (type: string) => parts.find(part => part.type === type)?.value || '00'
-  const utcTime = Date.UTC(
-    Number(get('year')),
-    Number(get('month')) - 1,
-    Number(get('day')),
-    Number(get('hour')),
-    Number(get('minute')),
-    Number(get('second')),
-  )
-
-  return utcTime - date.getTime()
-}
-
-function zonedTimeToUtc(
-  dateKey: string,
-  timeZone: string,
-  hour = 0,
-  minute = 0,
-  second = 0,
-) {
-  const [year, month, day] = dateKey.split('-').map(Number)
-  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, second)
-  const offset = getTimeZoneOffsetMs(new Date(utcGuess), timeZone)
-  return new Date(utcGuess - offset)
-}
-
-function getYesterdayRangeInChicago(now: Date) {
+function getYesterdayRangeInTimeZone(now: Date, timeZone: string) {
   const yesterday = new Date(now.getTime() - ONE_DAY_MS)
-  const dateKey = getDateKeyInTimeZone(yesterday, CHICAGO_TIMEZONE)
-  const startUtc = zonedTimeToUtc(dateKey, CHICAGO_TIMEZONE, 0, 0, 0)
-  const endUtc = zonedTimeToUtc(dateKey, CHICAGO_TIMEZONE, 23, 59, 59)
+  const dateKey = getDateKeyInTimeZone(yesterday, timeZone)
+  const startUtc = zonedTimeToUtc(dateKey, timeZone, 0, 0, 0)
+  const endUtc = zonedTimeToUtc(dateKey, timeZone, 23, 59, 59)
   return { dateKey, startUtc, endUtc }
 }
 
-function findArchiveLink(html: string) {
+function findArchiveLink(html: string, keywords: string[]) {
   const $ = cheerio.load(html)
   const anchors = $('a[href]').map((_, el) => {
     const rawHref = $(el).attr('href')?.trim() || ''
@@ -190,7 +137,7 @@ function findArchiveLink(html: string) {
   }).get()
 
   const match = anchors.find(anchor =>
-    anchor.text && archiveLinkKeywords.some(keyword => anchor.text.includes(keyword)),
+    anchor.text && keywords.some(keyword => anchor.text.includes(keyword)),
   )
 
   if (!match?.rawHref) {
@@ -280,6 +227,9 @@ export async function listGmailMessageRefs(
   lookbackDays: number,
   env: GmailEnv,
   window?: { start: Date, end: Date, timeZone: string },
+  runtimeOptions?: {
+    timeZone?: string
+  },
 ) {
   if (!source.label) {
     console.warn('gmail source missing label', source)
@@ -288,7 +238,8 @@ export async function listGmailMessageRefs(
 
   const userId = env.GMAIL_USER_EMAIL || 'me'
   const token = await fetchAccessToken(env)
-  const { startUtc, endUtc } = getYesterdayRangeInChicago(now)
+  const timeZone = runtimeOptions?.timeZone || 'America/Chicago'
+  const { startUtc, endUtc } = getYesterdayRangeInTimeZone(now, timeZone)
   const windowStart = window?.start || startUtc || new Date(now.getTime() - Math.max(lookbackDays, 2) * ONE_DAY_MS)
   const windowEnd = window?.end || endUtc || now
   const query = buildGmailQuery(source.label, windowStart, windowEnd)
@@ -343,11 +294,23 @@ export async function processGmailMessage(params: {
   lookbackDays: number
   env: GmailEnv
   window?: { start: Date, end: Date, timeZone: string }
+  timeZone?: string
+  archiveLinkKeywords?: string[]
+  extractNewsletterLinksPrompt?: string
 }) {
-  const { messageId, source, now, lookbackDays, env, window } = params
+  const {
+    messageId,
+    source,
+    now,
+    lookbackDays,
+    env,
+    window,
+    archiveLinkKeywords = defaultArchiveLinkKeywords,
+  } = params
+  const timeZone = params.timeZone || 'America/Chicago'
   const userId = env.GMAIL_USER_EMAIL || 'me'
   const token = await fetchAccessToken(env)
-  const { dateKey: targetDateKey, startUtc, endUtc } = getYesterdayRangeInChicago(now)
+  const { dateKey: targetDateKey, startUtc, endUtc } = getYesterdayRangeInTimeZone(now, timeZone)
   const windowStart = window?.start || startUtc || new Date(now.getTime() - Math.max(lookbackDays, 2) * ONE_DAY_MS)
   const windowEnd = window?.end || endUtc || now
 
@@ -379,13 +342,13 @@ export async function processGmailMessage(params: {
   }
 
   if (!window) {
-    const receivedDateKey = getDateKeyInTimeZone(receivedAt, CHICAGO_TIMEZONE)
+    const receivedDateKey = getDateKeyInTimeZone(receivedAt, timeZone)
     if (receivedDateKey !== targetDateKey) {
       return [] as Story[]
     }
   }
 
-  const archiveLink = findArchiveLink(html)
+  const archiveLink = findArchiveLink(html, archiveLinkKeywords.map(keyword => keyword.toLowerCase()))
   let newsletterContent = ''
   if (archiveLink) {
     console.info('newsletter archive link found', { id: message.id, subject, receivedAt: receivedAtIso, archiveLink })
@@ -431,6 +394,7 @@ export async function processGmailMessage(params: {
       env,
       messageId: message.id,
       receivedAt: receivedAtIso,
+      prompt: params.extractNewsletterLinksPrompt,
     })
     if (links.length === 0) {
       console.warn('newsletter has no matching links', { id: message.id, subject, receivedAt: receivedAtIso })

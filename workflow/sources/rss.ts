@@ -4,20 +4,21 @@ import type { SourceConfig } from './types'
 import * as cheerio from 'cheerio'
 import { $fetch } from 'ofetch'
 
+import { getDateKeyInTimeZone } from '../timezone'
 import { getContentFromJinaWithRetry, isSubrequestLimitError } from '../utils'
 import { extractNewsletterLinksWithAi } from './newsletter-links'
 
-const NEWSLETTER_HOSTS = ['kill-the-newsletter.com']
+const DEFAULT_NEWSLETTER_HOSTS = ['kill-the-newsletter.com']
 
 interface RssEnv extends AiEnv {
   JINA_KEY?: string
   NODE_ENV?: string
 }
 
-function isNewsletterLink(url: string): boolean {
+function isNewsletterLink(url: string, newsletterHosts: string[]): boolean {
   try {
     const hostname = new URL(url).hostname.toLowerCase()
-    return NEWSLETTER_HOSTS.some(h => hostname === h || hostname.endsWith(`.${h}`))
+    return newsletterHosts.some(h => hostname === h || hostname.endsWith(`.${h}`))
   }
   catch {
     return false
@@ -37,21 +38,6 @@ function parseDate(dateText: string | undefined) {
   }
   const parsed = new Date(dateText)
   return Number.isNaN(parsed.getTime()) ? null : parsed
-}
-
-function getDateKeyInTimeZone(date: Date, timeZone: string) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date)
-
-  const year = parts.find(part => part.type === 'year')?.value || '0000'
-  const month = parts.find(part => part.type === 'month')?.value || '01'
-  const day = parts.find(part => part.type === 'day')?.value || '01'
-
-  return `${year}-${month}-${day}`
 }
 
 function isWithinLookback(publishedAt: Date, now: Date, lookbackDays: number) {
@@ -109,8 +95,16 @@ export async function fetchRssItems(
   lookbackDays: number,
   window?: { start: Date, end: Date, timeZone: string },
   env?: RssEnv,
+  options?: {
+    timeZone?: string
+    newsletterHosts?: string[]
+    extractNewsletterLinksPrompt?: string
+  },
 ) {
-  const timeZone = 'America/Chicago'
+  const timeZone = options?.timeZone || 'America/Chicago'
+  const newsletterHosts = options?.newsletterHosts?.length
+    ? options.newsletterHosts
+    : DEFAULT_NEWSLETTER_HOSTS
 
   try {
     const xml = await $fetch<string>(source.url, {
@@ -140,7 +134,7 @@ export async function fetchRssItems(
     const stories: Story[] = []
 
     for (const item of filteredItems) {
-      if (isNewsletterLink(item.link) && env) {
+      if (isNewsletterLink(item.link, newsletterHosts) && env) {
         try {
           const content = await getContentFromJinaWithRetry(item.link, 'markdown', {}, env.JINA_KEY)
           if (!content) {
@@ -154,6 +148,7 @@ export async function fetchRssItems(
             env,
             messageId: item.guid || item.link,
             receivedAt: item.pubDate || now.toISOString(),
+            prompt: options?.extractNewsletterLinksPrompt,
           })
           if (links.length === 0) {
             console.warn('rss newsletter no links extracted', { source: source.name, title: item.title })

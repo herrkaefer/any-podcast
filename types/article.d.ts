@@ -8,4 +8,6 @@ interface Article {
   introContent: string
   audio: string
   updatedAt: number
+  configVersion?: string
+  updatedBy?: string
 }

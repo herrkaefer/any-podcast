@@ -7,7 +7,7 @@
   </head>
   <body>
     <script>
-      const concatAudioFilesOnBrowser = async (audioFiles) => {
+      const concatAudioFilesOnBrowser = async (audioFiles, options = {}) => {
         const script = document.createElement('script')
         script.src = 'https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js'
         document.head.appendChild(script)
@@ -28,6 +28,8 @@
         const fileList = audioFiles.map((_, i) => `file 'input${i}.mp3'`).join('\n')
         ffmpeg.FS('writeFile', 'filelist.txt', fileList)
 
+        const quality = Number.isFinite(Number(options.audioQuality)) ? String(Number(options.audioQuality)) : '5'
+
         // Execute FFmpeg command to concatenate files
         await ffmpeg.run(
           '-f',
@@ -39,7 +41,7 @@
           '-c:a',
           'libmp3lame',
           '-q:a',
-          '5',
+          quality,
           'output.mp3',
         )
 
@@ -59,7 +61,7 @@
         return blob
       }
 
-      const addIntroMusicOnBrowser = async (podcastAudioUrl, themeAudioUrl) => {
+      const addIntroMusicOnBrowser = async (podcastAudioUrl, themeAudioUrl, options = {}) => {
         const script = document.createElement('script')
         script.src = 'https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js'
         document.head.appendChild(script)
@@ -77,9 +79,15 @@
         const podcastData = await fetchFile(podcastAudioUrl)
         ffmpeg.FS('writeFile', 'podcast.mp3', podcastData)
 
+        const fadeOutStart = Number.isFinite(Number(options.fadeOutStart)) ? Number(options.fadeOutStart) : 19
+        const fadeOutDuration = Number.isFinite(Number(options.fadeOutDuration)) ? Number(options.fadeOutDuration) : 3
+        const podcastDelayMs = Number.isFinite(Number(options.podcastDelayMs)) ? Number(options.podcastDelayMs) : 19000
+        const quality = Number.isFinite(Number(options.audioQuality)) ? String(Number(options.audioQuality)) : '5'
+
+        const filter = `[0]afade=t=out:st=${fadeOutStart}:d=${fadeOutDuration}[intro];[1]adelay=${podcastDelayMs}|${podcastDelayMs}[podcast];[intro][podcast]amix=inputs=2:duration=longest`
+
         // Execute FFmpeg command to mix intro music with podcast
-        // theme music fades out starting at 12s over 10s
-        // podcast audio is delayed by 12s
+        // theme music fades out then podcast delayed and mixed
         // amix combines both, taking the longest duration
         await ffmpeg.run(
           '-i',
@@ -87,11 +95,11 @@
           '-i',
           'podcast.mp3',
           '-filter_complex',
-          '[0]afade=t=out:st=19:d=3[intro];[1]adelay=19000|19000[podcast];[intro][podcast]amix=inputs=2:duration=longest',
+          filter,
           '-c:a',
           'libmp3lame',
           '-q:a',
-          '5',
+          quality,
           'output.mp3',
         )
 

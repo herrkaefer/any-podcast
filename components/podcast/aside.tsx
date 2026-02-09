@@ -1,5 +1,7 @@
 'use client'
 
+import { Settings } from 'lucide-react'
+import Link from 'next/link'
 import { Fragment } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ThemeToggle } from '@/components/theme/toggle'
@@ -42,6 +44,17 @@ export function PodcastAside() {
         </span>
       </section>
       <section className="flex flex-col items-center gap-5">
+        <Link
+          href="/admin"
+          className={`
+            cursor-pointer text-muted-foreground transition-colors
+            hover:text-foreground
+          `}
+          title={t('aside.adminLinkTitle')}
+          aria-label={t('aside.adminLinkTitle')}
+        >
+          <Settings className="size-6" />
+        </Link>
         <ThemeToggle />
       </section>
     </aside>

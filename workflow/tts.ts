@@ -15,23 +15,67 @@ interface Env extends CloudflareEnv {
   AUDIO_SPEED?: string
 }
 
+export interface GeminiSpeakerConfig {
+  speaker: string
+  voice?: string
+}
+
+export interface RuntimeTtsOptions {
+  provider?: 'edge' | 'minimax' | 'murf' | 'gemini'
+  language?: string
+  model?: string
+  speed?: string | number
+  voicesBySpeaker?: Record<string, string>
+  geminiPrompt?: string
+  geminiSpeakers?: GeminiSpeakerConfig[]
+}
+
 interface GeminiAudioResult {
   audio: Blob
   extension: string
   mimeType: string
 }
 
-async function edgeTTS(text: string, gender: string, env: Env) {
+function resolveRateForEdge(speed: string | number | undefined, fallback: string) {
+  if (typeof speed === 'number') {
+    return `${speed}%`
+  }
+  return speed || fallback
+}
+
+function resolveVoiceBySpeaker(
+  speaker: string,
+  options: RuntimeTtsOptions | undefined,
+  defaults: { male: string, female: string },
+) {
+  const mapped = options?.voicesBySpeaker?.[speaker]
+  if (mapped) {
+    return mapped
+  }
+  // Use speaker order: first speaker in voicesBySpeaker maps to male, rest to female
+  if (options?.voicesBySpeaker) {
+    const speakers = Object.keys(options.voicesBySpeaker)
+    if (speakers.length > 0) {
+      return speaker === speakers[0] ? defaults.male : defaults.female
+    }
+  }
+  return defaults.male
+}
+
+async function edgeTTS(text: string, speaker: string, env: Env, options?: RuntimeTtsOptions) {
   const { audio } = await synthesize({
     text,
-    language: 'zh-CN',
-    voice: gender === '男' ? (env.MAN_VOICE_ID || 'zh-CN-YunyangNeural') : (env.WOMAN_VOICE_ID || 'zh-CN-XiaoxiaoNeural'),
-    rate: env.AUDIO_SPEED || '10%',
+    language: options?.language || 'zh-CN',
+    voice: resolveVoiceBySpeaker(speaker, options, {
+      male: env.MAN_VOICE_ID || 'zh-CN-YunyangNeural',
+      female: env.WOMAN_VOICE_ID || 'zh-CN-XiaoxiaoNeural',
+    }),
+    rate: resolveRateForEdge(options?.speed, env.AUDIO_SPEED || '10%'),
   })
   return audio
 }
 
-async function minimaxTTS(text: string, gender: string, env: Env) {
+async function minimaxTTS(text: string, speaker: string, env: Env, options?: RuntimeTtsOptions) {
   const result = await $fetch<{ data: { audio: string }, base_resp: { status_msg: string } }>(`${env.TTS_API_URL || 'https://api.minimaxi.com/v1/t2a_v2'}?GroupId=${env.TTS_API_ID}`, {
     method: 'POST',
     headers: {
@@ -40,17 +84,20 @@ async function minimaxTTS(text: string, gender: string, env: Env) {
     },
     timeout: 30000,
     body: JSON.stringify({
-      model: env.TTS_MODEL || 'speech-2.6-hd',
+      model: options?.model || env.TTS_MODEL || 'speech-2.6-hd',
       text,
       timber_weights: [
         {
-          voice_id: gender === '男' ? (env.MAN_VOICE_ID || 'Chinese (Mandarin)_Gentleman') : (env.WOMAN_VOICE_ID || 'Chinese (Mandarin)_Gentle_Senior'),
+          voice_id: resolveVoiceBySpeaker(speaker, options, {
+            male: env.MAN_VOICE_ID || 'Chinese (Mandarin)_Gentleman',
+            female: env.WOMAN_VOICE_ID || 'Chinese (Mandarin)_Gentle_Senior',
+          }),
           weight: 100,
         },
       ],
       voice_setting: {
         voice_id: '',
-        speed: Number(env.AUDIO_SPEED || 1.1),
+        speed: Number(options?.speed ?? env.AUDIO_SPEED ?? 1.1),
         pitch: 0,
         vol: 1,
         latex_read: false,
@@ -74,17 +121,18 @@ async function minimaxTTS(text: string, gender: string, env: Env) {
 /**
  * murf.ai 语音合成服务每月$10的免费额度，相对于 minimax 收费，没有预算的用户可以使用
  * 使用 Murf 语音合成服务将文本转换为音频。
- * 根据 `gender` 选择不同的预设音色，并可通过环境变量调整语速等参数。
+ * 根据 `speaker` 选择不同的预设音色，并可通过环境变量调整语速等参数。
  *
  * @param text 要合成的文本内容
- * @param gender 性别标识：传入 `'男'` 使用男声，否则使用女声
+ * @param speaker 说话人标识：优先按 `voicesBySpeaker` 匹配，否则回退默认音色
  * @param env 运行环境配置，包含 `TTS_API_URL`、`TTS_API_KEY`、`TTS_MODEL`、`MAN_VOICE_ID`、`WOMAN_VOICE_ID`、`AUDIO_SPEED` 等
+ * @param options 运行时 TTS 参数（语言、模型、语速、speaker->voice 映射等）
  * @returns 返回包含 MP3 数据的 `Blob`
  * @throws 当请求失败或服务返回非 2xx 状态码时抛出错误
  * @apiUrl https://murf.ai/api/docs/api-reference/text-to-speech/stream?explorer=true
  * @getKeyUrl https://murf.ai/api/api-keys
  */
-async function murfTTS(text: string, gender: string, env: Env) {
+async function murfTTS(text: string, speaker: string, env: Env, options?: RuntimeTtsOptions) {
   const result = await $fetch(`${env.TTS_API_URL || 'https://api.murf.ai/v1/speech/stream'}`, {
     method: 'POST',
     headers: {
@@ -99,11 +147,14 @@ async function murfTTS(text: string, gender: string, env: Env) {
     // pl-PL-jacek 男声3
     body: JSON.stringify({
       text,
-      voiceId: gender === '男' ? env.MAN_VOICE_ID || 'en-US-ken' : env.WOMAN_VOICE_ID || 'en-UK-ruby',
-      model: env.TTS_MODEL || 'GEN2',
-      multiNativeLocale: 'zh-CN',
+      voiceId: resolveVoiceBySpeaker(speaker, options, {
+        male: env.MAN_VOICE_ID || 'en-US-ken',
+        female: env.WOMAN_VOICE_ID || 'en-UK-ruby',
+      }),
+      model: options?.model || env.TTS_MODEL || 'GEN2',
+      multiNativeLocale: options?.language || 'zh-CN',
       style: 'Conversational',
-      rate: Number(env.AUDIO_SPEED || -8),
+      rate: Number(options?.speed ?? env.AUDIO_SPEED ?? -8),
       pitch: 0,
       format: 'MP3',
     }),
@@ -117,25 +168,30 @@ async function murfTTS(text: string, gender: string, env: Env) {
   throw new Error(`Failed to fetch audio: ${result.statusText}`)
 }
 
-export function buildGeminiTtsPrompt(lines: string[]): string {
+export function buildGeminiTtsPrompt(lines: string[], options?: RuntimeTtsOptions): string {
+  const availableSpeakers = options?.geminiSpeakers?.map(item => item.speaker).filter(Boolean)
+  if (!availableSpeakers || availableSpeakers.length === 0) {
+    throw new Error('Gemini TTS requires geminiSpeakers config with at least one speaker')
+  }
+  const speakers = availableSpeakers
   const cleaned = lines
     .map(line => line.trim())
-    .filter(line => line && (line.startsWith('男') || line.startsWith('女')))
+    .filter(line => line && speakers.some(speaker => line.startsWith(speaker)))
   if (!cleaned.length) {
     throw new Error('Gemini TTS prompt is empty: no valid speaker lines found')
   }
   return [
-    '请用中文播报以下播客对话，语气自然、节奏流畅、音量稳定。',
+    options?.geminiPrompt || '请用中文播报以下播客对话，语气自然、节奏流畅、音量稳定。',
     ...cleaned,
   ].join('\n')
 }
 
-export async function synthesizeGeminiTTS(text: string, env: Env): Promise<GeminiAudioResult> {
+export async function synthesizeGeminiTTS(text: string, env: Env, options?: RuntimeTtsOptions): Promise<GeminiAudioResult> {
   if (!env.GEMINI_API_KEY) {
     throw new Error('GEMINI_API_KEY is required when using Gemini TTS')
   }
 
-  const model = env.TTS_MODEL || 'gemini-2.5-flash-preview-tts'
+  const model = options?.model || env.TTS_MODEL || 'gemini-2.5-flash-preview-tts'
   const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY })
   const startedAt = Date.now()
   console.info('Gemini TTS request start', {
@@ -152,24 +208,30 @@ export async function synthesizeGeminiTTS(text: string, env: Env): Promise<Gemin
       responseModalities: ['AUDIO'],
       speechConfig: {
         multiSpeakerVoiceConfig: {
-          speakerVoiceConfigs: [
-            {
-              speaker: '女',
+          speakerVoiceConfigs: (options?.geminiSpeakers && options.geminiSpeakers.length > 0
+            ? options.geminiSpeakers
+            : [
+                {
+                  speaker: 'Host1',
+                  voice: env.MAN_VOICE_ID || 'Puck',
+                },
+                {
+                  speaker: 'Host2',
+                  voice: env.WOMAN_VOICE_ID || 'Zephyr',
+                },
+              ]).map((item, index) => {
+            const fallbackVoice = index === 0
+              ? env.MAN_VOICE_ID || 'Puck'
+              : env.WOMAN_VOICE_ID || 'Zephyr'
+            return {
+              speaker: item.speaker,
               voiceConfig: {
                 prebuiltVoiceConfig: {
-                  voiceName: env.WOMAN_VOICE_ID || 'Zephyr',
+                  voiceName: item.voice || fallbackVoice,
                 },
               },
-            },
-            {
-              speaker: '男',
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: env.MAN_VOICE_ID || 'Puck',
-                },
-              },
-            },
-          ],
+            }
+          }),
         },
       },
     },
@@ -210,17 +272,18 @@ export async function synthesizeGeminiTTS(text: string, env: Env): Promise<Gemin
   return { audio, extension, mimeType: finalMimeType }
 }
 
-export default function (text: string, gender: string, env: Env) {
-  console.info('TTS_PROVIDER', env.TTS_PROVIDER)
-  switch (env.TTS_PROVIDER) {
+export default function (text: string, speaker: string, env: Env, options?: RuntimeTtsOptions) {
+  const provider = options?.provider || env.TTS_PROVIDER || 'edge'
+  console.info('TTS_PROVIDER', provider)
+  switch (provider) {
     case 'minimax':
-      return minimaxTTS(text, gender, env)
+      return minimaxTTS(text, speaker, env, options)
     case 'murf':
-      return murfTTS(text, gender, env)
+      return murfTTS(text, speaker, env, options)
     case 'gemini':
       throw new Error('Gemini TTS only supports full podcast synthesis, not per-line synthesis')
     default:
-      return edgeTTS(text, gender, env)
+      return edgeTTS(text, speaker, env, options)
   }
 }
 

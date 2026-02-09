@@ -217,8 +217,9 @@ export async function extractNewsletterLinksWithAi(params: {
   env: NewsletterEnv
   messageId: string
   receivedAt: string
+  prompt?: string
 }) {
-  const { subject, content, source, env, messageId, receivedAt } = params
+  const { subject, content, source, env, messageId, receivedAt, prompt } = params
   const rules = source.linkRules
   const provider = getAiProvider(env)
   const model = getPrimaryModel(env, provider)
@@ -228,7 +229,7 @@ export async function extractNewsletterLinksWithAi(params: {
   const response = await createResponseText({
     env,
     model,
-    instructions: extractNewsletterLinksPrompt,
+    instructions: prompt || extractNewsletterLinksPrompt,
     input,
     maxOutputTokens,
     responseMimeType: 'application/json',
@@ -250,7 +251,7 @@ export async function extractNewsletterLinksWithAi(params: {
 
   let rawCandidates = parseNewsletterLinks(response.text)
   if (rawCandidates.length === 0 && response.text.trim()) {
-    const retryInstructions = `${extractNewsletterLinksPrompt}\n\n【重要】上一次输出不是有效 JSON，请仅输出完整 JSON 数组，不要代码块或多余文字。`
+    const retryInstructions = `${prompt || extractNewsletterLinksPrompt}\n\n【重要】上一次输出不是有效 JSON，请仅输出完整 JSON 数组，不要代码块或多余文字。`
     const retryResponse = await createResponseText({
       env,
       model,
@@ -279,7 +280,7 @@ export async function extractNewsletterLinksWithAi(params: {
   let resolvedCount = 0
   let failedResolveCount = 0
 
-  const normalizedCandidates = await Promise.all(rawCandidates.map(async (candidate) => {
+  const normalizedCandidates: Array<NewsletterLinkCandidate | null> = await Promise.all(rawCandidates.map(async (candidate) => {
     const normalizedLink = normalizeUrl(candidate.link)
     if (!normalizedLink) {
       return null
@@ -306,14 +307,14 @@ export async function extractNewsletterLinksWithAi(params: {
         }
       }
     }
-    return {
-      title: candidate.title ? normalizeText(candidate.title) : undefined,
-      link: resolved,
-    }
+    const normalizedTitle = candidate.title ? normalizeText(candidate.title) : ''
+    return normalizedTitle
+      ? { title: normalizedTitle, link: resolved }
+      : { link: resolved }
   }))
 
   const filtered = normalizedCandidates.filter((candidate): candidate is NewsletterLinkCandidate => {
-    if (!candidate?.link) {
+    if (!candidate || !candidate.link) {
       return false
     }
     try {
