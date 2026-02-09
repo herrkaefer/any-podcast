@@ -4,10 +4,7 @@
 
 ## 项目概述
 
-Hacker Podcast - 基于 AI 的中文播客生成器，自动抓取 Hacker News 每日热门文章，生成中文摘要并转换为音频播客。
-
-- **在线演示：** https://hacker-podcast.agi.li
-- **RSS 订阅：** https://hacker-podcast.agi.li/rss.xml
+Any Podcast - 可配置的 AI 播客生成平台，自动聚合多种内容源（RSS、Newsletter、Gmail 等），生成中文摘要并转换为双人对话音频播客。支持通过 Admin 控制台动态配置内容源、主播角色、TTS 引擎和 prompt 等。
 
 ## 技术栈
 
@@ -157,7 +154,7 @@ const retryConfig: WorkflowStepConfig = {
 2. **音频合并**：需要 Cloudflare 浏览器渲染，使用 `pnpm tests` 测试
 3. **开发模式**：只处理 1 篇文章（生产 10 篇）
 4. **构建忽略**：TypeScript 错误在构建时被忽略 (next.config.mjs)
-5. **预提交钩子**：使用 simple-git-hooks + lint-staged 自动检查
+5. **代码检查**：使用 `pnpm lint:fix` 自动修复 ESLint 问题
 
 ## 环境变量
 

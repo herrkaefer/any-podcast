@@ -38,7 +38,7 @@
     {
       "name": "podcast-workflow",
       "binding": "PODCAST_WORKFLOW",
-      "class_name": "HackerNewsWorkflow"
+      "class_name": "PodcastWorkflow"
     }
   ],
   "kv_namespaces": [
@@ -54,8 +54,8 @@
     }
   ],
   "vars": {
-    "PODCAST_DESCRIPTION": "“谱系之间”是一档面向大众的对话型播客，关注自闭症、ADHD、感统处理障碍（SPD）、发展性语言障碍（DLD）及相关的神经发展差异。我们定期整理来自研究、新闻、Newsletter 和社区讨论的内容，用双人对话的方式，把复杂的信息讲清楚，帮助听众理解诊断背后的真实生活，以及各类神经发展差异之间的连续性与交叉点。",
-    "PODCAST_ID": "spectrum-podcast",
-    "PODCAST_TITLE": "谱系之间"
+    "PODCAST_DESCRIPTION": "AI-powered podcast generator that aggregates content sources and produces audio episodes with dual-host dialogue.",
+    "PODCAST_ID": "any-podcast",
+    "PODCAST_TITLE": "Any Podcast"
   }
 }

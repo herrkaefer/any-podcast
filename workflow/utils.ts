@@ -1,5 +1,4 @@
 import puppeteer from '@cloudflare/puppeteer'
-import * as cheerio from 'cheerio'
 import { $fetch } from 'ofetch'
 
 function sleep(ms: number) {
@@ -125,88 +124,6 @@ export async function getContentFromFirecrawl(url: string, format: 'html' | 'mar
     console.error(`get content from firecrawl failed: ${url} ${error}`, error.data)
     return ''
   }
-}
-
-export async function getHackerNewsTopStories(today: string, { JINA_KEY, FIRECRAWL_KEY }: { JINA_KEY?: string, FIRECRAWL_KEY?: string }) {
-  const url = `https://news.ycombinator.com/front?day=${today}`
-
-  const html = await getContentFromJinaWithRetry(url, 'html', {}, JINA_KEY)
-    .catch((error) => {
-      if (isSubrequestLimitError(error))
-        throw error
-      console.error('getTopStories from Jina failed', error)
-      if (!FIRECRAWL_KEY) {
-        return ''
-      }
-      return getContentFromFirecrawl(url, 'html', {}, FIRECRAWL_KEY)
-    })
-
-  const $ = cheerio.load(html)
-  const items = $('.athing.submission')
-
-  const stories: Story[] = items.map((i, el) => ({
-    id: $(el).attr('id'),
-    title: $(el).find('.titleline > a').text(),
-    url: $(el).find('.titleline > a').attr('href'),
-  })).get()
-
-  return stories.filter(story => story.id && story.url)
-}
-
-export async function getHackerNewsStory(story: Story, maxTokens: number, { JINA_KEY, FIRECRAWL_KEY }: { JINA_KEY?: string, FIRECRAWL_KEY?: string }) {
-  const headers: HeadersInit = {
-    'X-Retain-Images': 'none',
-  }
-
-  if (JINA_KEY) {
-    headers.Authorization = `Bearer ${JINA_KEY}`
-  }
-
-  const [article, comments] = await Promise.all([
-    getContentFromJinaWithRetry(story.url!, 'markdown', {}, JINA_KEY)
-      .catch((error) => {
-        if (isSubrequestLimitError(error))
-          throw error
-        console.error('getStoryContent from Jina failed', error)
-        if (!FIRECRAWL_KEY) {
-          return ''
-        }
-        return getContentFromFirecrawl(story.url!, 'markdown', {}, FIRECRAWL_KEY)
-      }),
-    getContentFromJinaWithRetry(`https://news.ycombinator.com/item?id=${story.id}`, 'markdown', { include: '.comment-tree', exclude: '.navs' }, JINA_KEY)
-      .catch((error) => {
-        if (isSubrequestLimitError(error))
-          throw error
-        console.error('getStoryComments from Jina failed', error)
-        if (!FIRECRAWL_KEY) {
-          return ''
-        }
-        return getContentFromFirecrawl(`https://news.ycombinator.com/item?id=${story.id}`, 'markdown', { include: '.comment-tree', exclude: '.navs' }, FIRECRAWL_KEY)
-      }),
-  ])
-  return [
-    story.title
-      ? `
-<title>
-${story.title}
-</title>
-`
-      : '',
-    article
-      ? `
-<article>
-${article.substring(0, maxTokens * 5)}
-</article>
-`
-      : '',
-    comments
-      ? `
-<comments>
-${comments.substring(0, maxTokens * 5)}
-</comments>
-`
-      : '',
-  ].filter(Boolean).join('\n\n---\n\n')
 }
 
 export async function getStoryContent(story: Story, maxTokens: number, { JINA_KEY, FIRECRAWL_KEY }: { JINA_KEY?: string, FIRECRAWL_KEY?: string }) {

@@ -34,7 +34,7 @@ export const podcast: Podcast = {
     {
       id: 'apple',
       name: 'Apple Podcasts',
-      link: 'https://podcasts.apple.com/us/podcast/%E8%B0%B1%E7%B3%BB%E4%B9%8B%E9%97%B4/id1875349396',
+      link: '',
     },
     {
       id: 'rss',

@@ -60,7 +60,7 @@ GEMINI_API_KEY=your-gemini-api-key
 ### 方式一：只测试 Worker（推荐先用这个）
 
 ```bash
-cd /Users/herrk/dev-local/spectrum-podcast
+cd /Users/herrk/dev-local/any-podcast
 pnpm dev:worker
 ```
 
@@ -75,14 +75,14 @@ curl -X POST http://localhost:8787
 **终端 1 - 启动 Worker：**
 
 ```bash
-cd /Users/herrk/dev-local/spectrum-podcast
+cd /Users/herrk/dev-local/any-podcast
 pnpm dev:worker
 ```
 
 **终端 2 - 启动 Web：**
 
 ```bash
-cd /Users/herrk/dev-local/spectrum-podcast
+cd /Users/herrk/dev-local/any-podcast
 pnpm dev
 ```
 
@@ -117,7 +117,7 @@ pnpm dev
 1. 启动 worker：`pnpm dev:worker`
 2. 触发 workflow：`curl -X POST http://localhost:8787`
 3. 观察控制台输出，确认：
-   - ✓ 能够获取 Hacker News 数据
+   - ✓ 能够从配置的内容源获取数据
    - ✓ 能够调用 OpenAI 或 Gemini API 生成摘要
    - ⚠️ TTS 部分可能卡住（这是正常的，可以注释掉）
 
@@ -152,15 +152,9 @@ pnpm dev
 - 注释掉 `workflow/tts.ts` 相关代码
 - 或者设置超时跳过 TTS 步骤
 
-### 开发模式下只处理 1 条数据
+### 开发模式下处理数据量受限
 
-代码中有这个逻辑（`workflow/index.ts:61`）：
-
-```typescript
-topStories.length = Math.min(topStories.length, isDev ? 1 : 10)
-```
-
-开发环境下只处理 1 条 Hacker News 数据，这是为了加快测试速度。
+开发环境下处理的数据量会受限，这是为了加快测试速度和降低 API 成本。
 
 ## 6. 下一步
 
@@ -174,7 +168,7 @@ topStories.length = Math.min(topStories.length, isDev ? 1 : 10)
 
 ```bash
 # 1. 确保在项目目录
-cd /Users/herrk/dev-local/spectrum-podcast
+cd /Users/herrk/dev-local/any-podcast
 
 # 2. 编辑环境变量（填入你的 API key）
 # 编辑 worker/.env.local 文件

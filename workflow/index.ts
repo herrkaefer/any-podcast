@@ -342,7 +342,7 @@ function withRetryLimit(limit: number) {
   }
 }
 
-export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
+export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
   async run(event: WorkflowEvent<Params>, step: WorkflowStep) {
     console.info('trigged event: PodcastWorkflow', event)
 
@@ -396,8 +396,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
       const fallbackInstructions = 'You are a concise assistant.'
       const testInput = this.env.WORKFLOW_TEST_INPUT || fallbackInput
       const testInstructions = this.env.WORKFLOW_TEST_INSTRUCTIONS || fallbackInstructions
-      const primarySpeaker = speakerMarkers[0] || '男'
-      const secondarySpeaker = speakerMarkers[1] || speakerMarkers[0] || '女'
+      const primarySpeaker = speakerMarkers[0] || 'Host1'
+      const secondarySpeaker = speakerMarkers[1] || speakerMarkers[0] || 'Host2'
 
       const text = await step.do(`workflow test step: ${testStep}`, retryConfig, async () => {
         if (testStep === 'openai' || testStep === 'responses') {
@@ -414,8 +414,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           const sampleInput = this.env.WORKFLOW_TTS_INPUT
             || this.env.WORKFLOW_TEST_INPUT
             || [
-              `${primarySpeaker}：Hello 大家好，欢迎收听测试播客。`,
-              `${secondarySpeaker}：大家好，我是老冯。今天我们用一小段对话来测试 TTS。`,
+              `${primarySpeaker}：大家好，欢迎收听测试播客。`,
+              `${secondarySpeaker}：大家好。今天我们用一小段对话来测试 TTS。`,
               `${primarySpeaker}：如果你能听到自然的双人声切换，说明流程是通的。`,
             ].join('\n')
 
@@ -482,8 +482,8 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
           const sampleInput = this.env.WORKFLOW_TTS_INPUT
             || this.env.WORKFLOW_TEST_INPUT
             || [
-              `${primarySpeaker}：Hello 大家好，欢迎收听测试播客。`,
-              `${secondarySpeaker}：大家好，我是老冯。今天我们用一小段对话来测试 TTS 和片头音乐效果。`,
+              `${primarySpeaker}：大家好，欢迎收听测试播客。`,
+              `${secondarySpeaker}：大家好。今天我们用一小段对话来测试 TTS 和片头音乐效果。`,
               `${primarySpeaker}：如果你能听到片头音乐淡出后接上人声，说明流程是通的。`,
             ].join('\n')
 
@@ -670,7 +670,7 @@ export class HackerNewsWorkflow extends WorkflowEntrypoint<Env, Params> {
 
         if (testStep === 'intro') {
           const sampleInput = this.env.WORKFLOW_TEST_INPUT
-            || `${primarySpeaker}：Hello 大家好，欢迎收听测试播客。\n${secondarySpeaker}：大家好，我是老冯。`
+            || `${primarySpeaker}：大家好，欢迎收听测试播客。\n${secondarySpeaker}：大家好，这是一段测试内容。`
           return (await createResponseText({
             env: this.env,
             model: primaryModel,
