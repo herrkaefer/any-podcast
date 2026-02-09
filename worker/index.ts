@@ -162,7 +162,18 @@ export default {
         uploaded: file?.uploaded,
         size: file?.size,
       })
-      return new Response(file?.body)
+      if (file) {
+        return new Response(file.body)
+      }
+
+      // Fallback for local assets (e.g. worker/static/theme.mp3).
+      const fallbackAsset = await env.ASSETS.fetch(new URL(`/${filename}`, request.url).toString())
+      if (fallbackAsset.ok) {
+        console.info('fetch static file fallback to assets:', filename)
+        return fallbackAsset
+      }
+
+      return new Response(`Static file not found: ${filename}`, { status: 404 })
     }
     const siteUrl = env.PODCAST_SITE_URL ?? 'http://localhost:3000'
     return Response.redirect(new URL(pathname, siteUrl).toString(), 302)
