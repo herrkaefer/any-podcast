@@ -1,7 +1,9 @@
 'use client'
 
 import type { RuntimeConfigBundle } from '@/types/runtime-config'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
+
+import { findUnknownTemplateVariables, getTemplateVariables, renderTemplate } from '@/lib/template'
 
 type EditableSection = 'site' | 'hosts' | 'tts' | 'locale' | 'sources' | 'prompts'
 
@@ -11,6 +13,13 @@ type EditableTtsConfig = Pick<
   RuntimeConfigBundle['tts'],
   'provider' | 'language' | 'model' | 'voices' | 'geminiPrompt' | 'introMusic' | 'audioQuality'
 >
+
+type PromptKey = keyof RuntimeConfigBundle['prompts']
+
+interface PromptMeta {
+  label: string
+  description: string
+}
 
 interface EpisodeListItem {
   date: string
@@ -26,6 +35,41 @@ interface EpisodeDetail extends EpisodeListItem {
 }
 
 const sections: EditableSection[] = ['site', 'hosts', 'tts', 'locale', 'sources', 'prompts']
+const promptKeys: PromptKey[] = [
+  'summarizeStory',
+  'summarizePodcast',
+  'summarizeBlog',
+  'intro',
+  'title',
+  'extractNewsletterLinks',
+]
+
+const promptMetaMap: Record<PromptKey, PromptMeta> = {
+  summarizeStory: {
+    label: '文章摘要与相关性',
+    description: '用于单篇文章与评论整理，并判断是否和播客主题相关。',
+  },
+  summarizePodcast: {
+    label: '播客对话生成',
+    description: '用于把多条摘要整合为双人对话播客稿。',
+  },
+  summarizeBlog: {
+    label: '博客正文生成',
+    description: '用于产出 SEO 友好的 Markdown 博客正文。',
+  },
+  intro: {
+    label: '节目简介生成',
+    description: '用于生成每期节目在页面展示的短简介。',
+  },
+  title: {
+    label: '标题生成',
+    description: '用于生成并推荐单集标题。',
+  },
+  extractNewsletterLinks: {
+    label: 'Newsletter 链接提取',
+    description: '用于从 Newsletter 文本中筛选可用文章链接。',
+  },
+}
 
 function toJson(value: unknown) {
   return JSON.stringify(value, null, 2)
@@ -53,20 +97,56 @@ function getSectionEditorValue(draft: RuntimeConfigBundle, section: EditableSect
   return draft[section]
 }
 
+function setPromptValue(
+  current: RuntimeConfigBundle['prompts'],
+  key: PromptKey,
+  value: string,
+): RuntimeConfigBundle['prompts'] {
+  return {
+    ...current,
+    [key]: value,
+  }
+}
+
+function confirmAction(message: string) {
+  // eslint-disable-next-line no-alert -- admin confirmation dialog
+  return globalThis.confirm(message)
+}
+
 export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBundle }) {
   const [draft, setDraft] = useState(initialDraft)
   const [section, setSection] = useState<EditableSection>('site')
   const [content, setContent] = useState(() => toJson(getSectionEditorValue(initialDraft, 'site')))
+  const [promptDrafts, setPromptDrafts] = useState(initialDraft.prompts)
+  const [activePrompt, setActivePrompt] = useState<PromptKey>('summarizeStory')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [episodes, setEpisodes] = useState<EpisodeListItem[]>([])
   const [loadingEpisodes, setLoadingEpisodes] = useState(false)
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeDetail | null>(null)
   const [episodeBusy, setEpisodeBusy] = useState(false)
+  const promptEditorRef = useRef<HTMLTextAreaElement | null>(null)
 
   const sectionValue = useMemo(() => {
     return getSectionEditorValue(draft, section)
   }, [draft, section])
+
+  const templateVariables = useMemo(() => {
+    return getTemplateVariables(draft)
+  }, [draft])
+
+  const templateVariableNames = useMemo(() => {
+    return Object.keys(templateVariables).sort()
+  }, [templateVariables])
+
+  const activePromptTemplate = promptDrafts[activePrompt]
+  const activePromptPreview = useMemo(() => {
+    return renderTemplate(activePromptTemplate, templateVariables)
+  }, [activePromptTemplate, templateVariables])
+
+  const activePromptUnknownVariables = useMemo(() => {
+    return findUnknownTemplateVariables(activePromptTemplate, templateVariables)
+  }, [activePromptTemplate, templateVariables])
 
   async function refreshDraft() {
     const response = await fetch('/api/admin/config/draft')
@@ -75,6 +155,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
       throw new Error(body.error || '刷新草稿失败')
     }
     setDraft(body.draft)
+    setPromptDrafts(body.draft.prompts)
     return body.draft
   }
 
@@ -94,6 +175,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         throw new Error(body.error || '保存失败')
       }
       setDraft(body.draft)
+      setPromptDrafts(body.draft.prompts)
       setContent(toJson(getSectionEditorValue(body.draft, section)))
       setMessage(`已保存 ${section}`)
     }
@@ -103,6 +185,75 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
     finally {
       setBusy(false)
     }
+  }
+
+  async function savePrompts() {
+    setBusy(true)
+    setMessage('')
+    try {
+      const response = await fetch('/api/admin/config/draft', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompts: promptDrafts }),
+      })
+      const body = (await response.json()) as { draft?: RuntimeConfigBundle, error?: string }
+      if (!response.ok || !body.draft) {
+        throw new Error(body.error || '保存 prompts 失败')
+      }
+      setDraft(body.draft)
+      setPromptDrafts(body.draft.prompts)
+      setMessage('已保存 prompts')
+    }
+    catch (error) {
+      setMessage(error instanceof Error ? error.message : '保存 prompts 失败')
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
+  function resetActivePrompt() {
+    if (!confirmAction('确定重置当前 Prompt 的未保存修改吗？')) {
+      return
+    }
+    setPromptDrafts(prev => setPromptValue(prev, activePrompt, draft.prompts[activePrompt]))
+  }
+
+  function resetAllPrompts() {
+    if (!confirmAction('确定重置全部 Prompt 的未保存修改吗？')) {
+      return
+    }
+    setPromptDrafts(draft.prompts)
+  }
+
+  function resetCurrentSection() {
+    if (!confirmAction(`确定重置当前区块 ${section} 的未保存修改吗？`)) {
+      return
+    }
+    setContent(toJson(sectionValue))
+  }
+
+  function insertTemplateVariable(name: string) {
+    const token = `{{${name}}}`
+    const editor = promptEditorRef.current
+    const current = promptDrafts[activePrompt]
+
+    if (!editor) {
+      setPromptDrafts(prev => setPromptValue(prev, activePrompt, `${current}${token}`))
+      return
+    }
+
+    const start = editor.selectionStart ?? current.length
+    const end = editor.selectionEnd ?? current.length
+    const next = `${current.slice(0, start)}${token}${current.slice(end)}`
+    const caret = start + token.length
+
+    setPromptDrafts(prev => setPromptValue(prev, activePrompt, next))
+
+    queueMicrotask(() => {
+      editor.focus()
+      editor.setSelectionRange(caret, caret)
+    })
   }
 
   async function uploadAsset(kind: 'logo' | 'music', file: File) {
@@ -216,8 +367,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
   }
 
   async function deleteEpisode(date: string) {
-    // eslint-disable-next-line no-alert -- admin delete confirmation
-    if (!globalThis.confirm(`确定删除 ${date} 的节目吗？此操作不可撤销，音频文件也会被删除。`)) {
+    if (!confirmAction(`确定删除 ${date} 的节目吗？此操作不可撤销，音频文件也会被删除。`)) {
       return
     }
     setBusy(true)
@@ -265,29 +415,158 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
             ))}
           </select>
         </label>
-        <button
-          type="button"
-          className="rounded border px-3 py-1.5 text-sm"
-          onClick={() => setContent(toJson(sectionValue))}
-          disabled={busy}
-        >
-          重置当前区块
-        </button>
-        <button
-          type="button"
-          className="rounded bg-black px-3 py-1.5 text-sm text-white"
-          onClick={saveSection}
-          disabled={busy}
-        >
-          保存当前区块
-        </button>
+
+        {section === 'prompts'
+          ? (
+              <>
+                <button
+                  type="button"
+                  className="rounded border px-3 py-1.5 text-sm"
+                  onClick={resetActivePrompt}
+                  disabled={busy}
+                >
+                  重置当前 Prompt
+                </button>
+                <button
+                  type="button"
+                  className="rounded border px-3 py-1.5 text-sm"
+                  onClick={resetAllPrompts}
+                  disabled={busy}
+                >
+                  重置全部 Prompt
+                </button>
+                <button
+                  type="button"
+                  className="rounded bg-black px-3 py-1.5 text-sm text-white"
+                  onClick={savePrompts}
+                  disabled={busy}
+                >
+                  保存 prompts
+                </button>
+              </>
+            )
+          : (
+              <>
+                <button
+                  type="button"
+                  className="rounded border px-3 py-1.5 text-sm"
+                  onClick={resetCurrentSection}
+                  disabled={busy}
+                >
+                  重置当前区块
+                </button>
+                <button
+                  type="button"
+                  className="rounded bg-black px-3 py-1.5 text-sm text-white"
+                  onClick={saveSection}
+                  disabled={busy}
+                >
+                  保存当前区块
+                </button>
+              </>
+            )}
       </div>
 
-      <textarea
-        className="min-h-72 w-full rounded border p-3 font-mono text-xs"
-        value={content}
-        onChange={event => setContent(event.target.value)}
-      />
+      {section === 'prompts'
+        ? (
+            <div className="space-y-4">
+              <div className={`
+                grid gap-2
+                lg:grid-cols-2
+              `}
+              >
+                {promptKeys.map((key) => {
+                  const meta = promptMetaMap[key]
+                  const isActive = key === activePrompt
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      className={[
+                        'rounded border px-3 py-2 text-left',
+                        isActive ? 'border-black bg-gray-100' : 'border-gray-300',
+                      ].join(' ')}
+                      onClick={() => setActivePrompt(key)}
+                    >
+                      <p className="text-sm font-medium">{meta.label}</p>
+                      <p className="text-xs text-gray-600">{meta.description}</p>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className={`
+                grid gap-4
+                xl:grid-cols-2
+              `}
+              >
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-sm font-semibold">模板编辑（会保存）</p>
+                    <p className="text-xs text-gray-600">
+                      当前 Prompt:
+                      {' '}
+                      {promptMetaMap[activePrompt].label}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {templateVariableNames.map(name => (
+                      <button
+                        key={name}
+                        type="button"
+                        className="rounded border px-2 py-1 text-xs"
+                        onClick={() => insertTemplateVariable(name)}
+                        disabled={busy}
+                        title={`插入 {{${name}}}`}
+                      >
+                        {name}
+                      </button>
+                    ))}
+                  </div>
+
+                  <textarea
+                    ref={promptEditorRef}
+                    className={`
+                      min-h-80 w-full rounded border p-3 font-mono text-xs
+                    `}
+                    value={activePromptTemplate}
+                    onChange={event => setPromptDrafts(prev => setPromptValue(prev, activePrompt, event.target.value))}
+                  />
+
+                  {activePromptUnknownVariables.length > 0
+                    ? (
+                        <p className="text-xs text-amber-700">
+                          未知模板变量:
+                          {' '}
+                          {activePromptUnknownVariables.join(', ')}
+                        </p>
+                      )
+                    : (
+                        <p className="text-xs text-gray-500">模板变量校验通过。</p>
+                      )}
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-sm font-semibold">渲染预览（仅预览，不保存）</p>
+                  <pre className={`
+                    min-h-80 overflow-auto rounded border bg-gray-50 p-3 text-xs
+                    break-words whitespace-pre-wrap
+                  `}
+                  >
+                    {activePromptPreview}
+                  </pre>
+                </div>
+              </div>
+            </div>
+          )
+        : (
+            <textarea
+              className="min-h-72 w-full rounded border p-3 font-mono text-xs"
+              value={content}
+              onChange={event => setContent(event.target.value)}
+            />
+          )}
 
       <div className="space-y-2 border-t pt-4">
         <h3 className="text-sm font-semibold">资源上传</h3>
@@ -339,10 +618,10 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
           {episodes.map(item => (
             <li
               key={item.date}
-              className={`
-                flex items-center justify-between gap-2 rounded border px-3 py-2
-                text-sm
-              `}
+              className={[
+                'flex items-center justify-between gap-2 rounded border px-3 py-2',
+                'text-sm',
+              ].join(' ')}
             >
               <div className="min-w-0">
                 <p className="truncate font-medium">{item.title}</p>
