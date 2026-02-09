@@ -304,6 +304,7 @@ function buildTimeWindow(
   now: Date,
   mode: Params['windowMode'] | undefined,
   hours: number,
+  frequencyDays: number,
   timeZone: string,
 ) {
   if (mode === 'rolling') {
@@ -316,12 +317,16 @@ function buildTimeWindow(
     }
   }
 
+  const normalizedFrequencyDays = Math.max(1, Math.floor(frequencyDays))
   const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
-  const dateKey = getDateKeyInTimeZone(yesterday, timeZone)
+  const endDateKey = getDateKeyInTimeZone(yesterday, timeZone)
+  const endDateUtc = new Date(`${endDateKey}T00:00:00.000Z`)
+  const startDateUtc = new Date(endDateUtc.getTime() - (normalizedFrequencyDays - 1) * 24 * 60 * 60 * 1000)
+  const startDateKey = `${startDateUtc.getUTCFullYear()}-${String(startDateUtc.getUTCMonth() + 1).padStart(2, '0')}-${String(startDateUtc.getUTCDate()).padStart(2, '0')}`
   return {
-    windowStart: zonedTimeToUtc(dateKey, timeZone, 0, 0, 0),
-    windowEnd: zonedTimeToUtc(dateKey, timeZone, 23, 59, 59),
-    windowDateKey: dateKey,
+    windowStart: zonedTimeToUtc(startDateKey, timeZone, 0, 0, 0),
+    windowEnd: zonedTimeToUtc(endDateKey, timeZone, 23, 59, 59),
+    windowDateKey: endDateKey,
   }
 }
 
@@ -369,8 +374,9 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
       : new Date()
     const windowMode = event.payload?.windowMode
     const windowHours = event.payload?.windowHours ?? 24
+    const sourceFrequencyDays = Math.max(1, runtimeConfig.sources.lookbackDays)
     const timeZone = runtimeConfig.locale.timezone || 'America/Chicago'
-    const { windowStart, windowEnd, windowDateKey } = buildTimeWindow(now, windowMode, windowHours, timeZone)
+    const { windowStart, windowEnd, windowDateKey } = buildTimeWindow(now, windowMode, windowHours, sourceFrequencyDays, timeZone)
     const today = event.payload?.today || windowDateKey
     const publishedAt = now.toISOString()
     const publishDateKey = getDateKeyInTimeZone(now, timeZone)
@@ -392,6 +398,13 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
       runtimeTimeZone: timeZone,
       ttsProvider: runtimeTtsSettings.provider,
       speakerMarkers,
+    })
+    console.info('source fetch window config', {
+      mode: windowMode || 'calendar',
+      frequencyDays: sourceFrequencyDays,
+      windowStart: windowStart.toISOString(),
+      windowEnd: windowEnd.toISOString(),
+      timeZone,
     })
 
     if (testStep && testStep !== 'stories') {

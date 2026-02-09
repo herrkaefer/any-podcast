@@ -5,7 +5,7 @@ import { useMemo, useRef, useState } from 'react'
 
 import { findUnknownTemplateVariables, getTemplateVariables, renderTemplate } from '@/lib/template'
 
-type EditableSection = 'site' | 'hosts' | 'ai' | 'tts' | 'locale' | 'sources' | 'prompts'
+type EditableSection = 'site' | 'hosts' | 'ai' | 'tts' | 'introMusic' | 'locale' | 'sources' | 'prompts'
 type PromptKey = keyof RuntimeConfigBundle['prompts']
 type SourceItem = RuntimeConfigBundle['sources']['items'][number]
 type SourceLinkRules = NonNullable<SourceItem['linkRules']>
@@ -28,13 +28,14 @@ interface EpisodeDetail extends EpisodeListItem {
   introContent?: string
 }
 
-const sections: EditableSection[] = ['site', 'hosts', 'ai', 'tts', 'locale', 'sources', 'prompts']
+const sections: EditableSection[] = ['site', 'hosts', 'ai', 'tts', 'introMusic', 'locale', 'sources', 'prompts']
 
 const sectionLabelMap: Record<EditableSection, string> = {
   site: 'Site',
   hosts: 'Hosts',
   ai: 'AI',
   tts: 'TTS',
+  introMusic: 'Intro Music',
   locale: 'Locale',
   sources: 'Sources',
   prompts: 'Prompts',
@@ -140,20 +141,32 @@ function getDefaultSource(): SourceItem {
   }
 }
 
-function getSectionPayload(config: RuntimeConfigBundle, section: EditableSection) {
+function getSourcePanelKey(item: SourceItem, index: number) {
+  const id = item.id?.trim()
+  return id ? `id:${id}` : `idx:${index}`
+}
+
+function getSectionPatchPayload(config: RuntimeConfigBundle, section: EditableSection): Record<string, unknown> {
   if (section === 'site')
-    return config.site
+    return { site: config.site }
   if (section === 'hosts')
-    return config.hosts
+    return { hosts: config.hosts }
   if (section === 'ai')
-    return config.ai
+    return { ai: config.ai }
   if (section === 'tts')
-    return config.tts
+    return { tts: config.tts }
+  if (section === 'introMusic') {
+    return {
+      tts: {
+        introMusic: config.tts.introMusic,
+      },
+    }
+  }
   if (section === 'locale')
-    return config.locale
+    return { locale: config.locale }
   if (section === 'sources')
-    return config.sources
-  return config.prompts
+    return { sources: config.sources }
+  return { prompts: config.prompts }
 }
 
 export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBundle }) {
@@ -167,6 +180,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
   const [loadingEpisodes, setLoadingEpisodes] = useState(false)
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeDetail | null>(null)
   const [episodeBusy, setEpisodeBusy] = useState(false)
+  const [collapsedSourcePanels, setCollapsedSourcePanels] = useState<Record<string, boolean>>({})
   const promptEditorRef = useRef<HTMLTextAreaElement | null>(null)
 
   const templateVariables = useMemo(() => {
@@ -227,24 +241,11 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
     })
   }
 
-  async function refreshDraft() {
-    const response = await fetch('/api/admin/config/draft')
-    const body = (await response.json()) as { draft: RuntimeConfigBundle, error?: string }
-    if (!response.ok) {
-      throw new Error(body.error || 'Failed to refresh draft')
-    }
-    setServerDraft(body.draft)
-    setWorkingDraft(body.draft)
-    return body.draft
-  }
-
   async function saveCurrentSection() {
     setBusy(true)
     setMessage('')
     try {
-      const payload = {
-        [section]: getSectionPayload(workingDraft, section),
-      }
+      const payload = getSectionPatchPayload(workingDraft, section)
       const response = await fetch('/api/admin/config/draft', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -283,6 +284,15 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
       }
       if (section === 'tts') {
         return { ...prev, tts: serverDraft.tts }
+      }
+      if (section === 'introMusic') {
+        return {
+          ...prev,
+          tts: {
+            ...prev.tts,
+            introMusic: serverDraft.tts.introMusic,
+          },
+        }
       }
       if (section === 'locale') {
         return { ...prev, locale: serverDraft.locale }
@@ -334,7 +344,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
     })
   }
 
-  async function uploadAsset(kind: 'logo' | 'music', file: File) {
+  async function uploadAsset(kind: 'logo' | 'music', file: File, onUploaded?: (url: string) => void) {
     setBusy(true)
     setMessage('')
     try {
@@ -348,8 +358,10 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
       if (!response.ok || !body.url) {
         throw new Error(body.error || `Failed to upload ${kind}`)
       }
+      if (onUploaded) {
+        onUploaded(body.url)
+      }
       setMessage(`${kind} uploaded: ${body.url}`)
-      await refreshDraft()
     }
     catch (error) {
       setMessage(error instanceof Error ? error.message : 'Upload failed')
@@ -544,6 +556,58 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
               }))}
             />
           </label>
+
+          <div className={`
+            space-y-3 rounded border p-3
+            md:col-span-2
+          `}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-semibold">Cover logo upload</p>
+              <label className="text-xs">
+                Upload logo
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="mt-1 block"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0]
+                    if (!file) {
+                      return
+                    }
+                    uploadAsset('logo', file, (url) => {
+                      setWorkingDraft(prev => ({
+                        ...prev,
+                        site: {
+                          ...prev.site,
+                          coverLogoUrl: url,
+                        },
+                      }))
+                    })
+                  }}
+                  disabled={busy}
+                />
+              </label>
+            </div>
+
+            {site.coverLogoUrl
+              ? (
+                  <div className="space-y-2">
+                    {/* eslint-disable-next-line next/no-img-element -- admin preview supports arbitrary logo URLs */}
+                    <img
+                      src={site.coverLogoUrl}
+                      alt="Cover logo preview"
+                      className={`
+                        h-20 w-20 rounded border bg-white object-contain p-1
+                      `}
+                    />
+                    <p className="text-xs break-all text-gray-500">{site.coverLogoUrl}</p>
+                  </div>
+                )
+              : (
+                  <p className="text-xs text-gray-500">No cover logo URL set.</p>
+                )}
+          </div>
 
           <label className="text-sm">
             Favicon URL
@@ -1408,94 +1472,6 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         </div>
 
         <div className="space-y-3 rounded border p-3">
-          <p className="text-sm font-semibold">introMusic</p>
-          <div className={`
-            grid gap-4
-            md:grid-cols-2
-          `}
-          >
-            <label className={`
-              text-sm
-              md:col-span-2
-            `}
-            >
-              url
-              <input
-                className="mt-1 w-full rounded border px-3 py-2"
-                value={tts.introMusic.url || ''}
-                onChange={event => setWorkingDraft(prev => ({
-                  ...prev,
-                  tts: {
-                    ...prev.tts,
-                    introMusic: {
-                      ...prev.tts.introMusic,
-                      url: event.target.value,
-                    },
-                  },
-                }))}
-              />
-            </label>
-            <label className="text-sm">
-              fadeOutStart
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full rounded border px-3 py-2"
-                value={tts.introMusic.fadeOutStart}
-                onChange={event => setWorkingDraft(prev => ({
-                  ...prev,
-                  tts: {
-                    ...prev.tts,
-                    introMusic: {
-                      ...prev.tts.introMusic,
-                      fadeOutStart: Math.max(0, Number(event.target.value || 0)),
-                    },
-                  },
-                }))}
-              />
-            </label>
-            <label className="text-sm">
-              fadeOutDuration
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full rounded border px-3 py-2"
-                value={tts.introMusic.fadeOutDuration}
-                onChange={event => setWorkingDraft(prev => ({
-                  ...prev,
-                  tts: {
-                    ...prev.tts,
-                    introMusic: {
-                      ...prev.tts.introMusic,
-                      fadeOutDuration: Math.max(0, Number(event.target.value || 0)),
-                    },
-                  },
-                }))}
-              />
-            </label>
-            <label className="text-sm">
-              podcastDelay(ms)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full rounded border px-3 py-2"
-                value={tts.introMusic.podcastDelay}
-                onChange={event => setWorkingDraft(prev => ({
-                  ...prev,
-                  tts: {
-                    ...prev.tts,
-                    introMusic: {
-                      ...prev.tts.introMusic,
-                      podcastDelay: Math.max(0, Number(event.target.value || 0)),
-                    },
-                  },
-                }))}
-              />
-            </label>
-          </div>
-        </div>
-
-        <div className="space-y-3 rounded border p-3">
           <p className="text-sm font-semibold">voices (mapped by host.id)</p>
           {workingDraft.hosts.map(host => (
             <label key={host.id} className="block text-sm">
@@ -1577,6 +1553,140 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
     )
   }
 
+  function renderIntroMusicSection() {
+    const introMusic = workingDraft.tts.introMusic
+    return (
+      <div className="space-y-4">
+        <div className="space-y-3 rounded border p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold">Theme music file</p>
+            <label className="text-xs">
+              Upload theme music
+              <input
+                type="file"
+                accept="audio/*"
+                className="mt-1 block"
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (!file) {
+                    return
+                  }
+                  uploadAsset('music', file, (url) => {
+                    setWorkingDraft(prev => ({
+                      ...prev,
+                      tts: {
+                        ...prev.tts,
+                        introMusic: {
+                          ...prev.tts.introMusic,
+                          url,
+                        },
+                      },
+                    }))
+                  })
+                }}
+                disabled={busy}
+              />
+            </label>
+          </div>
+
+          <label className="block text-sm">
+            url
+            <input
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={introMusic.url || ''}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                tts: {
+                  ...prev.tts,
+                  introMusic: {
+                    ...prev.tts.introMusic,
+                    url: event.target.value,
+                  },
+                },
+              }))}
+            />
+          </label>
+
+          {introMusic.url
+            ? (
+                <audio controls className="w-full" src={introMusic.url} />
+              )
+            : (
+                <p className="text-xs text-gray-500">No intro music URL set.</p>
+              )}
+        </div>
+
+        <div className={`
+          grid gap-4
+          md:grid-cols-2
+        `}
+        >
+          <label className="text-sm">
+            fadeOutStart
+            <input
+              type="number"
+              min={0}
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={introMusic.fadeOutStart}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                tts: {
+                  ...prev.tts,
+                  introMusic: {
+                    ...prev.tts.introMusic,
+                    fadeOutStart: Math.max(0, Number(event.target.value || 0)),
+                  },
+                },
+              }))}
+            />
+          </label>
+          <label className="text-sm">
+            fadeOutDuration
+            <input
+              type="number"
+              min={0}
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={introMusic.fadeOutDuration}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                tts: {
+                  ...prev.tts,
+                  introMusic: {
+                    ...prev.tts.introMusic,
+                    fadeOutDuration: Math.max(0, Number(event.target.value || 0)),
+                  },
+                },
+              }))}
+            />
+          </label>
+          <label className={`
+            text-sm
+            md:col-span-2
+          `}
+          >
+            podcastDelay(ms)
+            <input
+              type="number"
+              min={0}
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={introMusic.podcastDelay}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                tts: {
+                  ...prev.tts,
+                  introMusic: {
+                    ...prev.tts.introMusic,
+                    podcastDelay: Math.max(0, Number(event.target.value || 0)),
+                  },
+                },
+              }))}
+            />
+          </label>
+        </div>
+      </div>
+    )
+  }
+
   function renderLocaleSection() {
     const locale = workingDraft.locale
     return (
@@ -1647,7 +1757,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         `}
         >
           <label className="text-sm">
-            lookbackDays
+            Fetch frequency (days)
             <input
               type="number"
               min={1}
@@ -1661,6 +1771,9 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                 },
               }))}
             />
+            <p className="mt-1 text-xs text-gray-500">
+              Timezone-aware full-day window. `1` = previous local day (00:00-23:59:59), `2` = previous 2 full local days.
+            </p>
           </label>
 
           <label className="text-sm">
@@ -1704,363 +1817,431 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
             <button
               type="button"
               className="rounded border px-2 py-1 text-xs"
-              onClick={() => setWorkingDraft(prev => ({
-                ...prev,
-                sources: {
-                  ...prev.sources,
-                  items: [...prev.sources.items, getDefaultSource()],
-                },
-              }))}
+              onClick={() => {
+                const nextSource = getDefaultSource()
+                const panelKey = getSourcePanelKey(nextSource, sources.items.length)
+                setCollapsedSourcePanels(prev => ({
+                  ...prev,
+                  [panelKey]: true,
+                }))
+                setWorkingDraft(prev => ({
+                  ...prev,
+                  sources: {
+                    ...prev.sources,
+                    items: [...prev.sources.items, nextSource],
+                  },
+                }))
+              }}
             >
               Add source
             </button>
           </div>
 
-          {sources.items.map((item, index) => (
-            <div key={item.id || index} className="space-y-3 rounded border p-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium">
-                  Source
-                  {index + 1}
-                </p>
+          {sources.items.map((item, index) => {
+            const panelKey = getSourcePanelKey(item, index)
+            const isCollapsed = collapsedSourcePanels[panelKey] ?? true
+            const sourceName = item.name.trim() || `Source ${index + 1}`
+
+            return (
+              <div key={panelKey} className="rounded border">
                 <button
                   type="button"
-                  className="rounded border px-2 py-1 text-xs text-red-700"
-                  onClick={() => {
-                    if (!confirmAction('Delete this source?')) {
-                      return
-                    }
-                    setWorkingDraft(prev => ({
-                      ...prev,
-                      sources: {
-                        ...prev.sources,
-                        items: prev.sources.items.filter((_, itemIndex) => itemIndex !== index),
-                      },
-                    }))
-                  }}
+                  className={`
+                    flex w-full items-center justify-between px-3 py-2 text-left
+                  `}
+                  onClick={() => setCollapsedSourcePanels(prev => ({
+                    ...prev,
+                    [panelKey]: !isCollapsed,
+                  }))}
                 >
-                  Delete source
+                  <span className="truncate text-sm font-medium">{sourceName}</span>
+                  <span aria-hidden className="ml-2 text-xs text-gray-500">{isCollapsed ? '▸' : '▾'}</span>
                 </button>
-              </div>
 
-              <div className={`
-                grid gap-4
-                md:grid-cols-3
-              `}
-              >
-                <label className="text-sm">
-                  id
-                  <input
-                    className="mt-1 w-full rounded border px-3 py-2"
-                    value={item.id}
-                    onChange={event => updateSourceItem(index, current => ({
-                      ...current,
-                      id: event.target.value,
-                    }))}
-                  />
-                </label>
-                <label className="text-sm">
-                  name
-                  <input
-                    className="mt-1 w-full rounded border px-3 py-2"
-                    value={item.name}
-                    onChange={event => updateSourceItem(index, current => ({
-                      ...current,
-                      name: event.target.value,
-                    }))}
-                  />
-                </label>
-                <label className="text-sm">
-                  type
-                  <select
-                    className="mt-1 w-full rounded border px-3 py-2"
-                    value={item.type}
-                    onChange={event => updateSourceItem(index, current => ({
-                      ...current,
-                      type: event.target.value as SourceItem['type'],
-                    }))}
-                  >
-                    {sourceTypeOptions.map(type => (
-                      <option key={type} value={type}>{type}</option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className={`
-                  text-sm
-                  md:col-span-3
-                `}
-                >
-                  url
-                  <input
-                    className="mt-1 w-full rounded border px-3 py-2"
-                    value={item.url}
-                    onChange={event => updateSourceItem(index, current => ({
-                      ...current,
-                      url: event.target.value,
-                    }))}
-                  />
-                </label>
-
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={item.enabled !== false}
-                    onChange={event => updateSourceItem(index, current => ({
-                      ...current,
-                      enabled: event.target.checked,
-                    }))}
-                  />
-                  <span>enabled</span>
-                </label>
-
-                <label className="text-sm">
-                  lookbackDays
-                  <input
-                    type="number"
-                    min={1}
-                    className="mt-1 w-full rounded border px-3 py-2"
-                    value={item.lookbackDays ?? ''}
-                    onChange={event => updateSourceItem(index, current => ({
-                      ...current,
-                      lookbackDays: parseOptionalInt(event.target.value),
-                    }))}
-                  />
-                </label>
-
-                <label className="text-sm">
-                  maxMessages
-                  <input
-                    type="number"
-                    min={1}
-                    className="mt-1 w-full rounded border px-3 py-2"
-                    value={item.maxMessages ?? ''}
-                    onChange={event => updateSourceItem(index, current => ({
-                      ...current,
-                      maxMessages: parseOptionalInt(event.target.value),
-                    }))}
-                  />
-                </label>
-
-                <label className={`
-                  text-sm
-                  md:col-span-3
-                `}
-                >
-                  label
-                  <input
-                    className="mt-1 w-full rounded border px-3 py-2"
-                    value={item.label || ''}
-                    onChange={event => updateSourceItem(index, current => ({
-                      ...current,
-                      label: event.target.value,
-                    }))}
-                  />
-                </label>
-              </div>
-
-              <div className="space-y-2 rounded border p-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium">linkRules</p>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      className="rounded border px-2 py-1 text-xs"
-                      onClick={() => updateSourceItem(index, current => ({
-                        ...current,
-                        linkRules: current.linkRules || {},
-                      }))}
-                    >
-                      Enable
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded border px-2 py-1 text-xs text-red-700"
-                      onClick={() => {
-                        if (!confirmAction('Clear linkRules for this source?')) {
-                          return
-                        }
-                        updateSourceItem(index, current => ({
-                          ...current,
-                          linkRules: undefined,
-                        }))
-                      }}
-                    >
-                      Clear
-                    </button>
-                  </div>
-                </div>
-
-                {item.linkRules
-                  ? (
-                      <div className={`
-                        grid gap-4
-                        md:grid-cols-2
-                      `}
-                      >
-                        <label className="text-sm">
-                          includeDomains (one per line)
-                          <textarea
+                {isCollapsed
+                  ? null
+                  : (
+                      <div className="space-y-3 border-t p-3">
+                        <div className="flex items-center justify-end">
+                          <button
+                            type="button"
                             className={`
-                              mt-1 min-h-20 w-full rounded border px-3 py-2
+                              rounded border px-2 py-1 text-xs text-red-700
                             `}
-                            value={toMultiline(item.linkRules.includeDomains)}
-                            onChange={event => updateSourceLinkRules(index, rules => ({
-                              ...rules,
-                              includeDomains: splitMultiline(event.target.value),
-                            }))}
-                          />
-                        </label>
-
-                        <label className="text-sm">
-                          excludeDomains (one per line)
-                          <textarea
-                            className={`
-                              mt-1 min-h-20 w-full rounded border px-3 py-2
-                            `}
-                            value={toMultiline(item.linkRules.excludeDomains)}
-                            onChange={event => updateSourceLinkRules(index, rules => ({
-                              ...rules,
-                              excludeDomains: splitMultiline(event.target.value),
-                            }))}
-                          />
-                        </label>
-
-                        <label className="text-sm">
-                          includePathKeywords (one per line)
-                          <textarea
-                            className={`
-                              mt-1 min-h-20 w-full rounded border px-3 py-2
-                            `}
-                            value={toMultiline(item.linkRules.includePathKeywords)}
-                            onChange={event => updateSourceLinkRules(index, rules => ({
-                              ...rules,
-                              includePathKeywords: splitMultiline(event.target.value),
-                            }))}
-                          />
-                        </label>
-
-                        <label className="text-sm">
-                          excludePathKeywords (one per line)
-                          <textarea
-                            className={`
-                              mt-1 min-h-20 w-full rounded border px-3 py-2
-                            `}
-                            value={toMultiline(item.linkRules.excludePathKeywords)}
-                            onChange={event => updateSourceLinkRules(index, rules => ({
-                              ...rules,
-                              excludePathKeywords: splitMultiline(event.target.value),
-                            }))}
-                          />
-                        </label>
-
-                        <label className={`
-                          text-sm
-                          md:col-span-2
-                        `}
-                        >
-                          excludeText (one per line)
-                          <textarea
-                            className={`
-                              mt-1 min-h-20 w-full rounded border px-3 py-2
-                            `}
-                            value={toMultiline(item.linkRules.excludeText)}
-                            onChange={event => updateSourceLinkRules(index, rules => ({
-                              ...rules,
-                              excludeText: splitMultiline(event.target.value),
-                            }))}
-                          />
-                        </label>
-
-                        <label className="text-sm">
-                          minArticleScore
-                          <input
-                            type="number"
-                            step="0.1"
-                            className="mt-1 w-full rounded border px-3 py-2"
-                            value={item.linkRules.minArticleScore ?? ''}
-                            onChange={event => updateSourceLinkRules(index, rules => ({
-                              ...rules,
-                              minArticleScore: parseOptionalNumber(event.target.value),
-                            }))}
-                          />
-                        </label>
-
-                        <label className="text-sm">
-                          minTextLength
-                          <input
-                            type="number"
-                            min={0}
-                            className="mt-1 w-full rounded border px-3 py-2"
-                            value={item.linkRules.minTextLength ?? ''}
-                            onChange={event => updateSourceLinkRules(index, rules => ({
-                              ...rules,
-                              minTextLength: parseOptionalNumber(event.target.value),
-                            }))}
-                          />
-                        </label>
-
-                        <label className="text-sm">
-                          debugMaxLinks
-                          <input
-                            type="number"
-                            min={0}
-                            className="mt-1 w-full rounded border px-3 py-2"
-                            value={item.linkRules.debugMaxLinks ?? ''}
-                            onChange={event => updateSourceLinkRules(index, rules => ({
-                              ...rules,
-                              debugMaxLinks: parseOptionalInt(event.target.value),
-                            }))}
-                          />
-                        </label>
+                            onClick={() => {
+                              if (!confirmAction('Delete this source?')) {
+                                return
+                              }
+                              setCollapsedSourcePanels((prev) => {
+                                const next = { ...prev }
+                                delete next[panelKey]
+                                return next
+                              })
+                              setWorkingDraft(prev => ({
+                                ...prev,
+                                sources: {
+                                  ...prev.sources,
+                                  items: prev.sources.items.filter((_, itemIndex) => itemIndex !== index),
+                                },
+                              }))
+                            }}
+                          >
+                            Delete source
+                          </button>
+                        </div>
 
                         <div className={`
-                          flex flex-wrap items-center gap-4
-                          md:col-span-2
+                          grid gap-4
+                          md:grid-cols-3
                         `}
                         >
-                          <label className="flex items-center gap-2 text-sm">
+                          <label className="text-sm">
+                            id
                             <input
-                              type="checkbox"
-                              checked={item.linkRules.debug === true}
-                              onChange={event => updateSourceLinkRules(index, rules => ({
-                                ...rules,
-                                debug: event.target.checked,
+                              className="mt-1 w-full rounded border px-3 py-2"
+                              value={item.id}
+                              onChange={event => updateSourceItem(index, current => ({
+                                ...current,
+                                id: event.target.value,
                               }))}
                             />
-                            <span>debug</span>
+                          </label>
+                          <label className="text-sm">
+                            name
+                            <input
+                              className="mt-1 w-full rounded border px-3 py-2"
+                              value={item.name}
+                              onChange={event => updateSourceItem(index, current => ({
+                                ...current,
+                                name: event.target.value,
+                              }))}
+                            />
+                          </label>
+                          <label className="text-sm">
+                            type
+                            <select
+                              className="mt-1 w-full rounded border px-3 py-2"
+                              value={item.type}
+                              onChange={event => updateSourceItem(index, current => ({
+                                ...current,
+                                type: event.target.value as SourceItem['type'],
+                              }))}
+                            >
+                              {sourceTypeOptions.map(type => (
+                                <option key={type} value={type}>{type}</option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <label className={`
+                            text-sm
+                            md:col-span-3
+                          `}
+                          >
+                            url
+                            <input
+                              className="mt-1 w-full rounded border px-3 py-2"
+                              value={item.url}
+                              onChange={event => updateSourceItem(index, current => ({
+                                ...current,
+                                url: event.target.value,
+                              }))}
+                            />
                           </label>
 
                           <label className="flex items-center gap-2 text-sm">
                             <input
                               type="checkbox"
-                              checked={item.linkRules.resolveTrackingLinks !== false}
-                              onChange={event => updateSourceLinkRules(index, rules => ({
-                                ...rules,
-                                resolveTrackingLinks: event.target.checked,
+                              checked={item.enabled !== false}
+                              onChange={event => updateSourceItem(index, current => ({
+                                ...current,
+                                enabled: event.target.checked,
                               }))}
                             />
-                            <span>resolveTrackingLinks</span>
+                            <span>enabled</span>
                           </label>
 
-                          <label className="flex items-center gap-2 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={item.linkRules.preferOnlineVersion === true}
-                              onChange={event => updateSourceLinkRules(index, rules => ({
-                                ...rules,
-                                preferOnlineVersion: event.target.checked,
-                              }))}
-                            />
-                            <span>preferOnlineVersion</span>
-                          </label>
+                          {item.type === 'gmail'
+                            ? (
+                                <>
+                                  <label className="text-sm">
+                                    maxMessages
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      className={`
+                                        mt-1 w-full rounded border px-3 py-2
+                                      `}
+                                      value={item.maxMessages ?? ''}
+                                      onChange={event => updateSourceItem(index, current => ({
+                                        ...current,
+                                        maxMessages: parseOptionalInt(event.target.value),
+                                      }))}
+                                    />
+                                  </label>
+
+                                  <label className={`
+                                    text-sm
+                                    md:col-span-3
+                                  `}
+                                  >
+                                    label
+                                    <input
+                                      className={`
+                                        mt-1 w-full rounded border px-3 py-2
+                                      `}
+                                      value={item.label || ''}
+                                      onChange={event => updateSourceItem(index, current => ({
+                                        ...current,
+                                        label: event.target.value,
+                                      }))}
+                                    />
+                                  </label>
+                                </>
+                              )
+                            : null}
                         </div>
+
+                        {item.type === 'gmail'
+                          ? (
+                              <div className="space-y-2 rounded border p-3">
+                                <div className={`
+                                  flex items-center justify-between
+                                `}
+                                >
+                                  <p className="text-sm font-medium">linkRules</p>
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      type="button"
+                                      className={`
+                                        rounded border px-2 py-1 text-xs
+                                      `}
+                                      onClick={() => updateSourceItem(index, current => ({
+                                        ...current,
+                                        linkRules: current.linkRules || {},
+                                      }))}
+                                    >
+                                      Enable
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`
+                                        rounded border px-2 py-1 text-xs
+                                        text-red-700
+                                      `}
+                                      onClick={() => {
+                                        if (!confirmAction('Clear linkRules for this source?')) {
+                                          return
+                                        }
+                                        updateSourceItem(index, current => ({
+                                          ...current,
+                                          linkRules: undefined,
+                                        }))
+                                      }}
+                                    >
+                                      Clear
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {item.linkRules
+                                  ? (
+                                      <div className={`
+                                        grid gap-4
+                                        md:grid-cols-2
+                                      `}
+                                      >
+                                        <label className="text-sm">
+                                          includeDomains (one per line)
+                                          <textarea
+                                            className={`
+                                              mt-1 min-h-20 w-full rounded
+                                              border px-3 py-2
+                                            `}
+                                            value={toMultiline(item.linkRules.includeDomains)}
+                                            onChange={event => updateSourceLinkRules(index, rules => ({
+                                              ...rules,
+                                              includeDomains: splitMultiline(event.target.value),
+                                            }))}
+                                          />
+                                        </label>
+
+                                        <label className="text-sm">
+                                          excludeDomains (one per line)
+                                          <textarea
+                                            className={`
+                                              mt-1 min-h-20 w-full rounded
+                                              border px-3 py-2
+                                            `}
+                                            value={toMultiline(item.linkRules.excludeDomains)}
+                                            onChange={event => updateSourceLinkRules(index, rules => ({
+                                              ...rules,
+                                              excludeDomains: splitMultiline(event.target.value),
+                                            }))}
+                                          />
+                                        </label>
+
+                                        <label className="text-sm">
+                                          includePathKeywords (one per line)
+                                          <textarea
+                                            className={`
+                                              mt-1 min-h-20 w-full rounded
+                                              border px-3 py-2
+                                            `}
+                                            value={toMultiline(item.linkRules.includePathKeywords)}
+                                            onChange={event => updateSourceLinkRules(index, rules => ({
+                                              ...rules,
+                                              includePathKeywords: splitMultiline(event.target.value),
+                                            }))}
+                                          />
+                                        </label>
+
+                                        <label className="text-sm">
+                                          excludePathKeywords (one per line)
+                                          <textarea
+                                            className={`
+                                              mt-1 min-h-20 w-full rounded
+                                              border px-3 py-2
+                                            `}
+                                            value={toMultiline(item.linkRules.excludePathKeywords)}
+                                            onChange={event => updateSourceLinkRules(index, rules => ({
+                                              ...rules,
+                                              excludePathKeywords: splitMultiline(event.target.value),
+                                            }))}
+                                          />
+                                        </label>
+
+                                        <label className={`
+                                          text-sm
+                                          md:col-span-2
+                                        `}
+                                        >
+                                          excludeText (one per line)
+                                          <textarea
+                                            className={`
+                                              mt-1 min-h-20 w-full rounded
+                                              border px-3 py-2
+                                            `}
+                                            value={toMultiline(item.linkRules.excludeText)}
+                                            onChange={event => updateSourceLinkRules(index, rules => ({
+                                              ...rules,
+                                              excludeText: splitMultiline(event.target.value),
+                                            }))}
+                                          />
+                                        </label>
+
+                                        <label className="text-sm">
+                                          minArticleScore
+                                          <input
+                                            type="number"
+                                            step="0.1"
+                                            className={`
+                                              mt-1 w-full rounded border px-3
+                                              py-2
+                                            `}
+                                            value={item.linkRules.minArticleScore ?? ''}
+                                            onChange={event => updateSourceLinkRules(index, rules => ({
+                                              ...rules,
+                                              minArticleScore: parseOptionalNumber(event.target.value),
+                                            }))}
+                                          />
+                                        </label>
+
+                                        <label className="text-sm">
+                                          minTextLength
+                                          <input
+                                            type="number"
+                                            min={0}
+                                            className={`
+                                              mt-1 w-full rounded border px-3
+                                              py-2
+                                            `}
+                                            value={item.linkRules.minTextLength ?? ''}
+                                            onChange={event => updateSourceLinkRules(index, rules => ({
+                                              ...rules,
+                                              minTextLength: parseOptionalNumber(event.target.value),
+                                            }))}
+                                          />
+                                        </label>
+
+                                        <label className="text-sm">
+                                          debugMaxLinks
+                                          <input
+                                            type="number"
+                                            min={0}
+                                            className={`
+                                              mt-1 w-full rounded border px-3
+                                              py-2
+                                            `}
+                                            value={item.linkRules.debugMaxLinks ?? ''}
+                                            onChange={event => updateSourceLinkRules(index, rules => ({
+                                              ...rules,
+                                              debugMaxLinks: parseOptionalInt(event.target.value),
+                                            }))}
+                                          />
+                                        </label>
+
+                                        <div className={`
+                                          flex flex-wrap items-center gap-4
+                                          md:col-span-2
+                                        `}
+                                        >
+                                          <label className={`
+                                            flex items-center gap-2 text-sm
+                                          `}
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              checked={item.linkRules.debug === true}
+                                              onChange={event => updateSourceLinkRules(index, rules => ({
+                                                ...rules,
+                                                debug: event.target.checked,
+                                              }))}
+                                            />
+                                            <span>debug</span>
+                                          </label>
+
+                                          <label className={`
+                                            flex items-center gap-2 text-sm
+                                          `}
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              checked={item.linkRules.resolveTrackingLinks !== false}
+                                              onChange={event => updateSourceLinkRules(index, rules => ({
+                                                ...rules,
+                                                resolveTrackingLinks: event.target.checked,
+                                              }))}
+                                            />
+                                            <span>resolveTrackingLinks</span>
+                                          </label>
+
+                                          <label className={`
+                                            flex items-center gap-2 text-sm
+                                          `}
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              checked={item.linkRules.preferOnlineVersion === true}
+                                              onChange={event => updateSourceLinkRules(index, rules => ({
+                                                ...rules,
+                                                preferOnlineVersion: event.target.checked,
+                                              }))}
+                                            />
+                                            <span>preferOnlineVersion</span>
+                                          </label>
+                                        </div>
+                                      </div>
+                                    )
+                                  : <p className="text-xs text-gray-500">linkRules is currently disabled.</p>}
+                              </div>
+                            )
+                          : null}
                       </div>
-                    )
-                  : <p className="text-xs text-gray-500">linkRules is currently disabled.</p>}
+                    )}
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
     )
@@ -2227,43 +2408,10 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         {section === 'hosts' && renderHostsSection()}
         {section === 'ai' && renderAiSection()}
         {section === 'tts' && renderTtsSection()}
+        {section === 'introMusic' && renderIntroMusicSection()}
         {section === 'locale' && renderLocaleSection()}
         {section === 'sources' && renderSourcesSection()}
         {section === 'prompts' && renderPromptsSection()}
-      </div>
-
-      <div className="space-y-2 border-t pt-4">
-        <h3 className="text-sm font-semibold">Asset Upload</h3>
-        <div className="flex flex-wrap gap-4 text-sm">
-          <label className="flex items-center gap-2">
-            <span>Logo</span>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(event) => {
-                const file = event.target.files?.[0]
-                if (file) {
-                  uploadAsset('logo', file)
-                }
-              }}
-              disabled={busy}
-            />
-          </label>
-          <label className="flex items-center gap-2">
-            <span>Theme music</span>
-            <input
-              type="file"
-              accept="audio/*"
-              onChange={(event) => {
-                const file = event.target.files?.[0]
-                if (file) {
-                  uploadAsset('music', file)
-                }
-              }}
-              disabled={busy}
-            />
-          </label>
-        </div>
       </div>
 
       <div className="space-y-2 border-t pt-4">
