@@ -1,7 +1,28 @@
+import type { AiEnv } from '../ai'
 import type { SourceConfig } from './types'
 
 import * as cheerio from 'cheerio'
 import { $fetch } from 'ofetch'
+
+import { getContentFromJinaWithRetry, isSubrequestLimitError } from '../utils'
+import { extractNewsletterLinksWithAi } from './newsletter-links'
+
+const NEWSLETTER_HOSTS = ['kill-the-newsletter.com']
+
+interface RssEnv extends AiEnv {
+  JINA_KEY?: string
+  NODE_ENV?: string
+}
+
+function isNewsletterLink(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase()
+    return NEWSLETTER_HOSTS.some(h => hostname === h || hostname.endsWith(`.${h}`))
+  }
+  catch {
+    return false
+  }
+}
 
 interface RssItem {
   title: string
@@ -87,6 +108,7 @@ export async function fetchRssItems(
   now: Date,
   lookbackDays: number,
   window?: { start: Date, end: Date, timeZone: string },
+  env?: RssEnv,
 ) {
   const timeZone = 'America/Chicago'
 
@@ -99,7 +121,7 @@ export async function fetchRssItems(
     const rssItems = extractRssItems(xml)
     const items = rssItems.length ? rssItems : extractAtomItems(xml)
 
-    return items
+    const filteredItems = items
       .map(normalizeItem)
       .filter((item): item is RssItem => Boolean(item))
       .filter((item) => {
@@ -114,14 +136,62 @@ export async function fetchRssItems(
         return isSameDayInTimeZone(publishedAt, now, timeZone)
           && isWithinLookback(publishedAt, now, lookbackDays)
       })
-      .map(item => ({
-        id: item.guid || item.link,
-        title: item.title,
-        url: item.link,
-        sourceName: source.name,
-        sourceUrl: source.url,
-        publishedAt: item.pubDate,
-      }))
+
+    const stories: Story[] = []
+
+    for (const item of filteredItems) {
+      if (isNewsletterLink(item.link) && env) {
+        try {
+          const content = await getContentFromJinaWithRetry(item.link, 'markdown', {}, env.JINA_KEY)
+          if (!content) {
+            console.warn('rss newsletter content empty', { source: source.name, title: item.title, link: item.link })
+            continue
+          }
+          const links = await extractNewsletterLinksWithAi({
+            subject: item.title,
+            content,
+            source,
+            env,
+            messageId: item.guid || item.link,
+            receivedAt: item.pubDate || now.toISOString(),
+          })
+          if (links.length === 0) {
+            console.warn('rss newsletter no links extracted', { source: source.name, title: item.title })
+            continue
+          }
+          console.info('rss newsletter links extracted', { source: source.name, title: item.title, count: links.length })
+          for (const [index, link] of links.entries()) {
+            stories.push({
+              id: `${item.guid || item.link}:${index}`,
+              title: link.title || item.title,
+              url: link.link,
+              sourceName: source.name,
+              sourceUrl: source.url,
+              publishedAt: item.pubDate,
+              sourceItemId: item.guid || item.link,
+              sourceItemTitle: item.title,
+            })
+          }
+        }
+        catch (error) {
+          if (isSubrequestLimitError(error))
+            throw error
+          console.error('rss newsletter processing failed', { source: source.name, title: item.title, error })
+        }
+      }
+      else {
+        stories.push({
+          id: item.guid || item.link,
+          title: item.title,
+          url: item.link,
+          sourceName: source.name,
+          sourceUrl: source.url,
+          publishedAt: item.pubDate,
+        })
+      }
+    }
+
+    return stories
   }
   catch (error) {
     console.error('fetch rss items failed', { source: source.name, error })

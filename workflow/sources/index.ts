@@ -33,7 +33,7 @@ export async function getStoryCandidatesFromSources(options?: { now?: Date, env?
       switch (source.type) {
         case 'rss': {
           return {
-            stories: await fetchRssItems(source, now, days, options?.window),
+            stories: await fetchRssItems(source, now, days, options?.window, options?.env),
             gmailMessages: [] as GmailMessageRef[],
           }
         }
