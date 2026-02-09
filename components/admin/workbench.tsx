@@ -5,16 +5,10 @@ import { useMemo, useRef, useState } from 'react'
 
 import { findUnknownTemplateVariables, getTemplateVariables, renderTemplate } from '@/lib/template'
 
-type EditableSection = 'site' | 'hosts' | 'tts' | 'locale' | 'sources' | 'prompts'
-
-type EditableSiteConfig = RuntimeConfigBundle['site']
-
-type EditableTtsConfig = Pick<
-  RuntimeConfigBundle['tts'],
-  'provider' | 'language' | 'model' | 'voices' | 'geminiPrompt' | 'introMusic' | 'audioQuality'
->
-
+type EditableSection = 'site' | 'hosts' | 'ai' | 'tts' | 'locale' | 'sources' | 'prompts'
 type PromptKey = keyof RuntimeConfigBundle['prompts']
+type SourceItem = RuntimeConfigBundle['sources']['items'][number]
+type SourceLinkRules = NonNullable<SourceItem['linkRules']>
 
 interface PromptMeta {
   label: string
@@ -34,7 +28,18 @@ interface EpisodeDetail extends EpisodeListItem {
   introContent?: string
 }
 
-const sections: EditableSection[] = ['site', 'hosts', 'tts', 'locale', 'sources', 'prompts']
+const sections: EditableSection[] = ['site', 'hosts', 'ai', 'tts', 'locale', 'sources', 'prompts']
+
+const sectionLabelMap: Record<EditableSection, string> = {
+  site: 'Site',
+  hosts: 'Hosts',
+  ai: 'AI',
+  tts: 'TTS',
+  locale: 'Locale',
+  sources: 'Sources',
+  prompts: 'Prompts',
+}
+
 const promptKeys: PromptKey[] = [
   'summarizeStory',
   'summarizePodcast',
@@ -46,78 +51,115 @@ const promptKeys: PromptKey[] = [
 
 const promptMetaMap: Record<PromptKey, PromptMeta> = {
   summarizeStory: {
-    label: '文章摘要与相关性',
-    description: '用于单篇文章与评论整理，并判断是否和播客主题相关。',
+    label: 'Story Summary & Relevance',
+    description: 'Summarize a single article and comments, and judge whether it matches the podcast theme.',
   },
   summarizePodcast: {
-    label: '播客对话生成',
-    description: '用于把多条摘要整合为双人对话播客稿。',
+    label: 'Podcast Dialogue Generation',
+    description: 'Combine multiple summaries into a two-host podcast dialogue script.',
   },
   summarizeBlog: {
-    label: '博客正文生成',
-    description: '用于产出 SEO 友好的 Markdown 博客正文。',
+    label: 'Blog Content Generation',
+    description: 'Generate SEO-friendly Markdown blog content.',
   },
   intro: {
-    label: '节目简介生成',
-    description: '用于生成每期节目在页面展示的短简介。',
+    label: 'Episode Description Generation',
+    description: 'Generate a short episode description for page display.',
   },
   title: {
-    label: '标题生成',
-    description: '用于生成并推荐单集标题。',
+    label: 'Title Generation',
+    description: 'Generate and suggest episode titles.',
   },
   extractNewsletterLinks: {
-    label: 'Newsletter 链接提取',
-    description: '用于从 Newsletter 文本中筛选可用文章链接。',
+    label: 'Newsletter Link Extraction',
+    description: 'Extract usable article links from newsletter text.',
   },
 }
 
-function toJson(value: unknown) {
-  return JSON.stringify(value, null, 2)
-}
-
-function getEditableSiteConfig(site: RuntimeConfigBundle['site']): EditableSiteConfig {
-  return { ...site }
-}
-
-function getSectionEditorValue(draft: RuntimeConfigBundle, section: EditableSection) {
-  if (section === 'site') {
-    return getEditableSiteConfig(draft.site)
-  }
-  if (section === 'tts') {
-    return {
-      provider: draft.tts.provider,
-      language: draft.tts.language,
-      model: draft.tts.model,
-      voices: draft.tts.voices,
-      geminiPrompt: draft.tts.geminiPrompt,
-      introMusic: draft.tts.introMusic,
-      audioQuality: draft.tts.audioQuality,
-    } satisfies EditableTtsConfig
-  }
-  return draft[section]
-}
-
-function setPromptValue(
-  current: RuntimeConfigBundle['prompts'],
-  key: PromptKey,
-  value: string,
-): RuntimeConfigBundle['prompts'] {
-  return {
-    ...current,
-    [key]: value,
-  }
-}
+const themeColorOptions: RuntimeConfigBundle['site']['themeColor'][] = ['blue', 'pink', 'purple', 'green', 'yellow', 'orange', 'red']
+const aiProviderOptions: RuntimeConfigBundle['ai']['provider'][] = ['gemini', 'openai']
+const ttsProviderOptions: RuntimeConfigBundle['tts']['provider'][] = ['edge', 'minimax', 'murf', 'gemini']
+const sourceTypeOptions: SourceItem['type'][] = ['rss', 'url', 'gmail']
 
 function confirmAction(message: string) {
   // eslint-disable-next-line no-alert -- admin confirmation dialog
   return globalThis.confirm(message)
 }
 
+function splitMultiline(value: string) {
+  return value
+    .split('\n')
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+function toMultiline(values: string[] | undefined) {
+  return (values || []).join('\n')
+}
+
+function parseOptionalInt(value: string) {
+  const normalized = value.trim()
+  if (!normalized) {
+    return undefined
+  }
+  const parsed = Number.parseInt(normalized, 10)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function parseOptionalNumber(value: string) {
+  const normalized = value.trim()
+  if (!normalized) {
+    return undefined
+  }
+  const parsed = Number(normalized)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function buildLocalId(prefix: string) {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+}
+
+function getDefaultHost(index: number): RuntimeConfigBundle['hosts'][number] {
+  return {
+    id: buildLocalId(`host${index + 1}`),
+    name: `Host ${index + 1}`,
+    speakerMarker: index % 2 === 0 ? 'A' : 'B',
+    gender: index % 2 === 0 ? 'male' : 'female',
+    persona: '',
+    link: '',
+  }
+}
+
+function getDefaultSource(): SourceItem {
+  return {
+    id: buildLocalId('source'),
+    name: 'New Source',
+    type: 'rss',
+    url: 'https://example.com/rss.xml',
+    enabled: true,
+  }
+}
+
+function getSectionPayload(config: RuntimeConfigBundle, section: EditableSection) {
+  if (section === 'site')
+    return config.site
+  if (section === 'hosts')
+    return config.hosts
+  if (section === 'ai')
+    return config.ai
+  if (section === 'tts')
+    return config.tts
+  if (section === 'locale')
+    return config.locale
+  if (section === 'sources')
+    return config.sources
+  return config.prompts
+}
+
 export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBundle }) {
-  const [draft, setDraft] = useState(initialDraft)
+  const [serverDraft, setServerDraft] = useState(initialDraft)
+  const [workingDraft, setWorkingDraft] = useState(initialDraft)
   const [section, setSection] = useState<EditableSection>('site')
-  const [content, setContent] = useState(() => toJson(getSectionEditorValue(initialDraft, 'site')))
-  const [promptDrafts, setPromptDrafts] = useState(initialDraft.prompts)
   const [activePrompt, setActivePrompt] = useState<PromptKey>('summarizeStory')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
@@ -127,19 +169,16 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
   const [episodeBusy, setEpisodeBusy] = useState(false)
   const promptEditorRef = useRef<HTMLTextAreaElement | null>(null)
 
-  const sectionValue = useMemo(() => {
-    return getSectionEditorValue(draft, section)
-  }, [draft, section])
-
   const templateVariables = useMemo(() => {
-    return getTemplateVariables(draft)
-  }, [draft])
+    return getTemplateVariables(workingDraft)
+  }, [workingDraft])
 
   const templateVariableNames = useMemo(() => {
     return Object.keys(templateVariables).sort()
   }, [templateVariables])
 
-  const activePromptTemplate = promptDrafts[activePrompt]
+  const activePromptTemplate = workingDraft.prompts[activePrompt]
+
   const activePromptPreview = useMemo(() => {
     return renderTemplate(activePromptTemplate, templateVariables)
   }, [activePromptTemplate, templateVariables])
@@ -148,23 +187,64 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
     return findUnknownTemplateVariables(activePromptTemplate, templateVariables)
   }, [activePromptTemplate, templateVariables])
 
+  const extraVoiceEntries = useMemo(() => {
+    const hostIds = new Set(workingDraft.hosts.map(host => host.id))
+    return Object.entries(workingDraft.tts.voices).filter(([hostId]) => !hostIds.has(hostId))
+  }, [workingDraft.hosts, workingDraft.tts.voices])
+
+  function setPromptValue(key: PromptKey, value: string) {
+    setWorkingDraft(prev => ({
+      ...prev,
+      prompts: {
+        ...prev.prompts,
+        [key]: value,
+      },
+    }))
+  }
+
+  function updateSourceItem(index: number, updater: (item: SourceItem) => SourceItem) {
+    setWorkingDraft((prev) => {
+      const items = prev.sources.items.map((item, itemIndex) => {
+        return itemIndex === index ? updater(item) : item
+      })
+      return {
+        ...prev,
+        sources: {
+          ...prev.sources,
+          items,
+        },
+      }
+    })
+  }
+
+  function updateSourceLinkRules(index: number, updater: (rules: SourceLinkRules) => SourceLinkRules) {
+    updateSourceItem(index, (item) => {
+      const currentRules: SourceLinkRules = item.linkRules ? { ...item.linkRules } : {}
+      return {
+        ...item,
+        linkRules: updater(currentRules),
+      }
+    })
+  }
+
   async function refreshDraft() {
     const response = await fetch('/api/admin/config/draft')
     const body = (await response.json()) as { draft: RuntimeConfigBundle, error?: string }
     if (!response.ok) {
-      throw new Error(body.error || '刷新草稿失败')
+      throw new Error(body.error || 'Failed to refresh draft')
     }
-    setDraft(body.draft)
-    setPromptDrafts(body.draft.prompts)
+    setServerDraft(body.draft)
+    setWorkingDraft(body.draft)
     return body.draft
   }
 
-  async function saveSection() {
+  async function saveCurrentSection() {
     setBusy(true)
     setMessage('')
     try {
-      const parsed = JSON.parse(content) as unknown
-      const payload = { [section]: parsed }
+      const payload = {
+        [section]: getSectionPayload(workingDraft, section),
+      }
       const response = await fetch('/api/admin/config/draft', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -172,74 +252,72 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
       })
       const body = (await response.json()) as { draft?: RuntimeConfigBundle, error?: string }
       if (!response.ok || !body.draft) {
-        throw new Error(body.error || '保存失败')
+        throw new Error(body.error || 'Save failed')
       }
-      setDraft(body.draft)
-      setPromptDrafts(body.draft.prompts)
-      setContent(toJson(getSectionEditorValue(body.draft, section)))
-      setMessage(`已保存 ${section}`)
+      setServerDraft(body.draft)
+      setWorkingDraft(body.draft)
+      setMessage(`Saved ${sectionLabelMap[section]}`)
     }
     catch (error) {
-      setMessage(error instanceof Error ? error.message : '保存失败')
+      setMessage(error instanceof Error ? error.message : 'Save failed')
     }
     finally {
       setBusy(false)
     }
-  }
-
-  async function savePrompts() {
-    setBusy(true)
-    setMessage('')
-    try {
-      const response = await fetch('/api/admin/config/draft', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompts: promptDrafts }),
-      })
-      const body = (await response.json()) as { draft?: RuntimeConfigBundle, error?: string }
-      if (!response.ok || !body.draft) {
-        throw new Error(body.error || '保存 prompts 失败')
-      }
-      setDraft(body.draft)
-      setPromptDrafts(body.draft.prompts)
-      setMessage('已保存 prompts')
-    }
-    catch (error) {
-      setMessage(error instanceof Error ? error.message : '保存 prompts 失败')
-    }
-    finally {
-      setBusy(false)
-    }
-  }
-
-  function resetActivePrompt() {
-    if (!confirmAction('确定重置当前 Prompt 的未保存修改吗？')) {
-      return
-    }
-    setPromptDrafts(prev => setPromptValue(prev, activePrompt, draft.prompts[activePrompt]))
-  }
-
-  function resetAllPrompts() {
-    if (!confirmAction('确定重置全部 Prompt 的未保存修改吗？')) {
-      return
-    }
-    setPromptDrafts(draft.prompts)
   }
 
   function resetCurrentSection() {
-    if (!confirmAction(`确定重置当前区块 ${section} 的未保存修改吗？`)) {
+    if (!confirmAction(`Reset unsaved changes in ${sectionLabelMap[section]}?`)) {
       return
     }
-    setContent(toJson(sectionValue))
+
+    setWorkingDraft((prev) => {
+      if (section === 'site') {
+        return { ...prev, site: serverDraft.site }
+      }
+      if (section === 'hosts') {
+        return { ...prev, hosts: serverDraft.hosts }
+      }
+      if (section === 'ai') {
+        return { ...prev, ai: serverDraft.ai }
+      }
+      if (section === 'tts') {
+        return { ...prev, tts: serverDraft.tts }
+      }
+      if (section === 'locale') {
+        return { ...prev, locale: serverDraft.locale }
+      }
+      if (section === 'sources') {
+        return { ...prev, sources: serverDraft.sources }
+      }
+      return { ...prev, prompts: serverDraft.prompts }
+    })
+  }
+
+  function resetActivePrompt() {
+    if (!confirmAction('Reset unsaved changes in the current prompt?')) {
+      return
+    }
+    setPromptValue(activePrompt, serverDraft.prompts[activePrompt])
+  }
+
+  function resetAllPrompts() {
+    if (!confirmAction('Reset unsaved changes in all prompts?')) {
+      return
+    }
+    setWorkingDraft(prev => ({
+      ...prev,
+      prompts: serverDraft.prompts,
+    }))
   }
 
   function insertTemplateVariable(name: string) {
     const token = `{{${name}}}`
     const editor = promptEditorRef.current
-    const current = promptDrafts[activePrompt]
+    const current = workingDraft.prompts[activePrompt]
 
     if (!editor) {
-      setPromptDrafts(prev => setPromptValue(prev, activePrompt, `${current}${token}`))
+      setPromptValue(activePrompt, `${current}${token}`)
       return
     }
 
@@ -248,7 +326,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
     const next = `${current.slice(0, start)}${token}${current.slice(end)}`
     const caret = start + token.length
 
-    setPromptDrafts(prev => setPromptValue(prev, activePrompt, next))
+    setPromptValue(activePrompt, next)
 
     queueMicrotask(() => {
       editor.focus()
@@ -268,13 +346,13 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
       })
       const body = (await response.json()) as { url?: string, error?: string }
       if (!response.ok || !body.url) {
-        throw new Error(body.error || `上传 ${kind} 失败`)
+        throw new Error(body.error || `Failed to upload ${kind}`)
       }
-      setMessage(`${kind} 上传成功: ${body.url}`)
+      setMessage(`${kind} uploaded: ${body.url}`)
       await refreshDraft()
     }
     catch (error) {
-      setMessage(error instanceof Error ? error.message : '上传失败')
+      setMessage(error instanceof Error ? error.message : 'Upload failed')
     }
     finally {
       setBusy(false)
@@ -288,12 +366,12 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
       const response = await fetch('/api/admin/episodes?limit=30')
       const body = (await response.json()) as { items?: EpisodeListItem[], error?: string }
       if (!response.ok || !body.items) {
-        throw new Error(body.error || '加载节目失败')
+        throw new Error(body.error || 'Failed to load episodes')
       }
       setEpisodes(body.items)
     }
     catch (error) {
-      setMessage(error instanceof Error ? error.message : '加载节目失败')
+      setMessage(error instanceof Error ? error.message : 'Failed to load episodes')
     }
     finally {
       setLoadingEpisodes(false)
@@ -307,12 +385,12 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
       const response = await fetch(`/api/admin/episodes/${date}`)
       const body = (await response.json()) as { item?: EpisodeDetail, error?: string }
       if (!response.ok || !body.item) {
-        throw new Error(body.error || '加载节目详情失败')
+        throw new Error(body.error || 'Failed to load episode details')
       }
       setSelectedEpisode(body.item)
     }
     catch (error) {
-      setMessage(error instanceof Error ? error.message : '加载节目详情失败')
+      setMessage(error instanceof Error ? error.message : 'Failed to load episode details')
     }
     finally {
       setEpisodeBusy(false)
@@ -343,7 +421,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
       })
       const body = (await response.json()) as { ok?: boolean, item?: EpisodeDetail, error?: string }
       if (!response.ok || !body.ok || !body.item) {
-        throw new Error(body.error || '保存节目失败')
+        throw new Error(body.error || 'Failed to save episode')
       }
       const nextItem = body.item
 
@@ -356,10 +434,10 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
             audio: nextItem.audio,
           }
         : item))
-      setMessage(`已更新 ${nextItem.date}`)
+      setMessage(`Updated ${nextItem.date}`)
     }
     catch (error) {
-      setMessage(error instanceof Error ? error.message : '保存节目失败')
+      setMessage(error instanceof Error ? error.message : 'Failed to save episode')
     }
     finally {
       setEpisodeBusy(false)
@@ -367,7 +445,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
   }
 
   async function deleteEpisode(date: string) {
-    if (!confirmAction(`确定删除 ${date} 的节目吗？此操作不可撤销，音频文件也会被删除。`)) {
+    if (!confirmAction(`Delete episode ${date}? This action cannot be undone and the audio file will also be deleted.`)) {
       return
     }
     setBusy(true)
@@ -378,43 +456,1738 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
       })
       const body = (await response.json()) as { ok?: boolean, error?: string }
       if (!response.ok || !body.ok) {
-        throw new Error(body.error || '删除失败')
+        throw new Error(body.error || 'Delete failed')
       }
       setEpisodes(prev => prev.filter(item => item.date !== date))
       if (selectedEpisode?.date === date) {
         setSelectedEpisode(null)
       }
-      setMessage(`已删除 ${date}`)
+      setMessage(`Deleted ${date}`)
     }
     catch (error) {
-      setMessage(error instanceof Error ? error.message : '删除失败')
+      setMessage(error instanceof Error ? error.message : 'Delete failed')
     }
     finally {
       setBusy(false)
     }
   }
 
-  return (
-    <section className="space-y-4 rounded-lg border p-4">
-      <h2 className="text-lg font-semibold">Admin 工作台</h2>
+  function renderSiteSection() {
+    const site = workingDraft.site
+    return (
+      <div className="space-y-4">
+        <div className={`
+          grid gap-4
+          md:grid-cols-2
+        `}
+        >
+          <label className="text-sm">
+            Site title
+            <input
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={site.title}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                site: {
+                  ...prev.site,
+                  title: event.target.value,
+                },
+              }))}
+            />
+          </label>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <label className="text-sm">
-          配置区块
-          <select
-            className="ml-2 rounded border px-2 py-1"
-            value={section}
-            onChange={(event) => {
-              const next = event.target.value as EditableSection
-              setSection(next)
-              setContent(toJson(getSectionEditorValue(draft, next)))
-            }}
+          <label className="text-sm">
+            Contact email
+            <input
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={site.contactEmail}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                site: {
+                  ...prev.site,
+                  contactEmail: event.target.value,
+                },
+              }))}
+            />
+          </label>
+
+          <label className={`
+            text-sm
+            md:col-span-2
+          `}
           >
-            {sections.map(name => (
-              <option key={name} value={name}>{name}</option>
+            Site description
+            <textarea
+              className="mt-1 min-h-28 w-full rounded border px-3 py-2"
+              value={site.description}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                site: {
+                  ...prev.site,
+                  description: event.target.value,
+                },
+              }))}
+            />
+          </label>
+
+          <label className="text-sm">
+            Cover logo URL
+            <input
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={site.coverLogoUrl}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                site: {
+                  ...prev.site,
+                  coverLogoUrl: event.target.value,
+                },
+              }))}
+            />
+          </label>
+
+          <label className="text-sm">
+            Favicon URL
+            <input
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={site.favicon}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                site: {
+                  ...prev.site,
+                  favicon: event.target.value,
+                },
+              }))}
+            />
+          </label>
+
+          <label className="text-sm">
+            Theme color
+            <select
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={site.themeColor}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                site: {
+                  ...prev.site,
+                  themeColor: event.target.value as RuntimeConfigBundle['site']['themeColor'],
+                },
+              }))}
+            >
+              {themeColorOptions.map(color => (
+                <option key={color} value={color}>{color}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="text-sm">
+            Items per page
+            <input
+              type="number"
+              min={1}
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={site.pageSize}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                site: {
+                  ...prev.site,
+                  pageSize: Math.max(1, Number(event.target.value || 1)),
+                },
+              }))}
+            />
+          </label>
+
+          <label className="text-sm">
+            Default summary length
+            <input
+              type="number"
+              min={1}
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={site.defaultDescriptionLength}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                site: {
+                  ...prev.site,
+                  defaultDescriptionLength: Math.max(1, Number(event.target.value || 1)),
+                },
+              }))}
+            />
+          </label>
+
+          <label className="text-sm">
+            Retention days
+            <input
+              type="number"
+              min={1}
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={site.keepDays}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                site: {
+                  ...prev.site,
+                  keepDays: Math.max(1, Number(event.target.value || 1)),
+                },
+              }))}
+            />
+          </label>
+        </div>
+
+        <div className="space-y-3 rounded border p-3">
+          <p className="text-sm font-semibold">SEO</p>
+          <div className={`
+            grid gap-4
+            md:grid-cols-2
+          `}
+          >
+            <label className="text-sm">
+              locale
+              <input
+                className="mt-1 w-full rounded border px-3 py-2"
+                value={site.seo.locale}
+                onChange={event => setWorkingDraft(prev => ({
+                  ...prev,
+                  site: {
+                    ...prev.site,
+                    seo: {
+                      ...prev.site.seo,
+                      locale: event.target.value,
+                    },
+                  },
+                }))}
+              />
+            </label>
+            <label className="text-sm">
+              defaultImage
+              <input
+                className="mt-1 w-full rounded border px-3 py-2"
+                value={site.seo.defaultImage}
+                onChange={event => setWorkingDraft(prev => ({
+                  ...prev,
+                  site: {
+                    ...prev.site,
+                    seo: {
+                      ...prev.site.seo,
+                      defaultImage: event.target.value,
+                    },
+                  },
+                }))}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="space-y-3 rounded border p-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold">External links</p>
+            <button
+              type="button"
+              className="rounded border px-2 py-1 text-xs"
+              onClick={() => setWorkingDraft(prev => ({
+                ...prev,
+                site: {
+                  ...prev.site,
+                  externalLinks: [...prev.site.externalLinks, { platform: '', url: '', icon: '' }],
+                },
+              }))}
+            >
+              Add link
+            </button>
+          </div>
+
+          {site.externalLinks.map((link, index) => (
+            <div
+              key={`${link.platform}-${link.url}-${link.icon || ''}`}
+              className={`
+                grid gap-2 rounded border p-2
+                md:grid-cols-4
+              `}
+            >
+              <label className="text-xs">
+                platform
+                <input
+                  className="mt-1 w-full rounded border px-2 py-1"
+                  value={link.platform}
+                  onChange={event => setWorkingDraft(prev => ({
+                    ...prev,
+                    site: {
+                      ...prev.site,
+                      externalLinks: prev.site.externalLinks.map((item, itemIndex) => {
+                        if (itemIndex !== index)
+                          return item
+                        return { ...item, platform: event.target.value }
+                      }),
+                    },
+                  }))}
+                />
+              </label>
+              <label className={`
+                text-xs
+                md:col-span-2
+              `}
+              >
+                url
+                <input
+                  className="mt-1 w-full rounded border px-2 py-1"
+                  value={link.url}
+                  onChange={event => setWorkingDraft(prev => ({
+                    ...prev,
+                    site: {
+                      ...prev.site,
+                      externalLinks: prev.site.externalLinks.map((item, itemIndex) => {
+                        if (itemIndex !== index)
+                          return item
+                        return { ...item, url: event.target.value }
+                      }),
+                    },
+                  }))}
+                />
+              </label>
+              <div className="flex items-end gap-2">
+                <label className="text-xs">
+                  icon
+                  <input
+                    className="mt-1 w-full rounded border px-2 py-1"
+                    value={link.icon || ''}
+                    onChange={event => setWorkingDraft(prev => ({
+                      ...prev,
+                      site: {
+                        ...prev.site,
+                        externalLinks: prev.site.externalLinks.map((item, itemIndex) => {
+                          if (itemIndex !== index)
+                            return item
+                          return { ...item, icon: event.target.value }
+                        }),
+                      },
+                    }))}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 text-xs text-red-700"
+                  onClick={() => {
+                    if (!confirmAction('Delete this external link?')) {
+                      return
+                    }
+                    setWorkingDraft(prev => ({
+                      ...prev,
+                      site: {
+                        ...prev.site,
+                        externalLinks: prev.site.externalLinks.filter((_, itemIndex) => itemIndex !== index),
+                      },
+                    }))
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="space-y-3 rounded border p-3">
+          <p className="text-sm font-semibold">RSS</p>
+          <div className={`
+            grid gap-4
+            md:grid-cols-2
+          `}
+          >
+            <label className="text-sm">
+              Language
+              <input
+                className="mt-1 w-full rounded border px-3 py-2"
+                value={site.rss.language}
+                onChange={event => setWorkingDraft(prev => ({
+                  ...prev,
+                  site: {
+                    ...prev.site,
+                    rss: {
+                      ...prev.site.rss,
+                      language: event.target.value,
+                    },
+                  },
+                }))}
+              />
+            </label>
+            <label className="text-sm">
+              feedDays
+              <input
+                type="number"
+                min={1}
+                className="mt-1 w-full rounded border px-3 py-2"
+                value={site.rss.feedDays}
+                onChange={event => setWorkingDraft(prev => ({
+                  ...prev,
+                  site: {
+                    ...prev.site,
+                    rss: {
+                      ...prev.site.rss,
+                      feedDays: Math.max(1, Number(event.target.value || 1)),
+                    },
+                  },
+                }))}
+              />
+            </label>
+            <label className={`
+              text-sm
+              md:col-span-2
+            `}
+            >
+              Related links label
+              <input
+                className="mt-1 w-full rounded border px-3 py-2"
+                value={site.rss.relatedLinksLabel}
+                onChange={event => setWorkingDraft(prev => ({
+                  ...prev,
+                  site: {
+                    ...prev.site,
+                    rss: {
+                      ...prev.site.rss,
+                      relatedLinksLabel: event.target.value,
+                    },
+                  },
+                }))}
+              />
+            </label>
+
+            <label className={`
+              text-sm
+              md:col-span-2
+            `}
+            >
+              categories (one per line)
+              <textarea
+                className="mt-1 min-h-20 w-full rounded border px-3 py-2"
+                value={toMultiline(site.rss.categories)}
+                onChange={event => setWorkingDraft(prev => ({
+                  ...prev,
+                  site: {
+                    ...prev.site,
+                    rss: {
+                      ...prev.site.rss,
+                      categories: splitMultiline(event.target.value),
+                    },
+                  },
+                }))}
+              />
+            </label>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium">itunesCategories</p>
+              <button
+                type="button"
+                className="rounded border px-2 py-1 text-xs"
+                onClick={() => setWorkingDraft(prev => ({
+                  ...prev,
+                  site: {
+                    ...prev.site,
+                    rss: {
+                      ...prev.site.rss,
+                      itunesCategories: [...prev.site.rss.itunesCategories, { text: '', subcategory: '' }],
+                    },
+                  },
+                }))}
+              >
+                Add category
+              </button>
+            </div>
+
+            {site.rss.itunesCategories.map((item, index) => (
+              <div
+                key={`${item.text}-${item.subcategory || ''}`}
+                className={`
+                  grid gap-2 rounded border p-2
+                  md:grid-cols-3
+                `}
+              >
+                <label className="text-xs">
+                  text
+                  <input
+                    className="mt-1 w-full rounded border px-2 py-1"
+                    value={item.text}
+                    onChange={event => setWorkingDraft(prev => ({
+                      ...prev,
+                      site: {
+                        ...prev.site,
+                        rss: {
+                          ...prev.site.rss,
+                          itunesCategories: prev.site.rss.itunesCategories.map((current, itemIndex) => {
+                            if (itemIndex !== index)
+                              return current
+                            return { ...current, text: event.target.value }
+                          }),
+                        },
+                      },
+                    }))}
+                  />
+                </label>
+                <label className="text-xs">
+                  subcategory
+                  <input
+                    className="mt-1 w-full rounded border px-2 py-1"
+                    value={item.subcategory || ''}
+                    onChange={event => setWorkingDraft(prev => ({
+                      ...prev,
+                      site: {
+                        ...prev.site,
+                        rss: {
+                          ...prev.site.rss,
+                          itunesCategories: prev.site.rss.itunesCategories.map((current, itemIndex) => {
+                            if (itemIndex !== index)
+                              return current
+                            return { ...current, subcategory: event.target.value }
+                          }),
+                        },
+                      },
+                    }))}
+                  />
+                </label>
+                <div className="flex items-end justify-end">
+                  <button
+                    type="button"
+                    className="rounded border px-2 py-1 text-xs text-red-700"
+                    onClick={() => {
+                      if (!confirmAction('Delete this iTunes category?')) {
+                        return
+                      }
+                      setWorkingDraft(prev => ({
+                        ...prev,
+                        site: {
+                          ...prev.site,
+                          rss: {
+                            ...prev.site.rss,
+                            itunesCategories: prev.site.rss.itunesCategories.filter((_, itemIndex) => itemIndex !== index),
+                          },
+                        },
+                      }))
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  function renderHostsSection() {
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-gray-600">Keep at least 2 hosts. Unique speakerMarker values are recommended.</p>
+          <button
+            type="button"
+            className="rounded border px-2 py-1 text-xs"
+            onClick={() => setWorkingDraft(prev => ({
+              ...prev,
+              hosts: [...prev.hosts, getDefaultHost(prev.hosts.length)],
+            }))}
+          >
+            Add host
+          </button>
+        </div>
+
+        {workingDraft.hosts.map((host, index) => (
+          <div key={host.id || index} className="space-y-3 rounded border p-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold">
+                Host
+                {index + 1}
+              </p>
+              <button
+                type="button"
+                className="rounded border px-2 py-1 text-xs text-red-700"
+                disabled={workingDraft.hosts.length <= 2}
+                onClick={() => {
+                  if (workingDraft.hosts.length <= 2) {
+                    return
+                  }
+                  if (!confirmAction('Delete this host?')) {
+                    return
+                  }
+                  setWorkingDraft((prev) => {
+                    const removedHost = prev.hosts[index]
+                    const nextHosts = prev.hosts.filter((_, itemIndex) => itemIndex !== index)
+                    const nextVoices = { ...prev.tts.voices }
+                    if (removedHost?.id) {
+                      delete nextVoices[removedHost.id]
+                    }
+                    return {
+                      ...prev,
+                      hosts: nextHosts,
+                      tts: {
+                        ...prev.tts,
+                        voices: nextVoices,
+                      },
+                    }
+                  })
+                }}
+              >
+                Delete host
+              </button>
+            </div>
+
+            <div className={`
+              grid gap-4
+              md:grid-cols-2
+            `}
+            >
+              <label className="text-sm">
+                id
+                <input
+                  className="mt-1 w-full rounded border px-3 py-2"
+                  value={host.id}
+                  onChange={(event) => {
+                    const nextId = event.target.value
+                    setWorkingDraft((prev) => {
+                      const oldHost = prev.hosts[index]
+                      const nextHosts = prev.hosts.map((item, itemIndex) => {
+                        if (itemIndex !== index)
+                          return item
+                        return { ...item, id: nextId }
+                      })
+                      const nextVoices = { ...prev.tts.voices }
+                      const oldId = oldHost?.id || ''
+                      if (oldId && oldId !== nextId && oldId in nextVoices) {
+                        nextVoices[nextId] = nextVoices[oldId]
+                        delete nextVoices[oldId]
+                      }
+                      return {
+                        ...prev,
+                        hosts: nextHosts,
+                        tts: {
+                          ...prev.tts,
+                          voices: nextVoices,
+                        },
+                      }
+                    })
+                  }}
+                />
+              </label>
+
+              <label className="text-sm">
+                name
+                <input
+                  className="mt-1 w-full rounded border px-3 py-2"
+                  value={host.name}
+                  onChange={event => setWorkingDraft(prev => ({
+                    ...prev,
+                    hosts: prev.hosts.map((item, itemIndex) => {
+                      if (itemIndex !== index)
+                        return item
+                      return { ...item, name: event.target.value }
+                    }),
+                  }))}
+                />
+              </label>
+
+              <label className="text-sm">
+                speakerMarker
+                <input
+                  className="mt-1 w-full rounded border px-3 py-2"
+                  value={host.speakerMarker}
+                  onChange={event => setWorkingDraft(prev => ({
+                    ...prev,
+                    hosts: prev.hosts.map((item, itemIndex) => {
+                      if (itemIndex !== index)
+                        return item
+                      return { ...item, speakerMarker: event.target.value }
+                    }),
+                  }))}
+                />
+              </label>
+
+              <label className="text-sm">
+                gender
+                <select
+                  className="mt-1 w-full rounded border px-3 py-2"
+                  value={host.gender || ''}
+                  onChange={event => setWorkingDraft(prev => ({
+                    ...prev,
+                    hosts: prev.hosts.map((item, itemIndex) => {
+                      if (itemIndex !== index)
+                        return item
+                      const gender = event.target.value as RuntimeConfigBundle['hosts'][number]['gender'] | ''
+                      return { ...item, gender: gender || undefined }
+                    }),
+                  }))}
+                >
+                  <option value="">(Not set)</option>
+                  <option value="male">male</option>
+                  <option value="female">female</option>
+                </select>
+              </label>
+
+              <label className={`
+                text-sm
+                md:col-span-2
+              `}
+              >
+                persona
+                <textarea
+                  className="mt-1 min-h-20 w-full rounded border px-3 py-2"
+                  value={host.persona || ''}
+                  onChange={event => setWorkingDraft(prev => ({
+                    ...prev,
+                    hosts: prev.hosts.map((item, itemIndex) => {
+                      if (itemIndex !== index)
+                        return item
+                      return { ...item, persona: event.target.value }
+                    }),
+                  }))}
+                />
+              </label>
+
+              <label className={`
+                text-sm
+                md:col-span-2
+              `}
+              >
+                link
+                <input
+                  className="mt-1 w-full rounded border px-3 py-2"
+                  value={host.link || ''}
+                  onChange={event => setWorkingDraft(prev => ({
+                    ...prev,
+                    hosts: prev.hosts.map((item, itemIndex) => {
+                      if (itemIndex !== index)
+                        return item
+                      return { ...item, link: event.target.value }
+                    }),
+                  }))}
+                />
+              </label>
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  function renderAiSection() {
+    const ai = workingDraft.ai
+    return (
+      <div className={`
+        grid gap-4
+        md:grid-cols-2
+      `}
+      >
+        <label className="text-sm">
+          provider
+          <select
+            className="mt-1 w-full rounded border px-3 py-2"
+            value={ai.provider}
+            onChange={event => setWorkingDraft(prev => ({
+              ...prev,
+              ai: {
+                ...prev.ai,
+                provider: event.target.value as RuntimeConfigBundle['ai']['provider'],
+              },
+            }))}
+          >
+            {aiProviderOptions.map(provider => (
+              <option key={provider} value={provider}>{provider}</option>
             ))}
           </select>
         </label>
+
+        <label className="text-sm">
+          model
+          <input
+            className="mt-1 w-full rounded border px-3 py-2"
+            value={ai.model}
+            onChange={event => setWorkingDraft(prev => ({
+              ...prev,
+              ai: {
+                ...prev.ai,
+                model: event.target.value,
+              },
+            }))}
+          />
+        </label>
+
+        <label className="text-sm">
+          thinkingModel
+          <input
+            className="mt-1 w-full rounded border px-3 py-2"
+            value={ai.thinkingModel || ''}
+            onChange={event => setWorkingDraft(prev => ({
+              ...prev,
+              ai: {
+                ...prev.ai,
+                thinkingModel: event.target.value,
+              },
+            }))}
+          />
+        </label>
+
+        <label className="text-sm">
+          maxTokens
+          <input
+            type="number"
+            min={1}
+            className="mt-1 w-full rounded border px-3 py-2"
+            value={ai.maxTokens ?? ''}
+            onChange={event => setWorkingDraft(prev => ({
+              ...prev,
+              ai: {
+                ...prev.ai,
+                maxTokens: parseOptionalInt(event.target.value),
+              },
+            }))}
+          />
+        </label>
+
+        <label className={`
+          text-sm
+          md:col-span-2
+        `}
+        >
+          baseUrl
+          <input
+            className="mt-1 w-full rounded border px-3 py-2"
+            value={ai.baseUrl || ''}
+            onChange={event => setWorkingDraft(prev => ({
+              ...prev,
+              ai: {
+                ...prev.ai,
+                baseUrl: event.target.value,
+              },
+            }))}
+          />
+        </label>
+      </div>
+    )
+  }
+
+  function renderTtsSection() {
+    const tts = workingDraft.tts
+    return (
+      <div className="space-y-4">
+        <div className={`
+          grid gap-4
+          md:grid-cols-2
+        `}
+        >
+          <label className="text-sm">
+            provider
+            <select
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={tts.provider}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                tts: {
+                  ...prev.tts,
+                  provider: event.target.value as RuntimeConfigBundle['tts']['provider'],
+                },
+              }))}
+            >
+              {ttsProviderOptions.map(provider => (
+                <option key={provider} value={provider}>{provider}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="text-sm">
+            language
+            <input
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={tts.language}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                tts: {
+                  ...prev.tts,
+                  language: event.target.value,
+                },
+              }))}
+            />
+          </label>
+
+          <label className="text-sm">
+            model
+            <input
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={tts.model || ''}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                tts: {
+                  ...prev.tts,
+                  model: event.target.value,
+                },
+              }))}
+            />
+          </label>
+
+          <label className="text-sm">
+            speed
+            <input
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={tts.speed === undefined ? '' : String(tts.speed)}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                tts: {
+                  ...prev.tts,
+                  speed: event.target.value,
+                },
+              }))}
+            />
+          </label>
+
+          <label className="text-sm">
+            apiUrl
+            <input
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={tts.apiUrl || ''}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                tts: {
+                  ...prev.tts,
+                  apiUrl: event.target.value,
+                },
+              }))}
+            />
+          </label>
+
+          <label className="text-sm">
+            audioQuality
+            <input
+              type="number"
+              min={0}
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={tts.audioQuality ?? ''}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                tts: {
+                  ...prev.tts,
+                  audioQuality: parseOptionalNumber(event.target.value),
+                },
+              }))}
+            />
+          </label>
+
+          <label className={`
+            flex items-center gap-2 text-sm
+            md:col-span-2
+          `}
+          >
+            <input
+              type="checkbox"
+              checked={tts.skipTts === true}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                tts: {
+                  ...prev.tts,
+                  skipTts: event.target.checked,
+                },
+              }))}
+            />
+            <span>skipTts</span>
+          </label>
+
+          <label className={`
+            text-sm
+            md:col-span-2
+          `}
+          >
+            geminiPrompt
+            <textarea
+              className="mt-1 min-h-24 w-full rounded border px-3 py-2"
+              value={tts.geminiPrompt || ''}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                tts: {
+                  ...prev.tts,
+                  geminiPrompt: event.target.value,
+                },
+              }))}
+            />
+          </label>
+        </div>
+
+        <div className="space-y-3 rounded border p-3">
+          <p className="text-sm font-semibold">introMusic</p>
+          <div className={`
+            grid gap-4
+            md:grid-cols-2
+          `}
+          >
+            <label className={`
+              text-sm
+              md:col-span-2
+            `}
+            >
+              url
+              <input
+                className="mt-1 w-full rounded border px-3 py-2"
+                value={tts.introMusic.url || ''}
+                onChange={event => setWorkingDraft(prev => ({
+                  ...prev,
+                  tts: {
+                    ...prev.tts,
+                    introMusic: {
+                      ...prev.tts.introMusic,
+                      url: event.target.value,
+                    },
+                  },
+                }))}
+              />
+            </label>
+            <label className="text-sm">
+              fadeOutStart
+              <input
+                type="number"
+                min={0}
+                className="mt-1 w-full rounded border px-3 py-2"
+                value={tts.introMusic.fadeOutStart}
+                onChange={event => setWorkingDraft(prev => ({
+                  ...prev,
+                  tts: {
+                    ...prev.tts,
+                    introMusic: {
+                      ...prev.tts.introMusic,
+                      fadeOutStart: Math.max(0, Number(event.target.value || 0)),
+                    },
+                  },
+                }))}
+              />
+            </label>
+            <label className="text-sm">
+              fadeOutDuration
+              <input
+                type="number"
+                min={0}
+                className="mt-1 w-full rounded border px-3 py-2"
+                value={tts.introMusic.fadeOutDuration}
+                onChange={event => setWorkingDraft(prev => ({
+                  ...prev,
+                  tts: {
+                    ...prev.tts,
+                    introMusic: {
+                      ...prev.tts.introMusic,
+                      fadeOutDuration: Math.max(0, Number(event.target.value || 0)),
+                    },
+                  },
+                }))}
+              />
+            </label>
+            <label className="text-sm">
+              podcastDelay(ms)
+              <input
+                type="number"
+                min={0}
+                className="mt-1 w-full rounded border px-3 py-2"
+                value={tts.introMusic.podcastDelay}
+                onChange={event => setWorkingDraft(prev => ({
+                  ...prev,
+                  tts: {
+                    ...prev.tts,
+                    introMusic: {
+                      ...prev.tts.introMusic,
+                      podcastDelay: Math.max(0, Number(event.target.value || 0)),
+                    },
+                  },
+                }))}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="space-y-3 rounded border p-3">
+          <p className="text-sm font-semibold">voices (mapped by host.id)</p>
+          {workingDraft.hosts.map(host => (
+            <label key={host.id} className="block text-sm">
+              {host.id}
+              {' '}
+              (
+              {host.name}
+              )
+              <input
+                className="mt-1 w-full rounded border px-3 py-2"
+                value={tts.voices[host.id] || ''}
+                onChange={event => setWorkingDraft(prev => ({
+                  ...prev,
+                  tts: {
+                    ...prev.tts,
+                    voices: {
+                      ...prev.tts.voices,
+                      [host.id]: event.target.value,
+                    },
+                  },
+                }))}
+              />
+            </label>
+          ))}
+
+          {extraVoiceEntries.length > 0
+            ? (
+                <div className="space-y-2 border-t pt-3">
+                  <p className="text-xs text-amber-700">The following voice keys do not match current hosts:</p>
+                  {extraVoiceEntries.map(([hostId, voice]) => (
+                    <div
+                      key={hostId}
+                      className="flex items-center gap-2 text-xs"
+                    >
+                      <span className="rounded bg-gray-100 px-2 py-1">{hostId}</span>
+                      <input
+                        className="min-w-0 flex-1 rounded border px-2 py-1"
+                        value={voice}
+                        onChange={event => setWorkingDraft(prev => ({
+                          ...prev,
+                          tts: {
+                            ...prev.tts,
+                            voices: {
+                              ...prev.tts.voices,
+                              [hostId]: event.target.value,
+                            },
+                          },
+                        }))}
+                      />
+                      <button
+                        type="button"
+                        className="rounded border px-2 py-1 text-red-700"
+                        onClick={() => {
+                          if (!confirmAction(`Delete extra voice mapping ${hostId}?`)) {
+                            return
+                          }
+                          setWorkingDraft((prev) => {
+                            const nextVoices = { ...prev.tts.voices }
+                            delete nextVoices[hostId]
+                            return {
+                              ...prev,
+                              tts: {
+                                ...prev.tts,
+                                voices: nextVoices,
+                              },
+                            }
+                          })
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )
+            : null}
+        </div>
+      </div>
+    )
+  }
+
+  function renderLocaleSection() {
+    const locale = workingDraft.locale
+    return (
+      <div className={`
+        grid gap-4
+        md:grid-cols-2
+      `}
+      >
+        <label className="text-sm">
+          language
+          <input
+            className="mt-1 w-full rounded border px-3 py-2"
+            value={locale.language}
+            onChange={event => setWorkingDraft(prev => ({
+              ...prev,
+              locale: {
+                ...prev.locale,
+                language: event.target.value,
+              },
+            }))}
+          />
+        </label>
+
+        <label className="text-sm">
+          timezone
+          <input
+            className="mt-1 w-full rounded border px-3 py-2"
+            value={locale.timezone}
+            onChange={event => setWorkingDraft(prev => ({
+              ...prev,
+              locale: {
+                ...prev.locale,
+                timezone: event.target.value,
+              },
+            }))}
+          />
+        </label>
+
+        <label className={`
+          text-sm
+          md:col-span-2
+        `}
+        >
+          dateFormat
+          <input
+            className="mt-1 w-full rounded border px-3 py-2"
+            value={locale.dateFormat || ''}
+            onChange={event => setWorkingDraft(prev => ({
+              ...prev,
+              locale: {
+                ...prev.locale,
+                dateFormat: event.target.value,
+              },
+            }))}
+          />
+        </label>
+      </div>
+    )
+  }
+
+  function renderSourcesSection() {
+    const sources = workingDraft.sources
+    return (
+      <div className="space-y-4">
+        <div className={`
+          grid gap-4
+          md:grid-cols-2
+        `}
+        >
+          <label className="text-sm">
+            lookbackDays
+            <input
+              type="number"
+              min={1}
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={sources.lookbackDays}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                sources: {
+                  ...prev.sources,
+                  lookbackDays: Math.max(1, Number(event.target.value || 1)),
+                },
+              }))}
+            />
+          </label>
+
+          <label className="text-sm">
+            newsletterHosts (one per line)
+            <textarea
+              className="mt-1 min-h-24 w-full rounded border px-3 py-2"
+              value={toMultiline(sources.newsletterHosts)}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                sources: {
+                  ...prev.sources,
+                  newsletterHosts: splitMultiline(event.target.value),
+                },
+              }))}
+            />
+          </label>
+
+          <label className={`
+            text-sm
+            md:col-span-2
+          `}
+          >
+            archiveLinkKeywords (one per line)
+            <textarea
+              className="mt-1 min-h-20 w-full rounded border px-3 py-2"
+              value={toMultiline(sources.archiveLinkKeywords)}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                sources: {
+                  ...prev.sources,
+                  archiveLinkKeywords: splitMultiline(event.target.value),
+                },
+              }))}
+            />
+          </label>
+        </div>
+
+        <div className="space-y-3 rounded border p-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold">Source list</p>
+            <button
+              type="button"
+              className="rounded border px-2 py-1 text-xs"
+              onClick={() => setWorkingDraft(prev => ({
+                ...prev,
+                sources: {
+                  ...prev.sources,
+                  items: [...prev.sources.items, getDefaultSource()],
+                },
+              }))}
+            >
+              Add source
+            </button>
+          </div>
+
+          {sources.items.map((item, index) => (
+            <div key={item.id || index} className="space-y-3 rounded border p-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">
+                  Source
+                  {index + 1}
+                </p>
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 text-xs text-red-700"
+                  onClick={() => {
+                    if (!confirmAction('Delete this source?')) {
+                      return
+                    }
+                    setWorkingDraft(prev => ({
+                      ...prev,
+                      sources: {
+                        ...prev.sources,
+                        items: prev.sources.items.filter((_, itemIndex) => itemIndex !== index),
+                      },
+                    }))
+                  }}
+                >
+                  Delete source
+                </button>
+              </div>
+
+              <div className={`
+                grid gap-4
+                md:grid-cols-3
+              `}
+              >
+                <label className="text-sm">
+                  id
+                  <input
+                    className="mt-1 w-full rounded border px-3 py-2"
+                    value={item.id}
+                    onChange={event => updateSourceItem(index, current => ({
+                      ...current,
+                      id: event.target.value,
+                    }))}
+                  />
+                </label>
+                <label className="text-sm">
+                  name
+                  <input
+                    className="mt-1 w-full rounded border px-3 py-2"
+                    value={item.name}
+                    onChange={event => updateSourceItem(index, current => ({
+                      ...current,
+                      name: event.target.value,
+                    }))}
+                  />
+                </label>
+                <label className="text-sm">
+                  type
+                  <select
+                    className="mt-1 w-full rounded border px-3 py-2"
+                    value={item.type}
+                    onChange={event => updateSourceItem(index, current => ({
+                      ...current,
+                      type: event.target.value as SourceItem['type'],
+                    }))}
+                  >
+                    {sourceTypeOptions.map(type => (
+                      <option key={type} value={type}>{type}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className={`
+                  text-sm
+                  md:col-span-3
+                `}
+                >
+                  url
+                  <input
+                    className="mt-1 w-full rounded border px-3 py-2"
+                    value={item.url}
+                    onChange={event => updateSourceItem(index, current => ({
+                      ...current,
+                      url: event.target.value,
+                    }))}
+                  />
+                </label>
+
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={item.enabled !== false}
+                    onChange={event => updateSourceItem(index, current => ({
+                      ...current,
+                      enabled: event.target.checked,
+                    }))}
+                  />
+                  <span>enabled</span>
+                </label>
+
+                <label className="text-sm">
+                  lookbackDays
+                  <input
+                    type="number"
+                    min={1}
+                    className="mt-1 w-full rounded border px-3 py-2"
+                    value={item.lookbackDays ?? ''}
+                    onChange={event => updateSourceItem(index, current => ({
+                      ...current,
+                      lookbackDays: parseOptionalInt(event.target.value),
+                    }))}
+                  />
+                </label>
+
+                <label className="text-sm">
+                  maxMessages
+                  <input
+                    type="number"
+                    min={1}
+                    className="mt-1 w-full rounded border px-3 py-2"
+                    value={item.maxMessages ?? ''}
+                    onChange={event => updateSourceItem(index, current => ({
+                      ...current,
+                      maxMessages: parseOptionalInt(event.target.value),
+                    }))}
+                  />
+                </label>
+
+                <label className={`
+                  text-sm
+                  md:col-span-3
+                `}
+                >
+                  label
+                  <input
+                    className="mt-1 w-full rounded border px-3 py-2"
+                    value={item.label || ''}
+                    onChange={event => updateSourceItem(index, current => ({
+                      ...current,
+                      label: event.target.value,
+                    }))}
+                  />
+                </label>
+              </div>
+
+              <div className="space-y-2 rounded border p-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">linkRules</p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="rounded border px-2 py-1 text-xs"
+                      onClick={() => updateSourceItem(index, current => ({
+                        ...current,
+                        linkRules: current.linkRules || {},
+                      }))}
+                    >
+                      Enable
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border px-2 py-1 text-xs text-red-700"
+                      onClick={() => {
+                        if (!confirmAction('Clear linkRules for this source?')) {
+                          return
+                        }
+                        updateSourceItem(index, current => ({
+                          ...current,
+                          linkRules: undefined,
+                        }))
+                      }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+
+                {item.linkRules
+                  ? (
+                      <div className={`
+                        grid gap-4
+                        md:grid-cols-2
+                      `}
+                      >
+                        <label className="text-sm">
+                          includeDomains (one per line)
+                          <textarea
+                            className={`
+                              mt-1 min-h-20 w-full rounded border px-3 py-2
+                            `}
+                            value={toMultiline(item.linkRules.includeDomains)}
+                            onChange={event => updateSourceLinkRules(index, rules => ({
+                              ...rules,
+                              includeDomains: splitMultiline(event.target.value),
+                            }))}
+                          />
+                        </label>
+
+                        <label className="text-sm">
+                          excludeDomains (one per line)
+                          <textarea
+                            className={`
+                              mt-1 min-h-20 w-full rounded border px-3 py-2
+                            `}
+                            value={toMultiline(item.linkRules.excludeDomains)}
+                            onChange={event => updateSourceLinkRules(index, rules => ({
+                              ...rules,
+                              excludeDomains: splitMultiline(event.target.value),
+                            }))}
+                          />
+                        </label>
+
+                        <label className="text-sm">
+                          includePathKeywords (one per line)
+                          <textarea
+                            className={`
+                              mt-1 min-h-20 w-full rounded border px-3 py-2
+                            `}
+                            value={toMultiline(item.linkRules.includePathKeywords)}
+                            onChange={event => updateSourceLinkRules(index, rules => ({
+                              ...rules,
+                              includePathKeywords: splitMultiline(event.target.value),
+                            }))}
+                          />
+                        </label>
+
+                        <label className="text-sm">
+                          excludePathKeywords (one per line)
+                          <textarea
+                            className={`
+                              mt-1 min-h-20 w-full rounded border px-3 py-2
+                            `}
+                            value={toMultiline(item.linkRules.excludePathKeywords)}
+                            onChange={event => updateSourceLinkRules(index, rules => ({
+                              ...rules,
+                              excludePathKeywords: splitMultiline(event.target.value),
+                            }))}
+                          />
+                        </label>
+
+                        <label className={`
+                          text-sm
+                          md:col-span-2
+                        `}
+                        >
+                          excludeText (one per line)
+                          <textarea
+                            className={`
+                              mt-1 min-h-20 w-full rounded border px-3 py-2
+                            `}
+                            value={toMultiline(item.linkRules.excludeText)}
+                            onChange={event => updateSourceLinkRules(index, rules => ({
+                              ...rules,
+                              excludeText: splitMultiline(event.target.value),
+                            }))}
+                          />
+                        </label>
+
+                        <label className="text-sm">
+                          minArticleScore
+                          <input
+                            type="number"
+                            step="0.1"
+                            className="mt-1 w-full rounded border px-3 py-2"
+                            value={item.linkRules.minArticleScore ?? ''}
+                            onChange={event => updateSourceLinkRules(index, rules => ({
+                              ...rules,
+                              minArticleScore: parseOptionalNumber(event.target.value),
+                            }))}
+                          />
+                        </label>
+
+                        <label className="text-sm">
+                          minTextLength
+                          <input
+                            type="number"
+                            min={0}
+                            className="mt-1 w-full rounded border px-3 py-2"
+                            value={item.linkRules.minTextLength ?? ''}
+                            onChange={event => updateSourceLinkRules(index, rules => ({
+                              ...rules,
+                              minTextLength: parseOptionalNumber(event.target.value),
+                            }))}
+                          />
+                        </label>
+
+                        <label className="text-sm">
+                          debugMaxLinks
+                          <input
+                            type="number"
+                            min={0}
+                            className="mt-1 w-full rounded border px-3 py-2"
+                            value={item.linkRules.debugMaxLinks ?? ''}
+                            onChange={event => updateSourceLinkRules(index, rules => ({
+                              ...rules,
+                              debugMaxLinks: parseOptionalInt(event.target.value),
+                            }))}
+                          />
+                        </label>
+
+                        <div className={`
+                          flex flex-wrap items-center gap-4
+                          md:col-span-2
+                        `}
+                        >
+                          <label className="flex items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={item.linkRules.debug === true}
+                              onChange={event => updateSourceLinkRules(index, rules => ({
+                                ...rules,
+                                debug: event.target.checked,
+                              }))}
+                            />
+                            <span>debug</span>
+                          </label>
+
+                          <label className="flex items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={item.linkRules.resolveTrackingLinks !== false}
+                              onChange={event => updateSourceLinkRules(index, rules => ({
+                                ...rules,
+                                resolveTrackingLinks: event.target.checked,
+                              }))}
+                            />
+                            <span>resolveTrackingLinks</span>
+                          </label>
+
+                          <label className="flex items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={item.linkRules.preferOnlineVersion === true}
+                              onChange={event => updateSourceLinkRules(index, rules => ({
+                                ...rules,
+                                preferOnlineVersion: event.target.checked,
+                              }))}
+                            />
+                            <span>preferOnlineVersion</span>
+                          </label>
+                        </div>
+                      </div>
+                    )
+                  : <p className="text-xs text-gray-500">linkRules is currently disabled.</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  function renderPromptsSection() {
+    return (
+      <div className="space-y-4">
+        <div className={`
+          grid gap-2
+          lg:grid-cols-2
+        `}
+        >
+          {promptKeys.map((key) => {
+            const meta = promptMetaMap[key]
+            const isActive = key === activePrompt
+            return (
+              <button
+                key={key}
+                type="button"
+                className={[
+                  'rounded border px-3 py-2 text-left',
+                  isActive ? 'border-black bg-gray-100' : 'border-gray-300',
+                ].join(' ')}
+                onClick={() => setActivePrompt(key)}
+              >
+                <p className="text-sm font-medium">{meta.label}</p>
+                <p className="text-xs text-gray-600">{meta.description}</p>
+              </button>
+            )
+          })}
+        </div>
+
+        <div className={`
+          grid gap-4
+          xl:grid-cols-2
+        `}
+        >
+          <div className="space-y-3">
+            <div>
+              <p className="text-sm font-semibold">Template Editor (Saved)</p>
+              <p className="text-xs text-gray-600">
+                Current prompt:
+                {' '}
+                {promptMetaMap[activePrompt].label}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {templateVariableNames.map(name => (
+                <button
+                  key={name}
+                  type="button"
+                  className="rounded border px-2 py-1 text-xs"
+                  onClick={() => insertTemplateVariable(name)}
+                  disabled={busy}
+                  title={`Insert {{${name}}}`}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+
+            <textarea
+              ref={promptEditorRef}
+              className="min-h-80 w-full rounded border p-3 font-mono text-xs"
+              value={activePromptTemplate}
+              onChange={event => setPromptValue(activePrompt, event.target.value)}
+            />
+
+            {activePromptUnknownVariables.length > 0
+              ? (
+                  <p className="text-xs text-amber-700">
+                    Unknown template variables:
+                    {' '}
+                    {activePromptUnknownVariables.join(', ')}
+                  </p>
+                )
+              : (
+                  <p className="text-xs text-gray-500">Template variable validation passed.</p>
+                )}
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-sm font-semibold">Render Preview (Preview only, not saved)</p>
+            <pre className={`
+              min-h-80 overflow-auto rounded border bg-gray-50 p-3 text-xs
+              break-words whitespace-pre-wrap
+            `}
+            >
+              {activePromptPreview}
+            </pre>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <section className="space-y-4 rounded-lg border p-4">
+      <h2 className="text-lg font-semibold">Admin Workbench</h2>
+
+      <div className="flex flex-wrap gap-2">
+        {sections.map(name => (
+          <button
+            key={name}
+            type="button"
+            className={[
+              'rounded border px-3 py-1.5 text-sm',
+              section === name ? 'border-black bg-gray-100 font-medium' : 'border-gray-300',
+            ].join(' ')}
+            onClick={() => setSection(name)}
+          >
+            {sectionLabelMap[name]}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="rounded border px-3 py-1.5 text-sm"
+          onClick={resetCurrentSection}
+          disabled={busy}
+        >
+          Reset Current Section
+        </button>
 
         {section === 'prompts'
           ? (
@@ -425,7 +2198,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                   onClick={resetActivePrompt}
                   disabled={busy}
                 >
-                  重置当前 Prompt
+                  Reset Current Prompt
                 </button>
                 <button
                   type="button"
@@ -433,143 +2206,34 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                   onClick={resetAllPrompts}
                   disabled={busy}
                 >
-                  重置全部 Prompt
-                </button>
-                <button
-                  type="button"
-                  className="rounded bg-black px-3 py-1.5 text-sm text-white"
-                  onClick={savePrompts}
-                  disabled={busy}
-                >
-                  保存 prompts
+                  Reset All Prompts
                 </button>
               </>
             )
-          : (
-              <>
-                <button
-                  type="button"
-                  className="rounded border px-3 py-1.5 text-sm"
-                  onClick={resetCurrentSection}
-                  disabled={busy}
-                >
-                  重置当前区块
-                </button>
-                <button
-                  type="button"
-                  className="rounded bg-black px-3 py-1.5 text-sm text-white"
-                  onClick={saveSection}
-                  disabled={busy}
-                >
-                  保存当前区块
-                </button>
-              </>
-            )}
+          : null}
+
+        <button
+          type="button"
+          className="rounded bg-black px-3 py-1.5 text-sm text-white"
+          onClick={saveCurrentSection}
+          disabled={busy}
+        >
+          Save Current Section
+        </button>
       </div>
 
-      {section === 'prompts'
-        ? (
-            <div className="space-y-4">
-              <div className={`
-                grid gap-2
-                lg:grid-cols-2
-              `}
-              >
-                {promptKeys.map((key) => {
-                  const meta = promptMetaMap[key]
-                  const isActive = key === activePrompt
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      className={[
-                        'rounded border px-3 py-2 text-left',
-                        isActive ? 'border-black bg-gray-100' : 'border-gray-300',
-                      ].join(' ')}
-                      onClick={() => setActivePrompt(key)}
-                    >
-                      <p className="text-sm font-medium">{meta.label}</p>
-                      <p className="text-xs text-gray-600">{meta.description}</p>
-                    </button>
-                  )
-                })}
-              </div>
-
-              <div className={`
-                grid gap-4
-                xl:grid-cols-2
-              `}
-              >
-                <div className="space-y-3">
-                  <div>
-                    <p className="text-sm font-semibold">模板编辑（会保存）</p>
-                    <p className="text-xs text-gray-600">
-                      当前 Prompt:
-                      {' '}
-                      {promptMetaMap[activePrompt].label}
-                    </p>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    {templateVariableNames.map(name => (
-                      <button
-                        key={name}
-                        type="button"
-                        className="rounded border px-2 py-1 text-xs"
-                        onClick={() => insertTemplateVariable(name)}
-                        disabled={busy}
-                        title={`插入 {{${name}}}`}
-                      >
-                        {name}
-                      </button>
-                    ))}
-                  </div>
-
-                  <textarea
-                    ref={promptEditorRef}
-                    className={`
-                      min-h-80 w-full rounded border p-3 font-mono text-xs
-                    `}
-                    value={activePromptTemplate}
-                    onChange={event => setPromptDrafts(prev => setPromptValue(prev, activePrompt, event.target.value))}
-                  />
-
-                  {activePromptUnknownVariables.length > 0
-                    ? (
-                        <p className="text-xs text-amber-700">
-                          未知模板变量:
-                          {' '}
-                          {activePromptUnknownVariables.join(', ')}
-                        </p>
-                      )
-                    : (
-                        <p className="text-xs text-gray-500">模板变量校验通过。</p>
-                      )}
-                </div>
-
-                <div className="space-y-2">
-                  <p className="text-sm font-semibold">渲染预览（仅预览，不保存）</p>
-                  <pre className={`
-                    min-h-80 overflow-auto rounded border bg-gray-50 p-3 text-xs
-                    break-words whitespace-pre-wrap
-                  `}
-                  >
-                    {activePromptPreview}
-                  </pre>
-                </div>
-              </div>
-            </div>
-          )
-        : (
-            <textarea
-              className="min-h-72 w-full rounded border p-3 font-mono text-xs"
-              value={content}
-              onChange={event => setContent(event.target.value)}
-            />
-          )}
+      <div className="rounded border p-4">
+        {section === 'site' && renderSiteSection()}
+        {section === 'hosts' && renderHostsSection()}
+        {section === 'ai' && renderAiSection()}
+        {section === 'tts' && renderTtsSection()}
+        {section === 'locale' && renderLocaleSection()}
+        {section === 'sources' && renderSourcesSection()}
+        {section === 'prompts' && renderPromptsSection()}
+      </div>
 
       <div className="space-y-2 border-t pt-4">
-        <h3 className="text-sm font-semibold">资源上传</h3>
+        <h3 className="text-sm font-semibold">Asset Upload</h3>
         <div className="flex flex-wrap gap-4 text-sm">
           <label className="flex items-center gap-2">
             <span>Logo</span>
@@ -586,7 +2250,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
             />
           </label>
           <label className="flex items-center gap-2">
-            <span>主题音乐</span>
+            <span>Theme music</span>
             <input
               type="file"
               accept="audio/*"
@@ -604,24 +2268,24 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
 
       <div className="space-y-2 border-t pt-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">节目管理</h3>
+          <h3 className="text-sm font-semibold">Episode Management</h3>
           <button
             type="button"
             className="rounded border px-3 py-1.5 text-sm"
             onClick={loadEpisodes}
             disabled={loadingEpisodes || busy}
           >
-            {loadingEpisodes ? '加载中...' : '刷新节目列表'}
+            {loadingEpisodes ? 'Loading...' : 'Refresh episode list'}
           </button>
         </div>
         <ul className="space-y-2">
           {episodes.map(item => (
             <li
               key={item.date}
-              className={[
-                'flex items-center justify-between gap-2 rounded border px-3 py-2',
-                'text-sm',
-              ].join(' ')}
+              className={`
+                flex items-center justify-between gap-2 rounded border px-3 py-2
+                text-sm
+              `}
             >
               <div className="min-w-0">
                 <p className="truncate font-medium">{item.title}</p>
@@ -634,7 +2298,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                   onClick={() => openEpisodeEditor(item.date)}
                   disabled={busy || episodeBusy}
                 >
-                  编辑
+                  Edit
                 </button>
                 <button
                   type="button"
@@ -642,7 +2306,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                   onClick={() => deleteEpisode(item.date)}
                   disabled={busy || episodeBusy}
                 >
-                  删除
+                  Delete
                 </button>
               </div>
             </li>
@@ -655,7 +2319,8 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
             <div className="space-y-3 border-t pt-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold">
-                  编辑节目
+                  Edit episode
+                  {' '}
                   {selectedEpisode.date}
                 </h3>
                 <button
@@ -664,12 +2329,12 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                   onClick={() => setSelectedEpisode(null)}
                   disabled={episodeBusy}
                 >
-                  关闭
+                  Close
                 </button>
               </div>
 
               <label className="block text-sm">
-                标题
+                Title
                 <input
                   className="mt-1 w-full rounded border px-3 py-2"
                   value={selectedEpisode.title}
@@ -680,7 +2345,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
               </label>
 
               <label className="block text-sm">
-                发布时间 (ISO)
+                Publish time (ISO)
                 <input
                   className="mt-1 w-full rounded border px-3 py-2"
                   value={selectedEpisode.publishedAt || ''}
@@ -691,7 +2356,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
               </label>
 
               <label className="block text-sm">
-                音频 Key
+                Audio key
                 <input
                   className="mt-1 w-full rounded border px-3 py-2"
                   value={selectedEpisode.audio || ''}
@@ -707,7 +2372,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                 onClick={saveEpisode}
                 disabled={episodeBusy}
               >
-                {episodeBusy ? '保存中...' : '保存节目修改'}
+                {episodeBusy ? 'Saving...' : 'Save episode changes'}
               </button>
             </div>
           )

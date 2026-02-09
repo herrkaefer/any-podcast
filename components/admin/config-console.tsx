@@ -15,7 +15,7 @@ async function postJson(path: string, payload: Record<string, unknown>) {
   })
   const body = (await response.json().catch(() => null)) as Record<string, unknown> | null
   if (!response.ok) {
-    const message = typeof body?.error === 'string' ? body.error : `请求失败: ${response.status}`
+    const message = typeof body?.error === 'string' ? body.error : `Request failed: ${response.status}`
     throw new Error(message)
   }
   return body
@@ -37,7 +37,7 @@ export function AdminConfigConsole() {
       setResult({ ok: true, message: successMessage })
     }
     catch (error) {
-      const message = error instanceof Error ? error.message : '操作失败'
+      const message = error instanceof Error ? error.message : 'Action failed'
       setResult({ ok: false, message })
     }
     finally {
@@ -47,32 +47,29 @@ export function AdminConfigConsole() {
 
   return (
     <div className="space-y-4 rounded-lg border p-4">
-      <h2 className="text-lg font-semibold">配置操作</h2>
-      <div className="flex flex-wrap gap-2">
+      <h2 className="text-lg font-semibold">Config Actions</h2>
+      <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           disabled={pending !== ''}
-          onClick={() => runAction('validate', () => postJson('/api/admin/config/validate', {}), '草稿校验完成')}
+          onClick={() => runAction('validate', () => postJson('/api/admin/config/validate', {}), 'Draft validation completed')}
           className={`
-            rounded border px-3 py-1.5 text-sm
+            rounded border px-2 py-1 text-xs
             disabled:opacity-50
           `}
         >
-          校验草稿
+          Validate Draft
         </button>
-      </div>
-
-      <div className="border-t pt-4">
         <button
           type="button"
           disabled={pending !== ''}
-          onClick={() => runAction('logout', () => postJson('/api/admin/auth/logout', {}), '已退出登录')}
+          onClick={() => runAction('logout', () => postJson('/api/admin/auth/logout', {}), 'Logged out')}
           className={`
-            rounded border px-3 py-1.5 text-sm
+            rounded border px-2 py-1 text-xs
             disabled:opacity-50
           `}
         >
-          退出登录
+          Logout
         </button>
       </div>
 

@@ -24,20 +24,20 @@ export default async function AdminHomePage() {
   return (
     <main className="container mx-auto space-y-6 px-4 py-8">
       <section className="rounded-lg border p-4">
-        <h1 className="text-2xl font-semibold">Admin 控制台</h1>
+        <h1 className="text-2xl font-semibold">Admin Console</h1>
         <p className="mt-2 text-sm text-gray-600">
-          当前用户:
+          Current user:
           {' '}
           {session.user}
         </p>
-        <p className="text-sm text-gray-600">配置修改会直接保存并生效，不保留历史版本。</p>
+        <p className="text-sm text-gray-600">Config changes are saved and applied immediately. No revision history is kept.</p>
       </section>
 
       <AdminConfigConsole />
       <AdminWorkbench initialDraft={draft} />
 
       <section className="rounded-lg border p-4">
-        <h2 className="text-lg font-semibold">当前草稿（只读预览）</h2>
+        <h2 className="text-lg font-semibold">Current Draft (Read-only Preview)</h2>
         <pre className={`
           mt-3 max-h-120 overflow-auto rounded bg-gray-50 p-3 text-xs
         `}

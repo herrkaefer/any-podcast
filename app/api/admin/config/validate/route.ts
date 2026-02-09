@@ -20,12 +20,12 @@ export async function POST(request: Request) {
     const markers = config.hosts.map(host => host.speakerMarker.trim()).filter(Boolean)
     const markerSet = new Set(markers)
     if (markers.length !== markerSet.size) {
-      warnings.push('hosts.speakerMarker 不能重复，否则对话分段会冲突')
+      warnings.push('hosts.speakerMarker must be unique to avoid dialogue segmentation conflicts')
     }
 
     for (const host of config.hosts) {
       if (!config.tts.voices[host.id]) {
-        warnings.push(`tts.voices 缺少 host "${host.id}" 的 voice 映射`)
+        warnings.push(`tts.voices is missing a voice mapping for host "${host.id}"`)
       }
     }
 
@@ -42,7 +42,7 @@ export async function POST(request: Request) {
     for (const [name, value] of Object.entries(promptMap)) {
       const unknown = findUnknownTemplateVariables(value, variables)
       if (unknown.length > 0) {
-        warnings.push(`prompts.${name} 包含未知模板变量: ${unknown.join(', ')}`)
+        warnings.push(`prompts.${name} contains unknown template variables: ${unknown.join(', ')}`)
       }
     }
 
