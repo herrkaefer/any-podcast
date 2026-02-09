@@ -4,7 +4,7 @@
  */
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
-  "name": "spectrum-podcast-worker",
+  "name": "any-podcast-worker",
   "main": "./index.ts",
   "minify": true,
   "upload_source_maps": true,
@@ -44,13 +44,13 @@
   "kv_namespaces": [
     {
       "binding": "PODCAST_KV",
-      "id": "39eea2627b91464fa9346344c8426066"
+      "id": ""
     }
   ],
   "r2_buckets": [
     {
       "binding": "PODCAST_R2",
-      "bucket_name": "spectrum-podcast"
+      "bucket_name": "any-podcast"
     }
   ],
   "vars": {

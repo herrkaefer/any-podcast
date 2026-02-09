@@ -52,3 +52,7 @@ workflow/sources/config.local.ts
 worker/node_modules/
 
 tmp/
+
+# Generated wrangler configs (from template)
+wrangler.jsonc
+worker/wrangler.jsonc
