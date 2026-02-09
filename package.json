@@ -9,7 +9,7 @@
     "start": "next start",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "postinstall": "simple-git-hooks && npm run -s cf-typegen",
+    "postinstall": "npm run -s cf-typegen",
     "dev:worker": "wrangler dev --cwd worker --persist-to ../.wrangler/state",
     "deploy:worker": "wrangler deploy --cwd worker",
     "logs:worker": "wrangler tail --cwd worker",
@@ -69,19 +69,10 @@
     "eslint-plugin-format": "^1.1.0",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.26",
-    "lint-staged": "^16.2.7",
     "postcss": "^8.5.6",
     "puppeteer": "22.8.2",
-    "simple-git-hooks": "^2.13.1",
     "tailwindcss": "^4.1.18",
     "typescript": "^5.9.3",
     "wrangler": "^4.63.0"
-  },
-  "simple-git-hooks": {
-    "pre-commit": "pnpm lint-staged"
-  },
-  "lint-staged": {
-    "*.{ts,tsx,js,jsx,mjs,cjs,cts,mts}": "eslint --fix --cache",
-    "*.{json,md,mdx,yml,yaml}": "eslint --fix --cache"
   }
 }
