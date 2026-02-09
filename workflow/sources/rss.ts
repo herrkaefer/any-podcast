@@ -1,5 +1,6 @@
 import type { AiEnv } from '../ai'
 import type { SourceConfig } from './types'
+import type { RuntimeAiConfig } from '@/types/runtime-config'
 
 import * as cheerio from 'cheerio'
 import { $fetch } from 'ofetch'
@@ -99,6 +100,7 @@ export async function fetchRssItems(
     timeZone?: string
     newsletterHosts?: string[]
     extractNewsletterLinksPrompt?: string
+    runtimeAi?: RuntimeAiConfig
   },
 ) {
   const timeZone = options?.timeZone || 'America/Chicago'
@@ -149,6 +151,7 @@ export async function fetchRssItems(
             messageId: item.guid || item.link,
             receivedAt: item.pubDate || now.toISOString(),
             prompt: options?.extractNewsletterLinksPrompt,
+            runtimeAi: options?.runtimeAi,
           })
           if (links.length === 0) {
             console.warn('rss newsletter no links extracted', { source: source.name, title: item.title })

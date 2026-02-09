@@ -20,9 +20,6 @@ import {
 
 interface RuntimeConfigEnv {
   PODCAST_KV: KVNamespace
-  TTS_MODEL?: string
-  MAN_VOICE_ID?: string
-  WOMAN_VOICE_ID?: string
 }
 
 const DEFAULT_NEWSLETTER_HOSTS = ['kill-the-newsletter.com']
@@ -77,7 +74,14 @@ function getDefaultExternalLinks() {
   ]
   const dedupe = new Map<string, { platform: string, url: string }>()
   for (const item of list) {
-    dedupe.set(item.platform, item)
+    const url = item.url.trim()
+    if (!url) {
+      continue
+    }
+    dedupe.set(item.platform, {
+      platform: item.platform,
+      url,
+    })
   }
   return Array.from(dedupe.values())
 }
@@ -141,7 +145,7 @@ async function sha256(input: string) {
     .join('')
 }
 
-export async function buildDefaultRuntimeConfig(env?: RuntimeConfigEnv): Promise<RuntimeConfigBundle> {
+export async function buildDefaultRuntimeConfig(): Promise<RuntimeConfigBundle> {
   const sourceConfig = await loadSourceConfig()
   const nowIso = new Date().toISOString()
   const hosts = getDefaultHosts()
@@ -171,13 +175,17 @@ export async function buildDefaultRuntimeConfig(env?: RuntimeConfigEnv): Promise
       },
     },
     hosts,
+    ai: {
+      provider: 'gemini',
+      model: 'gemini-2.0-flash',
+    },
     tts: {
       provider: 'gemini',
       language: 'zh-CN',
-      model: env?.TTS_MODEL || 'gemini-2.5-flash-preview-tts',
+      model: 'gemini-2.5-flash-preview-tts',
       voices: {
-        [hosts[0].id]: env?.MAN_VOICE_ID || 'Puck',
-        [hosts[1].id]: env?.WOMAN_VOICE_ID || 'Zephyr',
+        [hosts[0].id]: 'Puck',
+        [hosts[1].id]: 'Zephyr',
       },
       geminiPrompt: '请用中文播报以下播客对话，语气自然、节奏流畅、音量稳定。',
       introMusic: {
@@ -247,7 +255,7 @@ export async function getDraftRuntimeConfig(env: RuntimeConfigEnv, podcastIdInpu
   if (draft) {
     return normalizeTtsConfig(draft)
   }
-  const fallback = await buildDefaultRuntimeConfig(env)
+  const fallback = await buildDefaultRuntimeConfig()
   await writeBundle(env, keys.draft, fallback)
   return fallback
 }
@@ -279,6 +287,12 @@ export function mergeRuntimeConfig(current: RuntimeConfigBundle, patch: unknown)
             : current.site.rss,
         }
       : current.site,
+    ai: parsedPatch.ai
+      ? {
+          ...current.ai,
+          ...parsedPatch.ai,
+        }
+      : current.ai,
     tts: parsedPatch.tts
       ? {
           ...current.tts,

@@ -1,5 +1,6 @@
 import type { AiEnv } from '../ai'
 import type { LinkRules, SourceConfig } from './types'
+import type { RuntimeAiConfig } from '@/types/runtime-config'
 
 import { createResponseText, getAiProvider, getPrimaryModel } from '../ai'
 import { extractNewsletterLinksPrompt } from '../prompt'
@@ -215,19 +216,21 @@ export async function extractNewsletterLinksWithAi(params: {
   content: string
   source: SourceConfig
   env: NewsletterEnv
+  runtimeAi?: RuntimeAiConfig
   messageId: string
   receivedAt: string
   prompt?: string
 }) {
-  const { subject, content, source, env, messageId, receivedAt, prompt } = params
+  const { subject, content, source, env, runtimeAi, messageId, receivedAt, prompt } = params
   const rules = source.linkRules
-  const provider = getAiProvider(env)
-  const model = getPrimaryModel(env, provider)
+  const provider = getAiProvider(env, runtimeAi)
+  const model = getPrimaryModel(env, provider, runtimeAi)
   const input = buildNewsletterInput({ subject, content, rules })
   const maxOutputTokens = 8192
 
   const response = await createResponseText({
     env,
+    runtimeAi,
     model,
     instructions: prompt || extractNewsletterLinksPrompt,
     input,
@@ -254,6 +257,7 @@ export async function extractNewsletterLinksWithAi(params: {
     const retryInstructions = `${prompt || extractNewsletterLinksPrompt}\n\n【重要】上一次输出不是有效 JSON，请仅输出完整 JSON 数组，不要代码块或多余文字。`
     const retryResponse = await createResponseText({
       env,
+      runtimeAi,
       model,
       instructions: retryInstructions,
       input,

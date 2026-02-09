@@ -31,8 +31,6 @@ interface Env extends CloudflareEnv, AiEnv {
   PODCAST_R2_BUCKET_URL: string
   PODCAST_WORKFLOW: Workflow
   BROWSER: Fetcher
-  SKIP_TTS?: string
-  TTS_PROVIDER?: string
   TTS_API_ID?: string
   TTS_API_KEY?: string
   WORKFLOW_TEST_STEP?: string
@@ -67,6 +65,7 @@ interface RuntimeTtsSettings {
   language: string
   model?: string
   speed?: string | number
+  apiUrl?: string
   geminiPrompt?: string
   voicesBySpeaker: Record<string, string>
   geminiSpeakers: { speaker: string, voice?: string }[]
@@ -105,27 +104,27 @@ function formatError(error: unknown) {
 }
 
 function validateTtsConfig(env: Env, providerInput?: string) {
-  const provider = (providerInput || env.TTS_PROVIDER || '').trim().toLowerCase()
+  const provider = (providerInput || '').trim().toLowerCase()
   if (!provider) {
-    throw new Error('TTS_PROVIDER is required when SKIP_TTS is false (current: empty)')
+    throw new Error('runtime config tts.provider is required when skipTts is false')
   }
 
   const isProduction = (env.NODE_ENV || 'production') === 'production'
   const supported = isProduction ? ['gemini', 'minimax', 'murf'] : ['gemini', 'minimax', 'murf', 'edge']
   if (!supported.includes(provider)) {
-    throw new Error(`Unsupported TTS_PROVIDER: ${provider} (supported: ${supported.join(', ')})`)
+    throw new Error(`Unsupported runtime tts.provider: ${provider} (supported: ${supported.join(', ')})`)
   }
 
   if (provider === 'gemini' && !env.GEMINI_API_KEY?.trim()) {
-    throw new Error('GEMINI_API_KEY is required when TTS_PROVIDER=gemini')
+    throw new Error('GEMINI_API_KEY is required when tts.provider=gemini')
   }
 
   if (provider === 'minimax') {
     if (!env.TTS_API_KEY?.trim()) {
-      throw new Error('TTS_API_KEY is required when TTS_PROVIDER=minimax')
+      throw new Error('TTS_API_KEY is required when tts.provider=minimax')
     }
     if (!env.TTS_API_ID?.trim()) {
-      throw new Error('TTS_API_ID is required when TTS_PROVIDER=minimax')
+      throw new Error('TTS_API_ID is required when tts.provider=minimax')
     }
   }
 
@@ -201,6 +200,7 @@ function buildRuntimeTtsSettings(config: RuntimeConfigBundle): RuntimeTtsSetting
     language: config.tts.language || 'zh-CN',
     model: config.tts.model || undefined,
     speed: config.tts.speed,
+    apiUrl: config.tts.apiUrl,
     geminiPrompt: config.tts.geminiPrompt || undefined,
     voicesBySpeaker,
     geminiSpeakers,
@@ -257,18 +257,20 @@ function parseStorySummary(text: string): StorySummaryResult | null {
 
 async function summarizeStoryWithRelevance(params: {
   env: AiEnv
+  runtimeAi: RuntimeConfigBundle['ai']
   model: string
   instructions: string
   input: string
   maxOutputTokens: number
 }) {
-  const { env, model, instructions, input, maxOutputTokens } = params
+  const { env, runtimeAi, model, instructions, input, maxOutputTokens } = params
   const maxAttempts = 2
   let lastError: unknown = null
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const response = await createResponseText({
         env,
+        runtimeAi,
         model,
         instructions: attempt === 1
           ? instructions
@@ -372,11 +374,12 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
     const today = event.payload?.today || windowDateKey
     const publishedAt = now.toISOString()
     const publishDateKey = getDateKeyInTimeZone(now, timeZone)
-    const skipTTS = this.env.SKIP_TTS === 'true'
-    const aiProvider = getAiProvider(this.env)
-    const maxTokens = getMaxTokens(this.env, aiProvider)
-    const primaryModel = getPrimaryModel(this.env, aiProvider)
-    const thinkingModel = getThinkingModel(this.env, aiProvider)
+    const skipTTS = runtimeConfig.tts.skipTts === true
+    const runtimeAi = runtimeConfig.ai
+    const aiProvider = getAiProvider(this.env, runtimeAi)
+    const maxTokens = getMaxTokens(this.env, aiProvider, runtimeAi)
+    const primaryModel = getPrimaryModel(this.env, aiProvider, runtimeAi)
+    const thinkingModel = getThinkingModel(this.env, aiProvider, runtimeAi)
     const testStep = (this.env.WORKFLOW_TEST_STEP || '').trim().toLowerCase()
 
     console.info('AI runtime config', {
@@ -403,6 +406,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         if (testStep === 'openai' || testStep === 'responses') {
           return (await createResponseText({
             env: this.env,
+            runtimeAi,
             model: primaryModel,
             instructions: testInstructions,
             input: testInput,
@@ -441,6 +445,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             })
             const { audio, extension } = await synthesizeGeminiTTS(prompt, this.env, {
               model: runtimeTtsSettings.model,
+              apiUrl: runtimeTtsSettings.apiUrl,
               geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
             })
             if (!audio.size) {
@@ -465,6 +470,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
               language: runtimeTtsSettings.language,
               model: runtimeTtsSettings.model,
               speed: runtimeTtsSettings.speed,
+              apiUrl: runtimeTtsSettings.apiUrl,
               voicesBySpeaker: runtimeTtsSettings.voicesBySpeaker,
             })
             if (!audio.size) {
@@ -508,6 +514,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
               })
               const { audio } = await synthesizeGeminiTTS(prompt, this.env, {
                 model: runtimeTtsSettings.model,
+                apiUrl: runtimeTtsSettings.apiUrl,
                 geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
               })
               if (!audio.size) {
@@ -529,6 +536,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
                 language: runtimeTtsSettings.language,
                 model: runtimeTtsSettings.model,
                 speed: runtimeTtsSettings.speed,
+                apiUrl: runtimeTtsSettings.apiUrl,
                 voicesBySpeaker: runtimeTtsSettings.voicesBySpeaker,
               })
               if (!audio.size) {
@@ -604,6 +612,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
               newsletterHosts: runtimeConfig.sources.newsletterHosts,
               archiveLinkKeywords: runtimeConfig.sources.archiveLinkKeywords,
               extractNewsletterLinksPrompt: runtimePrompts.extractNewsletterLinks,
+              runtimeAi,
             },
           })
           let story = candidates.stories[0]
@@ -615,6 +624,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
               now,
               lookbackDays: messageRef.lookbackDays,
               env: this.env,
+              runtimeAi,
               window: { start: windowStart, end: windowEnd, timeZone },
               timeZone,
               archiveLinkKeywords: runtimeConfig.sources.archiveLinkKeywords,
@@ -628,6 +638,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           const storyResponse = await getStoryContent(story, maxTokens, this.env)
           const { result } = await summarizeStoryWithRelevance({
             env: this.env,
+            runtimeAi,
             model: primaryModel,
             instructions: runtimePrompts.summarizeStory,
             input: storyResponse,
@@ -646,6 +657,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           ].join('\n\n---\n\n')
           return (await createResponseText({
             env: this.env,
+            runtimeAi,
             model: thinkingModel,
             instructions: runtimePrompts.summarizePodcast,
             input: this.env.WORKFLOW_TEST_INPUT || sampleStories,
@@ -661,6 +673,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           const sampleInput = `<stories>[]</stories>\n\n---\n\n${sampleStories}`
           return (await createResponseText({
             env: this.env,
+            runtimeAi,
             model: thinkingModel,
             instructions: runtimePrompts.summarizeBlog,
             input: this.env.WORKFLOW_TEST_INPUT || sampleInput,
@@ -673,6 +686,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             || `${primarySpeaker}：大家好，欢迎收听测试播客。\n${secondarySpeaker}：大家好，这是一段测试内容。`
           return (await createResponseText({
             env: this.env,
+            runtimeAi,
             model: primaryModel,
             instructions: runtimePrompts.intro,
             input: sampleInput,
@@ -708,6 +722,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           newsletterHosts: runtimeConfig.sources.newsletterHosts,
           archiveLinkKeywords: runtimeConfig.sources.archiveLinkKeywords,
           extractNewsletterLinksPrompt: runtimePrompts.extractNewsletterLinks,
+          runtimeAi,
         },
       })
 
@@ -734,6 +749,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             now,
             lookbackDays: messageRef.lookbackDays,
             env: this.env,
+            runtimeAi,
             window: {
               start: windowStart,
               end: windowEnd,
@@ -814,6 +830,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           })
           const { result, usage, finishReason } = await summarizeStoryWithRelevance({
             env: this.env,
+            runtimeAi,
             model: primaryModel,
             instructions: runtimePrompts.summarizeStory,
             input: storyResponse,
@@ -908,6 +925,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         try {
           const { text, usage, finishReason } = await createResponseText({
             env: this.env,
+            runtimeAi,
             model: thinkingModel,
             instructions: runtimePrompts.summarizePodcast,
             input,
@@ -972,6 +990,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         try {
           const { text, usage, finishReason } = await createResponseText({
             env: this.env,
+            runtimeAi,
             model: thinkingModel,
             instructions: runtimePrompts.summarizeBlog,
             input,
@@ -1018,6 +1037,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
     const introContent = await step.do('create intro content', retryConfig, async () => {
       const { text, usage, finishReason } = await createResponseText({
         env: this.env,
+        runtimeAi,
         model: primaryModel,
         instructions: runtimePrompts.intro,
         input: podcastContent,
@@ -1031,6 +1051,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
     const episodeTitle = await step.do('generate episode title', retryConfig, async () => {
       const { text } = await createResponseText({
         env: this.env,
+        runtimeAi,
         model: primaryModel,
         instructions: runtimePrompts.title,
         input: podcastContent,
@@ -1110,6 +1131,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             })
             const result = await synthesizeGeminiTTS(geminiPrompt, this.env, {
               model: runtimeTtsSettings.model,
+              apiUrl: runtimeTtsSettings.apiUrl,
               geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
             })
             if (!result.audio.size) {
@@ -1221,6 +1243,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
                   language: runtimeTtsSettings.language,
                   model: runtimeTtsSettings.model,
                   speed: runtimeTtsSettings.speed,
+                  apiUrl: runtimeTtsSettings.apiUrl,
                   voicesBySpeaker: runtimeTtsSettings.voicesBySpeaker,
                 })
 

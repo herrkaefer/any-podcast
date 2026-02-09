@@ -64,6 +64,14 @@ export interface RuntimeTtsIntroMusicConfig {
   podcastDelay: number
 }
 
+export interface RuntimeAiConfig {
+  provider: 'openai' | 'gemini'
+  model: string
+  thinkingModel?: string
+  maxTokens?: number
+  baseUrl?: string
+}
+
 export interface RuntimeTtsConfig {
   provider: 'edge' | 'minimax' | 'murf' | 'gemini'
   language: string
@@ -73,6 +81,8 @@ export interface RuntimeTtsConfig {
   geminiPrompt?: string
   introMusic: RuntimeTtsIntroMusicConfig
   audioQuality?: number
+  skipTts?: boolean
+  apiUrl?: string
 }
 
 export interface RuntimeLocaleConfig {
@@ -109,6 +119,7 @@ export interface RuntimeConfigMeta {
 export interface RuntimeConfigBundle {
   site: RuntimeSiteConfig
   hosts: RuntimeHostConfig[]
+  ai: RuntimeAiConfig
   tts: RuntimeTtsConfig
   locale: RuntimeLocaleConfig
   sources: RuntimeSourcesConfig

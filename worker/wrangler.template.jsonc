@@ -54,8 +54,6 @@
     }
   ],
   "vars": {
-    "PODCAST_DESCRIPTION": "AI-powered podcast generator that aggregates content sources and produces audio episodes with dual-host dialogue.",
-    "PODCAST_ID": "any-podcast",
-    "PODCAST_TITLE": "Any Podcast"
+    "PODCAST_ID": "any-podcast"
   }
 }

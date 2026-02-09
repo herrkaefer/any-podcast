@@ -1,6 +1,7 @@
 import type { GmailMessageRef } from './gmail'
 
 import type { SourceConfig } from './types'
+import type { RuntimeAiConfig } from '@/types/runtime-config'
 import { loadSourceConfig } from './config'
 
 import { listGmailMessageRefs } from './gmail'
@@ -32,6 +33,7 @@ interface SourceRuntimeOptions {
   newsletterHosts?: string[]
   archiveLinkKeywords?: string[]
   extractNewsletterLinksPrompt?: string
+  runtimeAi?: RuntimeAiConfig
 }
 
 export async function getStoryCandidatesFromSources(options?: {
@@ -56,6 +58,7 @@ export async function getStoryCandidatesFromSources(options?: {
               timeZone: options?.sourceOptions?.timeZone,
               newsletterHosts: options?.sourceOptions?.newsletterHosts,
               extractNewsletterLinksPrompt: options?.sourceOptions?.extractNewsletterLinksPrompt,
+              runtimeAi: options?.sourceOptions?.runtimeAi,
             }),
             gmailMessages: [] as GmailMessageRef[],
           }

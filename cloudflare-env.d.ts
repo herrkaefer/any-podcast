@@ -14,9 +14,6 @@ declare namespace Cloudflare {
 		NODE_ENV: string;
 		NEXT_STATIC_HOST: string;
 		PODCAST_ID: string;
-		PODCAST_TITLE: string;
-		PODCAST_DESCRIPTION: string;
-		PODCAST_CONTACT_EMAIL: string;
 		ADMIN_TOKEN: string;
 		NEXT_CACHE_DO_QUEUE: DurableObjectNamespace<import("./.open-next/worker").DOQueueHandler>;
 		NEXT_TAG_CACHE_DO_SHARDED: DurableObjectNamespace<import("./.open-next/worker").DOShardedTagCache>;
@@ -29,7 +26,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "NODE_ENV" | "NEXT_STATIC_HOST" | "PODCAST_ID" | "PODCAST_TITLE" | "PODCAST_DESCRIPTION" | "PODCAST_CONTACT_EMAIL" | "ADMIN_TOKEN">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "NODE_ENV" | "NEXT_STATIC_HOST" | "PODCAST_ID" | "ADMIN_TOKEN">> {}
 }
 
 // Begin runtime types

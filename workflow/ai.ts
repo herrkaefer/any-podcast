@@ -1,17 +1,11 @@
+import type { RuntimeAiConfig } from '@/types/runtime-config'
 import { GoogleGenAI } from '@google/genai'
 
 export type AiProvider = 'openai' | 'gemini'
 
 export interface AiEnv {
-  OPENAI_BASE_URL?: string
   OPENAI_API_KEY?: string
-  OPENAI_MODEL?: string
-  OPENAI_THINKING_MODEL?: string
-  OPENAI_MAX_TOKENS?: string
   GEMINI_API_KEY?: string
-  GEMINI_MODEL?: string
-  GEMINI_THINKING_MODEL?: string
-  GEMINI_MAX_TOKENS?: string
 }
 
 interface ResponsesMessageContent {
@@ -41,42 +35,53 @@ interface ResponseTextResult {
 
 const defaultOpenAIBaseUrl = 'https://api.openai.com/v1'
 
-export function getAiProvider(env: AiEnv): AiProvider {
-  const hasGemini = Boolean(env.GEMINI_API_KEY?.trim()) && Boolean(env.GEMINI_MODEL?.trim())
-  const hasOpenAI = Boolean(env.OPENAI_API_KEY?.trim()) && Boolean(env.OPENAI_MODEL?.trim())
-  if (hasGemini) {
-    return 'gemini'
-  }
-  if (hasOpenAI) {
-    return 'openai'
-  }
-  return 'openai'
-}
+export type RuntimeAiOptions = RuntimeAiConfig
 
-export function getPrimaryModel(env: AiEnv, provider: AiProvider): string {
+export function getAiProvider(env: AiEnv, options?: RuntimeAiOptions): AiProvider {
+  const provider = options?.provider ?? (env.GEMINI_API_KEY?.trim() ? 'gemini' : 'openai')
+
   if (provider === 'gemini') {
-    if (!env.GEMINI_MODEL) {
-      throw new Error('GEMINI_MODEL is required when using Gemini API')
+    if (!env.GEMINI_API_KEY?.trim()) {
+      throw new Error('GEMINI_API_KEY is required when ai.provider=gemini')
     }
-    return env.GEMINI_MODEL
+    return provider
   }
-  if (!env.OPENAI_MODEL) {
-    throw new Error('OPENAI_MODEL is required when using OpenAI API')
+
+  if (!env.OPENAI_API_KEY?.trim()) {
+    throw new Error('OPENAI_API_KEY is required when ai.provider=openai')
   }
-  return env.OPENAI_MODEL
+  return provider
 }
 
-export function getThinkingModel(env: AiEnv, provider: AiProvider): string {
-  if (provider === 'gemini') {
-    return env.GEMINI_THINKING_MODEL || getPrimaryModel(env, provider)
+export function getPrimaryModel(env: AiEnv, provider: AiProvider, options?: RuntimeAiOptions): string {
+  if (provider === 'gemini' && !env.GEMINI_API_KEY?.trim()) {
+    throw new Error('GEMINI_API_KEY is required when ai.provider=gemini')
   }
-  return env.OPENAI_THINKING_MODEL || getPrimaryModel(env, provider)
+  if (provider === 'openai' && !env.OPENAI_API_KEY?.trim()) {
+    throw new Error('OPENAI_API_KEY is required when ai.provider=openai')
+  }
+
+  const model = options?.model?.trim()
+  if (!model) {
+    throw new Error('runtime config ai.model is required')
+  }
+  return model
 }
 
-export function getMaxTokens(env: AiEnv, provider: AiProvider): number {
-  const raw = provider === 'gemini' ? env.GEMINI_MAX_TOKENS : env.OPENAI_MAX_TOKENS
-  const parsed = Number.parseInt(raw || '8192')
-  return Number.isFinite(parsed) ? parsed : 8192
+export function getThinkingModel(env: AiEnv, provider: AiProvider, options?: RuntimeAiOptions): string {
+  const thinkingModel = options?.thinkingModel?.trim()
+  if (thinkingModel) {
+    return thinkingModel
+  }
+  return getPrimaryModel(env, provider, options)
+}
+
+export function getMaxTokens(_: AiEnv, _provider: AiProvider, options?: RuntimeAiOptions): number {
+  const parsed = Number(options?.maxTokens)
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed
+  }
+  return 8192
 }
 
 function buildResponsesUrl(baseUrl?: string): string {
@@ -110,6 +115,7 @@ function extractOutputText(body: ResponsesBody): string {
 
 export async function createResponseText(params: {
   env: AiEnv
+  runtimeAi?: RuntimeAiOptions
   model: string
   instructions: string
   input: string
@@ -117,8 +123,17 @@ export async function createResponseText(params: {
   responseMimeType?: string
   responseSchema?: unknown
 }): Promise<ResponseTextResult> {
-  const { env, model, instructions, input, maxOutputTokens, responseMimeType, responseSchema } = params
-  const provider = getAiProvider(env)
+  const {
+    env,
+    runtimeAi,
+    model,
+    instructions,
+    input,
+    maxOutputTokens,
+    responseMimeType,
+    responseSchema,
+  } = params
+  const provider = getAiProvider(env, runtimeAi)
 
   if (provider === 'gemini') {
     if (!env.GEMINI_API_KEY) {
@@ -157,7 +172,7 @@ export async function createResponseText(params: {
   if (!env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY is required when using OpenAI API')
   }
-  const url = buildResponsesUrl(env.OPENAI_BASE_URL)
+  const url = buildResponsesUrl(runtimeAi?.baseUrl)
   const body: Record<string, unknown> = {
     model,
     instructions,

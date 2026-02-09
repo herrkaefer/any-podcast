@@ -4,15 +4,9 @@ import { GoogleGenAI } from '@google/genai'
 import { $fetch } from 'ofetch'
 
 interface Env extends CloudflareEnv {
-  TTS_PROVIDER?: string
-  TTS_API_URL?: string
   TTS_API_ID?: string
   TTS_API_KEY?: string
-  TTS_MODEL?: string
   GEMINI_API_KEY?: string
-  MAN_VOICE_ID?: string
-  WOMAN_VOICE_ID?: string
-  AUDIO_SPEED?: string
 }
 
 export interface GeminiSpeakerConfig {
@@ -25,6 +19,7 @@ export interface RuntimeTtsOptions {
   language?: string
   model?: string
   speed?: string | number
+  apiUrl?: string
   voicesBySpeaker?: Record<string, string>
   geminiPrompt?: string
   geminiSpeakers?: GeminiSpeakerConfig[]
@@ -63,20 +58,22 @@ function resolveVoiceBySpeaker(
 }
 
 async function edgeTTS(text: string, speaker: string, env: Env, options?: RuntimeTtsOptions) {
+  void env
   const { audio } = await synthesize({
     text,
     language: options?.language || 'zh-CN',
     voice: resolveVoiceBySpeaker(speaker, options, {
-      male: env.MAN_VOICE_ID || 'zh-CN-YunyangNeural',
-      female: env.WOMAN_VOICE_ID || 'zh-CN-XiaoxiaoNeural',
+      male: 'zh-CN-YunyangNeural',
+      female: 'zh-CN-XiaoxiaoNeural',
     }),
-    rate: resolveRateForEdge(options?.speed, env.AUDIO_SPEED || '10%'),
+    rate: resolveRateForEdge(options?.speed, '10%'),
   })
   return audio
 }
 
 async function minimaxTTS(text: string, speaker: string, env: Env, options?: RuntimeTtsOptions) {
-  const result = await $fetch<{ data: { audio: string }, base_resp: { status_msg: string } }>(`${env.TTS_API_URL || 'https://api.minimaxi.com/v1/t2a_v2'}?GroupId=${env.TTS_API_ID}`, {
+  const apiUrl = options?.apiUrl || 'https://api.minimaxi.com/v1/t2a_v2'
+  const result = await $fetch<{ data: { audio: string }, base_resp: { status_msg: string } }>(`${apiUrl}?GroupId=${env.TTS_API_ID}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -84,20 +81,20 @@ async function minimaxTTS(text: string, speaker: string, env: Env, options?: Run
     },
     timeout: 30000,
     body: JSON.stringify({
-      model: options?.model || env.TTS_MODEL || 'speech-2.6-hd',
+      model: options?.model || 'speech-2.6-hd',
       text,
       timber_weights: [
         {
           voice_id: resolveVoiceBySpeaker(speaker, options, {
-            male: env.MAN_VOICE_ID || 'Chinese (Mandarin)_Gentleman',
-            female: env.WOMAN_VOICE_ID || 'Chinese (Mandarin)_Gentle_Senior',
+            male: 'Chinese (Mandarin)_Gentleman',
+            female: 'Chinese (Mandarin)_Gentle_Senior',
           }),
           weight: 100,
         },
       ],
       voice_setting: {
         voice_id: '',
-        speed: Number(options?.speed ?? env.AUDIO_SPEED ?? 1.1),
+        speed: Number(options?.speed ?? 1.1),
         pitch: 0,
         vol: 1,
         latex_read: false,
@@ -121,11 +118,11 @@ async function minimaxTTS(text: string, speaker: string, env: Env, options?: Run
 /**
  * murf.ai 语音合成服务每月$10的免费额度，相对于 minimax 收费，没有预算的用户可以使用
  * 使用 Murf 语音合成服务将文本转换为音频。
- * 根据 `speaker` 选择不同的预设音色，并可通过环境变量调整语速等参数。
+ * 根据 `speaker` 选择不同的预设音色，并通过 runtime config 调整语速等参数。
  *
  * @param text 要合成的文本内容
  * @param speaker 说话人标识：优先按 `voicesBySpeaker` 匹配，否则回退默认音色
- * @param env 运行环境配置，包含 `TTS_API_URL`、`TTS_API_KEY`、`TTS_MODEL`、`MAN_VOICE_ID`、`WOMAN_VOICE_ID`、`AUDIO_SPEED` 等
+ * @param env 运行环境配置，包含 `TTS_API_KEY` 等凭证
  * @param options 运行时 TTS 参数（语言、模型、语速、speaker->voice 映射等）
  * @returns 返回包含 MP3 数据的 `Blob`
  * @throws 当请求失败或服务返回非 2xx 状态码时抛出错误
@@ -133,7 +130,8 @@ async function minimaxTTS(text: string, speaker: string, env: Env, options?: Run
  * @getKeyUrl https://murf.ai/api/api-keys
  */
 async function murfTTS(text: string, speaker: string, env: Env, options?: RuntimeTtsOptions) {
-  const result = await $fetch(`${env.TTS_API_URL || 'https://api.murf.ai/v1/speech/stream'}`, {
+  const apiUrl = options?.apiUrl || 'https://api.murf.ai/v1/speech/stream'
+  const result = await $fetch(`${apiUrl}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -148,13 +146,13 @@ async function murfTTS(text: string, speaker: string, env: Env, options?: Runtim
     body: JSON.stringify({
       text,
       voiceId: resolveVoiceBySpeaker(speaker, options, {
-        male: env.MAN_VOICE_ID || 'en-US-ken',
-        female: env.WOMAN_VOICE_ID || 'en-UK-ruby',
+        male: 'en-US-ken',
+        female: 'en-UK-ruby',
       }),
-      model: options?.model || env.TTS_MODEL || 'GEN2',
+      model: options?.model || 'GEN2',
       multiNativeLocale: options?.language || 'zh-CN',
       style: 'Conversational',
-      rate: Number(options?.speed ?? env.AUDIO_SPEED ?? -8),
+      rate: Number(options?.speed ?? -8),
       pitch: 0,
       format: 'MP3',
     }),
@@ -191,7 +189,7 @@ export async function synthesizeGeminiTTS(text: string, env: Env, options?: Runt
     throw new Error('GEMINI_API_KEY is required when using Gemini TTS')
   }
 
-  const model = options?.model || env.TTS_MODEL || 'gemini-2.5-flash-preview-tts'
+  const model = options?.model || 'gemini-2.5-flash-preview-tts'
   const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY })
   const startedAt = Date.now()
   console.info('Gemini TTS request start', {
@@ -213,16 +211,16 @@ export async function synthesizeGeminiTTS(text: string, env: Env, options?: Runt
             : [
                 {
                   speaker: 'Host1',
-                  voice: env.MAN_VOICE_ID || 'Puck',
+                  voice: 'Puck',
                 },
                 {
                   speaker: 'Host2',
-                  voice: env.WOMAN_VOICE_ID || 'Zephyr',
+                  voice: 'Zephyr',
                 },
               ]).map((item, index) => {
             const fallbackVoice = index === 0
-              ? env.MAN_VOICE_ID || 'Puck'
-              : env.WOMAN_VOICE_ID || 'Zephyr'
+              ? 'Puck'
+              : 'Zephyr'
             return {
               speaker: item.speaker,
               voiceConfig: {
@@ -273,8 +271,8 @@ export async function synthesizeGeminiTTS(text: string, env: Env, options?: Runt
 }
 
 export default function (text: string, speaker: string, env: Env, options?: RuntimeTtsOptions) {
-  const provider = options?.provider || env.TTS_PROVIDER || 'edge'
-  console.info('TTS_PROVIDER', provider)
+  const provider = options?.provider || 'edge'
+  console.info('TTS provider', provider)
   switch (provider) {
     case 'minimax':
       return minimaxTTS(text, speaker, env, options)

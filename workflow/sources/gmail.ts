@@ -1,5 +1,6 @@
 import type { AiEnv } from '../ai'
 import type { SourceConfig } from './types'
+import type { RuntimeAiConfig } from '@/types/runtime-config'
 
 import { Buffer } from 'node:buffer'
 import * as cheerio from 'cheerio'
@@ -293,6 +294,7 @@ export async function processGmailMessage(params: {
   now: Date
   lookbackDays: number
   env: GmailEnv
+  runtimeAi?: RuntimeAiConfig
   window?: { start: Date, end: Date, timeZone: string }
   timeZone?: string
   archiveLinkKeywords?: string[]
@@ -395,6 +397,7 @@ export async function processGmailMessage(params: {
       messageId: message.id,
       receivedAt: receivedAtIso,
       prompt: params.extractNewsletterLinksPrompt,
+      runtimeAi: params.runtimeAi,
     })
     if (links.length === 0) {
       console.warn('newsletter has no matching links', { id: message.id, subject, receivedAt: receivedAtIso })

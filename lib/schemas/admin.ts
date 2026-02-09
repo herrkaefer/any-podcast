@@ -101,6 +101,22 @@ const hostSchema = z.object({
   link: z.string().optional(),
 }).strict()
 
+const aiSchema = z.object({
+  provider: z.enum(['openai', 'gemini']),
+  model: z.string().min(1),
+  thinkingModel: z.string().optional(),
+  maxTokens: z.number().int().positive().optional(),
+  baseUrl: z.string().optional(),
+}).strict()
+
+const editableAiPatchSchema = z.object({
+  provider: z.enum(['openai', 'gemini']).optional(),
+  model: z.string().min(1).optional(),
+  thinkingModel: z.string().optional(),
+  maxTokens: z.number().int().positive().optional(),
+  baseUrl: z.string().optional(),
+}).strict()
+
 const ttsSchema = z.object({
   provider: z.enum(['edge', 'minimax', 'murf', 'gemini']),
   language: z.string().min(1),
@@ -115,6 +131,8 @@ const ttsSchema = z.object({
     podcastDelay: z.number().nonnegative(),
   }).strict(),
   audioQuality: z.number().optional(),
+  skipTts: z.boolean().optional(),
+  apiUrl: z.string().optional(),
 }).strict()
 
 const editableTtsPatchSchema = z.object({
@@ -130,6 +148,8 @@ const editableTtsPatchSchema = z.object({
     podcastDelay: z.number().nonnegative().optional(),
   }).strict().optional(),
   audioQuality: z.number().optional(),
+  skipTts: z.boolean().optional(),
+  apiUrl: z.string().optional(),
 }).strict()
 
 const localeSchema = z.object({
@@ -166,6 +186,7 @@ const metaSchema = z.object({
 export const runtimeConfigBundleSchema = z.object({
   site: siteSchema,
   hosts: z.array(hostSchema).min(2),
+  ai: aiSchema,
   tts: ttsSchema,
   locale: localeSchema,
   sources: sourcesSchema,
@@ -176,6 +197,7 @@ export const runtimeConfigBundleSchema = z.object({
 export const runtimeConfigPatchSchema = z.object({
   site: editableSitePatchSchema.optional(),
   hosts: z.array(hostSchema).min(2).optional(),
+  ai: editableAiPatchSchema.optional(),
   tts: editableTtsPatchSchema.optional(),
   locale: localeSchema.partial().optional(),
   sources: z.object({
