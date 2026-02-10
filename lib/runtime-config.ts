@@ -30,6 +30,24 @@ const DEFAULT_ARCHIVE_LINK_KEYWORDS = [
 ]
 
 const DEFAULT_RSS_CATEGORIES = ['Health & Fitness', 'Education']
+const WORKFLOW_TEST_STEPS = new Set([
+  '',
+  'openai',
+  'responses',
+  'tts',
+  'tts-intro',
+  'story',
+  'podcast',
+  'blog',
+  'intro',
+  'stories',
+])
+const DEFAULT_TEST_CONFIG: RuntimeConfigBundle['test'] = {
+  workflowTestStep: '',
+  workflowTestInput: '',
+  workflowTestInstructions: '',
+  workflowTtsInput: '',
+}
 
 export function getRuntimeConfigKeys(podcastIdInput = podcastId) {
   const base = `cfg:podcast:${podcastIdInput}`
@@ -86,6 +104,26 @@ function getDefaultExternalLinks() {
   return Array.from(dedupe.values())
 }
 
+function normalizeTestConfig(value: unknown): RuntimeConfigBundle['test'] {
+  if (!value || typeof value !== 'object') {
+    return { ...DEFAULT_TEST_CONFIG }
+  }
+
+  const input = value as Record<string, unknown>
+  const rawStep = typeof input.workflowTestStep === 'string'
+    ? input.workflowTestStep.trim().toLowerCase()
+    : ''
+
+  return {
+    workflowTestStep: WORKFLOW_TEST_STEPS.has(rawStep)
+      ? rawStep as RuntimeConfigBundle['test']['workflowTestStep']
+      : '',
+    workflowTestInput: typeof input.workflowTestInput === 'string' ? input.workflowTestInput : '',
+    workflowTestInstructions: typeof input.workflowTestInstructions === 'string' ? input.workflowTestInstructions : '',
+    workflowTtsInput: typeof input.workflowTtsInput === 'string' ? input.workflowTtsInput : '',
+  }
+}
+
 function normalizeTtsConfig(config: RuntimeConfigBundle): RuntimeConfigBundle {
   const hosts = config.hosts.length > 0 ? config.hosts : getDefaultHosts()
   const currentVoices = config.tts.voices || {}
@@ -117,6 +155,7 @@ function normalizeTtsConfig(config: RuntimeConfigBundle): RuntimeConfigBundle {
       },
       audioQuality: config.tts.audioQuality,
     },
+    test: normalizeTestConfig(config.test),
   }
 }
 
@@ -215,6 +254,7 @@ export async function buildDefaultRuntimeConfig(): Promise<RuntimeConfigBundle> 
       title: titlePrompt,
       extractNewsletterLinks: extractNewsletterLinksPrompt,
     },
+    test: { ...DEFAULT_TEST_CONFIG },
     meta: {
       podcastId,
       updatedAt: nowIso,
@@ -238,7 +278,10 @@ async function readBundle(env: RuntimeConfigEnv, key: string) {
   if (!json) {
     return null
   }
-  const parsed = runtimeConfigBundleSchema.safeParse(json)
+  const parsed = runtimeConfigBundleSchema.safeParse({
+    ...(json as Record<string, unknown>),
+    test: normalizeTestConfig((json as Record<string, unknown>).test),
+  })
   if (!parsed.success) {
     return null
   }
@@ -313,6 +356,9 @@ export function mergeRuntimeConfig(current: RuntimeConfigBundle, patch: unknown)
         }
       : current.sources,
     prompts: parsedPatch.prompts ? { ...current.prompts, ...parsedPatch.prompts } : current.prompts,
+    test: parsedPatch.test
+      ? { ...current.test, ...parsedPatch.test }
+      : current.test,
     meta: parsedPatch.meta?.note
       ? { ...current.meta, note: parsedPatch.meta.note }
       : current.meta,

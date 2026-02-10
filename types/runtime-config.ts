@@ -107,6 +107,25 @@ export interface RuntimePromptsConfig {
   extractNewsletterLinks: string
 }
 
+export type RuntimeWorkflowTestStep
+  = | ''
+    | 'openai'
+    | 'responses'
+    | 'tts'
+    | 'tts-intro'
+    | 'story'
+    | 'podcast'
+    | 'blog'
+    | 'intro'
+    | 'stories'
+
+export interface RuntimeTestConfig {
+  workflowTestStep: RuntimeWorkflowTestStep
+  workflowTestInput: string
+  workflowTestInstructions: string
+  workflowTtsInput: string
+}
+
 export interface RuntimeConfigMeta {
   podcastId: string
   updatedAt: string
@@ -124,6 +143,7 @@ export interface RuntimeConfigBundle {
   locale: RuntimeLocaleConfig
   sources: RuntimeSourcesConfig
   prompts: RuntimePromptsConfig
+  test: RuntimeTestConfig
   meta: RuntimeConfigMeta
 }
 

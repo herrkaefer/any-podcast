@@ -5,8 +5,9 @@ import { useMemo, useRef, useState } from 'react'
 
 import { findUnknownTemplateVariables, getTemplateVariables, renderTemplate } from '@/lib/template'
 
-type EditableSection = 'site' | 'hosts' | 'ai' | 'tts' | 'introMusic' | 'locale' | 'sources' | 'prompts'
+type EditableSection = 'site' | 'hosts' | 'ai' | 'tts' | 'introMusic' | 'locale' | 'sources' | 'prompts' | 'test'
 type PromptKey = keyof RuntimeConfigBundle['prompts']
+type WorkflowTestStep = RuntimeConfigBundle['test']['workflowTestStep']
 type SourceItem = RuntimeConfigBundle['sources']['items'][number]
 type SourceLinkRules = NonNullable<SourceItem['linkRules']>
 
@@ -28,7 +29,7 @@ interface EpisodeDetail extends EpisodeListItem {
   introContent?: string
 }
 
-const sections: EditableSection[] = ['site', 'hosts', 'ai', 'tts', 'introMusic', 'locale', 'sources', 'prompts']
+const sections: EditableSection[] = ['site', 'hosts', 'ai', 'tts', 'introMusic', 'locale', 'sources', 'prompts', 'test']
 
 const sectionLabelMap: Record<EditableSection, string> = {
   site: 'Site',
@@ -39,6 +40,7 @@ const sectionLabelMap: Record<EditableSection, string> = {
   locale: 'Locale',
   sources: 'Sources',
   prompts: 'Prompts',
+  test: 'Testing',
 }
 
 const promptKeys: PromptKey[] = [
@@ -81,6 +83,18 @@ const themeColorOptions: RuntimeConfigBundle['site']['themeColor'][] = ['blue', 
 const aiProviderOptions: RuntimeConfigBundle['ai']['provider'][] = ['gemini', 'openai']
 const ttsProviderOptions: RuntimeConfigBundle['tts']['provider'][] = ['edge', 'minimax', 'murf', 'gemini']
 const sourceTypeOptions: SourceItem['type'][] = ['rss', 'url', 'gmail']
+const workflowTestStepOptions: Array<{ value: WorkflowTestStep, label: string }> = [
+  { value: '', label: '(None - run full workflow)' },
+  { value: 'openai', label: 'openai' },
+  { value: 'responses', label: 'responses' },
+  { value: 'tts', label: 'tts' },
+  { value: 'tts-intro', label: 'tts-intro' },
+  { value: 'story', label: 'story' },
+  { value: 'podcast', label: 'podcast' },
+  { value: 'blog', label: 'blog' },
+  { value: 'intro', label: 'intro' },
+  { value: 'stories', label: 'stories' },
+]
 
 function confirmAction(message: string) {
   // eslint-disable-next-line no-alert -- admin confirmation dialog
@@ -166,6 +180,8 @@ function getSectionPatchPayload(config: RuntimeConfigBundle, section: EditableSe
     return { locale: config.locale }
   if (section === 'sources')
     return { sources: config.sources }
+  if (section === 'test')
+    return { test: config.test }
   return { prompts: config.prompts }
 }
 
@@ -299,6 +315,9 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
       }
       if (section === 'sources') {
         return { ...prev, sources: serverDraft.sources }
+      }
+      if (section === 'test') {
+        return { ...prev, test: serverDraft.test }
       }
       return { ...prev, prompts: serverDraft.prompts }
     })
@@ -2340,6 +2359,105 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
     )
   }
 
+  function renderTestSection() {
+    const test = workingDraft.test
+    return (
+      <div className="space-y-4">
+        <p className="text-sm text-gray-600">
+          Configure workflow test variables without editing worker env. Empty step means normal full workflow.
+        </p>
+
+        <div className={`
+          grid gap-4
+          md:grid-cols-2
+        `}
+        >
+          <label className="text-sm">
+            WORKFLOW_TEST_STEP
+            <select
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={test.workflowTestStep}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                test: {
+                  ...prev.test,
+                  workflowTestStep: event.target.value as WorkflowTestStep,
+                },
+              }))}
+            >
+              {workflowTestStepOptions.map(option => (
+                <option key={option.value || '__none__'} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className={`
+          grid gap-4
+          md:grid-cols-2
+        `}
+        >
+          <label className={`
+            text-sm
+            md:col-span-2
+          `}
+          >
+            WORKFLOW_TEST_INPUT
+            <textarea
+              className="mt-1 min-h-28 w-full rounded border px-3 py-2"
+              value={test.workflowTestInput}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                test: {
+                  ...prev.test,
+                  workflowTestInput: event.target.value,
+                },
+              }))}
+            />
+          </label>
+
+          <label className={`
+            text-sm
+            md:col-span-2
+          `}
+          >
+            WORKFLOW_TEST_INSTRUCTIONS
+            <textarea
+              className="mt-1 min-h-28 w-full rounded border px-3 py-2"
+              value={test.workflowTestInstructions}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                test: {
+                  ...prev.test,
+                  workflowTestInstructions: event.target.value,
+                },
+              }))}
+            />
+          </label>
+
+          <label className={`
+            text-sm
+            md:col-span-2
+          `}
+          >
+            WORKFLOW_TTS_INPUT
+            <textarea
+              className="mt-1 min-h-28 w-full rounded border px-3 py-2"
+              value={test.workflowTtsInput}
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                test: {
+                  ...prev.test,
+                  workflowTtsInput: event.target.value,
+                },
+              }))}
+            />
+          </label>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <section className="space-y-4 rounded-lg border p-4">
       <h2 className="text-lg font-semibold">Admin Workbench</h2>
@@ -2412,6 +2530,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         {section === 'locale' && renderLocaleSection()}
         {section === 'sources' && renderSourcesSection()}
         {section === 'prompts' && renderPromptsSection()}
+        {section === 'test' && renderTestSection()}
       </div>
 
       <div className="space-y-2 border-t pt-4">

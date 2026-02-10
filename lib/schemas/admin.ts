@@ -174,6 +174,26 @@ const promptsSchema = z.object({
   extractNewsletterLinks: z.string().min(1),
 }).strict()
 
+const workflowTestStepSchema = z.enum([
+  '',
+  'openai',
+  'responses',
+  'tts',
+  'tts-intro',
+  'story',
+  'podcast',
+  'blog',
+  'intro',
+  'stories',
+])
+
+const testSchema = z.object({
+  workflowTestStep: workflowTestStepSchema,
+  workflowTestInput: z.string(),
+  workflowTestInstructions: z.string(),
+  workflowTtsInput: z.string(),
+}).strict()
+
 const metaSchema = z.object({
   podcastId: z.string().min(1),
   updatedAt: z.string().min(1),
@@ -191,6 +211,7 @@ export const runtimeConfigBundleSchema = z.object({
   locale: localeSchema,
   sources: sourcesSchema,
   prompts: promptsSchema,
+  test: testSchema,
   meta: metaSchema,
 }).strict()
 
@@ -207,6 +228,7 @@ export const runtimeConfigPatchSchema = z.object({
     archiveLinkKeywords: z.array(z.string().min(1)).optional(),
   }).strict().optional(),
   prompts: promptsSchema.partial().optional(),
+  test: testSchema.partial().optional(),
   meta: z.object({
     note: z.string().optional(),
   }).strict().optional(),

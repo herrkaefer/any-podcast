@@ -386,7 +386,11 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
     const maxTokens = getMaxTokens(this.env, aiProvider, runtimeAi)
     const primaryModel = getPrimaryModel(this.env, aiProvider, runtimeAi)
     const thinkingModel = getThinkingModel(this.env, aiProvider, runtimeAi)
-    const testStep = (this.env.WORKFLOW_TEST_STEP || '').trim().toLowerCase()
+    const testConfig = runtimeConfig.test
+    const testStep = (testConfig.workflowTestStep || this.env.WORKFLOW_TEST_STEP || '').trim().toLowerCase()
+    const testInputOverride = testConfig.workflowTestInput || this.env.WORKFLOW_TEST_INPUT || ''
+    const testInstructionsOverride = testConfig.workflowTestInstructions || this.env.WORKFLOW_TEST_INSTRUCTIONS || ''
+    const ttsTestInputOverride = testConfig.workflowTtsInput || this.env.WORKFLOW_TTS_INPUT || ''
 
     console.info('AI runtime config', {
       provider: aiProvider,
@@ -410,8 +414,8 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
     if (testStep && testStep !== 'stories') {
       const fallbackInput = 'Summarize the following in one sentence: This is a short test input.'
       const fallbackInstructions = 'You are a concise assistant.'
-      const testInput = this.env.WORKFLOW_TEST_INPUT || fallbackInput
-      const testInstructions = this.env.WORKFLOW_TEST_INSTRUCTIONS || fallbackInstructions
+      const testInput = testInputOverride || fallbackInput
+      const testInstructions = testInstructionsOverride || fallbackInstructions
       const primarySpeaker = speakerMarkers[0] || 'Host1'
       const secondarySpeaker = speakerMarkers[1] || speakerMarkers[0] || 'Host2'
 
@@ -428,8 +432,8 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         }
 
         if (testStep === 'tts') {
-          const sampleInput = this.env.WORKFLOW_TTS_INPUT
-            || this.env.WORKFLOW_TEST_INPUT
+          const sampleInput = ttsTestInputOverride
+            || testInputOverride
             || [
               `${primarySpeaker}：大家好，欢迎收听测试播客。`,
               `${secondarySpeaker}：大家好。今天我们用一小段对话来测试 TTS。`,
@@ -498,8 +502,8 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         }
 
         if (testStep === 'tts-intro') {
-          const sampleInput = this.env.WORKFLOW_TTS_INPUT
-            || this.env.WORKFLOW_TEST_INPUT
+          const sampleInput = ttsTestInputOverride
+            || testInputOverride
             || [
               `${primarySpeaker}：大家好，欢迎收听测试播客。`,
               `${secondarySpeaker}：大家好。今天我们用一小段对话来测试 TTS 和片头音乐效果。`,
@@ -673,7 +677,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             runtimeAi,
             model: thinkingModel,
             instructions: runtimePrompts.summarizePodcast,
-            input: this.env.WORKFLOW_TEST_INPUT || sampleStories,
+            input: testInputOverride || sampleStories,
             maxOutputTokens: maxTokens,
           })).text
         }
@@ -689,13 +693,13 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             runtimeAi,
             model: thinkingModel,
             instructions: runtimePrompts.summarizeBlog,
-            input: this.env.WORKFLOW_TEST_INPUT || sampleInput,
+            input: testInputOverride || sampleInput,
             maxOutputTokens: maxTokens,
           })).text
         }
 
         if (testStep === 'intro') {
-          const sampleInput = this.env.WORKFLOW_TEST_INPUT
+          const sampleInput = testInputOverride
             || `${primarySpeaker}：大家好，欢迎收听测试播客。\n${secondarySpeaker}：大家好，这是一段测试内容。`
           return (await createResponseText({
             env: this.env,
@@ -1084,9 +1088,9 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
     const podcastKeyBase = buildPodcastKeyBase(runEnv, publishDateKey)
     const podcastKey = `${podcastKeyBase}.mp3`
 
-    const ttsInputOverride = this.env.WORKFLOW_TTS_INPUT?.trim()
+    const ttsInputOverride = ttsTestInputOverride.trim()
     if (ttsInputOverride) {
-      console.info('TTS input overridden by WORKFLOW_TTS_INPUT')
+      console.info('TTS input overridden by runtime test config or env variable')
     }
     const ttsSourceText = ttsInputOverride || podcastContent
 
