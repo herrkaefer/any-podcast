@@ -460,9 +460,20 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
           nowIso,
         }),
       })
-      const body = (await response.json()) as WorkflowTriggerResponse
+      const responseText = await response.text()
+      let body: WorkflowTriggerResponse = {}
+      if (responseText.trim()) {
+        try {
+          body = JSON.parse(responseText) as WorkflowTriggerResponse
+        }
+        catch {
+          body = {
+            error: responseText.trim(),
+          }
+        }
+      }
       if (!response.ok || !body.ok) {
-        throw new Error(body.error || 'Failed to trigger workflow')
+        throw new Error(body.error || `Failed to trigger workflow (HTTP ${response.status})`)
       }
       const modeLabel = body.mode === 'local' ? 'local worker' : 'production worker'
       const nowLabel = body.nowIso ? `, now=${body.nowIso}` : ''
