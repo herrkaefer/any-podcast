@@ -203,44 +203,58 @@ After deployment:
 
 ## Running Multiple Podcasts
 
-You can run multiple independent podcasts from the same codebase. Each podcast is a separate Cloudflare deployment with its own configuration.
+You can run multiple independent podcasts from the same codebase. Each podcast is a separate Cloudflare deployment with its own configuration. No code changes required.
 
 ### Setup
 
 1. Create additional Cloudflare resources (KV namespace, R2 bucket) for the new podcast
 
-2. Create dedicated wrangler config files:
+2. Create named wrangler config files for each podcast:
 
 ```bash
-# For a podcast named "my-second-podcast"
+# For a podcast named "my-second"
 cp wrangler.template.jsonc wrangler.my-second.jsonc
 cp worker/wrangler.template.jsonc worker/wrangler.my-second.jsonc
 ```
 
 3. Fill in the new resource IDs and podcast name in both files
 
-4. Add the new config files to `.gitignore`:
+4. Add the new config files to `.gitignore` (they contain account-specific IDs)
 
-```
-wrangler.my-second.jsonc
-worker/wrangler.my-second.jsonc
-```
+### Switching Between Podcasts
 
-5. Optionally, add convenience scripts to `package.json`:
+The Next.js dev server (`pnpm dev`) always reads `wrangler.jsonc`. To switch which podcast is active locally, add convenience scripts to `package.json`:
 
 ```json
 {
   "scripts": {
-    "dev:worker:second": "wrangler dev --cwd worker --config wrangler.my-second.jsonc --persist-to ../.wrangler/state-second",
-    "deploy:worker:second": "wrangler deploy --cwd worker --config wrangler.my-second.jsonc",
-    "logs:worker:second": "wrangler tail --cwd worker --config wrangler.my-second.jsonc"
+    "use:first": "cp wrangler.my-first.jsonc wrangler.jsonc && cp worker/wrangler.my-first.jsonc worker/wrangler.jsonc && echo 'Switched to my-first'",
+    "use:second": "cp wrangler.my-second.jsonc wrangler.jsonc && cp worker/wrangler.my-second.jsonc worker/wrangler.jsonc && echo 'Switched to my-second'"
   }
 }
 ```
 
-6. Deploy and configure via the new instance's Admin console — each deployment has its own independent Admin page, prompts, TTS settings, content sources, and data
+Then switch and work as usual:
 
-> No code changes required. Each podcast instance reads `PODCAST_ID` from its own wrangler config, and all data in KV/R2 is namespaced by podcast ID.
+```bash
+pnpm use:second      # Switch to second podcast
+pnpm dev:worker      # Start Worker dev server
+pnpm dev             # Start Next.js dev server
+```
+
+### Deploying
+
+Switch to the target podcast before deploying:
+
+```bash
+pnpm use:second      # Switch config
+pnpm deploy:worker   # Deploy this podcast's Worker
+pnpm deploy          # Deploy this podcast's Next.js app
+```
+
+Each deployment has its own independent Admin page, prompts, TTS settings, content sources, and data. Configure each podcast via its own Admin console after deployment.
+
+> Each podcast instance reads `PODCAST_ID` from its wrangler config, and all data in KV/R2 is namespaced by podcast ID.
 
 ## Commands
 
@@ -252,6 +266,7 @@ worker/wrangler.my-second.jsonc
 | `pnpm deploy` | Build and deploy the Next.js app |
 | `pnpm deploy:worker` | Deploy the Worker |
 | `pnpm logs:worker` | Tail Worker logs |
+| `pnpm use:<name>` | Switch active podcast config (see [Running Multiple Podcasts](#running-multiple-podcasts)) |
 | `pnpm lint:fix` | Auto-fix ESLint issues |
 | `pnpm tests` | Run integration tests (requires remote) |
 

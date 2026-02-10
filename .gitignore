@@ -54,7 +54,9 @@ worker/node_modules/
 tmp/
 
 # Generated wrangler configs (from template)
+wrangler.jsonc
 wrangler.spectrum-cn.jsonc
 wrangler.spectrum-en.jsonc
+worker/wrangler.jsonc
 worker/wrangler.spectrum-cn.jsonc
 worker/wrangler.spectrum-en.jsonc

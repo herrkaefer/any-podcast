@@ -203,45 +203,58 @@ pnpm deploy
 
 ## 运行多个播客
 
-你可以在同一个代码库中运行多个独立的播客。每个播客是一个独立的 Cloudflare 部署，拥有各自的配置。
+你可以在同一个代码库中运行多个独立的播客。每个播客是一个独立的 Cloudflare 部署，拥有各自的配置。无需修改任何代码。
 
 ### 设置方法
 
 1. 为新播客创建额外的 Cloudflare 资源（KV 命名空间、R2 存储桶）
 
-2. 创建专用的 wrangler 配置文件：
+2. 为每个播客创建命名的 wrangler 配置文件：
 
 ```bash
-# 例如创建一个名为 "my-second-podcast" 的播客
+# 例如创建一个名为 "my-second" 的播客
 cp wrangler.template.jsonc wrangler.my-second.jsonc
 cp worker/wrangler.template.jsonc worker/wrangler.my-second.jsonc
 ```
 
 3. 在两个文件中填入新的资源 ID 和播客名称
 
-4. 将新配置文件添加到 `.gitignore`：
+4. 将新配置文件添加到 `.gitignore`（包含账号相关的 ID）
 
-```
-wrangler.my-second.jsonc
-worker/wrangler.my-second.jsonc
-```
+### 切换播客
 
-5. 可选：在 `package.json` 中添加便捷脚本：
+Next.js 开发服务器（`pnpm dev`）固定读取 `wrangler.jsonc`。通过在 `package.json` 中添加切换脚本来选择当前激活的播客：
 
 ```json
 {
   "scripts": {
-    "dev:worker:second": "wrangler dev --cwd worker --config wrangler.my-second.jsonc --persist-to ../.wrangler/state-second",
-    "deploy:worker:second": "wrangler deploy --cwd worker --config wrangler.my-second.jsonc",
-    "logs:worker:second": "wrangler tail --cwd worker --config wrangler.my-second.jsonc"
+    "use:first": "cp wrangler.my-first.jsonc wrangler.jsonc && cp worker/wrangler.my-first.jsonc worker/wrangler.jsonc && echo 'Switched to my-first'",
+    "use:second": "cp wrangler.my-second.jsonc wrangler.jsonc && cp worker/wrangler.my-second.jsonc worker/wrangler.jsonc && echo 'Switched to my-second'"
   }
 }
 ```
 
-6. 部署后通过新实例的 Admin 后台进行配置 —— 每个部署拥有独立的管理页面、Prompt、TTS 设置、内容源和数据
+然后切换并正常开发：
 
-> 无需修改任何代码。每个播客实例从各自的 wrangler 配置中读取 `PODCAST_ID`，KV/R2 中的数据按播客 ID 隔离。
+```bash
+pnpm use:second      # 切换到第二个播客
+pnpm dev:worker      # 启动 Worker 开发服务器
+pnpm dev             # 启动 Next.js 开发服务器
+```
 
+### 部署
+
+部署前切换到目标播客：
+
+```bash
+pnpm use:second      # 切换配置
+pnpm deploy:worker   # 部署该播客的 Worker
+pnpm deploy          # 部署该播客的 Next.js 应用
+```
+
+每个部署拥有独立的管理页面、Prompt、TTS 设置、内容源和数据。部署后通过各自的 Admin 后台进行配置。
+
+> 每个播客实例从各自的 wrangler 配置中读取 `PODCAST_ID`，KV/R2 中的数据按播客 ID 隔离。
 
 ## 常用命令
 
@@ -253,6 +266,7 @@ worker/wrangler.my-second.jsonc
 | `pnpm deploy` | 构建并部署 Next.js 应用 |
 | `pnpm deploy:worker` | 部署 Worker |
 | `pnpm logs:worker` | 查看 Worker 日志 |
+| `pnpm use:<name>` | 切换当前激活的播客配置（见[运行多个播客](#运行多个播客)） |
 | `pnpm lint:fix` | 自动修复 ESLint 问题 |
 | `pnpm tests` | 运行集成测试（需要远程环境） |
 

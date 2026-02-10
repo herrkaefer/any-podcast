@@ -1,6 +1,6 @@
 {
   "name": "any-podcast",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "private": true,
   "packageManager": "pnpm@10.26.1",
   "scripts": {
@@ -17,7 +17,10 @@
     "opennext": "opennextjs-cloudflare",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
-    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
+    
+    "use:cn": "cp wrangler.spectrum-cn.jsonc wrangler.jsonc && cp worker/wrangler.spectrum-cn.jsonc worker/wrangler.jsonc && echo 'Switched to spectrum-cn'",
+    "use:en": "cp wrangler.spectrum-en.jsonc wrangler.jsonc && cp worker/wrangler.spectrum-en.jsonc worker/wrangler.jsonc && echo 'Switched to spectrum-en'"
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.0.4",
