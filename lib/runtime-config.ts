@@ -278,9 +278,20 @@ async function readBundle(env: RuntimeConfigEnv, key: string) {
   if (!json) {
     return null
   }
+  const raw = json as Record<string, unknown>
+  const rawSite = raw.site && typeof raw.site === 'object'
+    ? (raw.site as Record<string, unknown>)
+    : null
+  const sanitizedSite = rawSite
+    ? (() => {
+        const { theme: _theme, ...rest } = rawSite
+        return rest
+      })()
+    : raw.site
   const parsed = runtimeConfigBundleSchema.safeParse({
-    ...(json as Record<string, unknown>),
-    test: normalizeTestConfig((json as Record<string, unknown>).test),
+    ...raw,
+    site: sanitizedSite,
+    test: normalizeTestConfig(raw.test),
   })
   if (!parsed.success) {
     return null

@@ -1,10 +1,12 @@
 import type { Metadata } from 'next'
 import type { Locale } from '@/i18n/config'
 import process from 'node:process'
+import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { headers } from 'next/headers'
 import { Providers } from '@/components/providers'
 import { podcast, site } from '@/config'
 import { defaultLocale, detectLocale } from '@/i18n/config'
+import { getActiveRuntimeConfig } from '@/lib/runtime-config'
 import './globals.css'
 import '@vidstack/react/player/styles/base.css'
 import '@vidstack/react/player/styles/default/theme.css'
@@ -76,11 +78,19 @@ export const metadata: Metadata = {
   },
 }
 
+interface LayoutEnv extends CloudflareEnv {
+  PODCAST_KV: KVNamespace
+}
+
 export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  const { env } = await getCloudflareContext({ async: true })
+  const layoutEnv = env as LayoutEnv
+  const runtimeConfig = await getActiveRuntimeConfig(layoutEnv)
+  const runtimeSite = runtimeConfig.config.site
   const headersList = await headers()
   const acceptLanguage = headersList.get('accept-language')
   const detectedLocale: Locale = acceptLanguage ? detectLocale(acceptLanguage) : defaultLocale
@@ -89,7 +99,7 @@ export default async function RootLayout({
     <html
       lang={detectedLocale}
       className={`
-        theme-${site.themeColor}
+        theme-${runtimeSite.themeColor}
       `}
       suppressHydrationWarning
     >
