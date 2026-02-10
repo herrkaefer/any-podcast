@@ -513,7 +513,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         `}
         >
           <label className="text-sm">
-            Site title
+            Podcast title
             <input
               className="mt-1 w-full rounded border px-3 py-2"
               value={site.title}
@@ -547,7 +547,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
             md:col-span-2
           `}
           >
-            Site description
+            Podcast description
             <textarea
               className="mt-1 min-h-28 w-full rounded border px-3 py-2"
               value={site.description}
