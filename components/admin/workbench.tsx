@@ -197,7 +197,21 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeDetail | null>(null)
   const [episodeBusy, setEpisodeBusy] = useState(false)
   const [collapsedSourcePanels, setCollapsedSourcePanels] = useState<Record<string, boolean>>({})
+  const [logoPreviewVersion, setLogoPreviewVersion] = useState<number | null>(null)
+  const hostPanelKeysRef = useRef<string[]>(initialDraft.hosts.map(() => buildLocalId('host-panel')))
   const promptEditorRef = useRef<HTMLTextAreaElement | null>(null)
+  const logoUploadInputRef = useRef<HTMLInputElement | null>(null)
+  const musicUploadInputRef = useRef<HTMLInputElement | null>(null)
+
+  if (hostPanelKeysRef.current.length < workingDraft.hosts.length) {
+    const missing = workingDraft.hosts.length - hostPanelKeysRef.current.length
+    for (let i = 0; i < missing; i += 1) {
+      hostPanelKeysRef.current.push(buildLocalId('host-panel'))
+    }
+  }
+  if (hostPanelKeysRef.current.length > workingDraft.hosts.length) {
+    hostPanelKeysRef.current = hostPanelKeysRef.current.slice(0, workingDraft.hosts.length)
+  }
 
   const templateVariables = useMemo(() => {
     return getTemplateVariables(workingDraft)
@@ -389,6 +403,18 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
       setBusy(false)
     }
   }
+
+  const logoPreviewSrc = useMemo(() => {
+    const base = workingDraft.site.coverLogoUrl
+    if (!base) {
+      return ''
+    }
+    if (logoPreviewVersion === null) {
+      return base
+    }
+    const separator = base.includes('?') ? '&' : '?'
+    return `${base}${separator}v=${logoPreviewVersion}`
+  }, [workingDraft.site.coverLogoUrl, logoPreviewVersion])
 
   async function loadEpisodes() {
     setLoadingEpisodes(true)
@@ -583,30 +609,42 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-sm font-semibold">Cover logo upload</p>
-              <label className="text-xs">
+              <input
+                ref={logoUploadInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  event.target.value = ''
+                  if (!file) {
+                    return
+                  }
+                  uploadAsset('logo', file, (url) => {
+                    setWorkingDraft(prev => ({
+                      ...prev,
+                      site: {
+                        ...prev.site,
+                        coverLogoUrl: url,
+                      },
+                    }))
+                    setLogoPreviewVersion(Date.now())
+                  })
+                }}
+                disabled={busy}
+              />
+              <button
+                type="button"
+                className={`
+                  rounded border px-3 py-1.5 text-xs font-medium
+                  hover:bg-gray-50
+                  disabled:cursor-not-allowed disabled:opacity-60
+                `}
+                onClick={() => logoUploadInputRef.current?.click()}
+                disabled={busy}
+              >
                 Upload logo
-                <input
-                  type="file"
-                  accept="image/*"
-                  className="mt-1 block"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0]
-                    if (!file) {
-                      return
-                    }
-                    uploadAsset('logo', file, (url) => {
-                      setWorkingDraft(prev => ({
-                        ...prev,
-                        site: {
-                          ...prev.site,
-                          coverLogoUrl: url,
-                        },
-                      }))
-                    })
-                  }}
-                  disabled={busy}
-                />
-              </label>
+              </button>
             </div>
 
             {site.coverLogoUrl
@@ -614,7 +652,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                   <div className="space-y-2">
                     {/* eslint-disable-next-line next/no-img-element -- admin preview supports arbitrary logo URLs */}
                     <img
-                      src={site.coverLogoUrl}
+                      src={logoPreviewSrc}
                       alt="Cover logo preview"
                       className={`
                         h-20 w-20 rounded border bg-white object-contain p-1
@@ -1064,17 +1102,23 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
           <button
             type="button"
             className="rounded border px-2 py-1 text-xs"
-            onClick={() => setWorkingDraft(prev => ({
-              ...prev,
-              hosts: [...prev.hosts, getDefaultHost(prev.hosts.length)],
-            }))}
+            onClick={() => {
+              setWorkingDraft(prev => ({
+                ...prev,
+                hosts: [...prev.hosts, getDefaultHost(prev.hosts.length)],
+              }))
+              hostPanelKeysRef.current = [...hostPanelKeysRef.current, buildLocalId('host-panel')]
+            }}
           >
             Add host
           </button>
         </div>
 
         {workingDraft.hosts.map((host, index) => (
-          <div key={host.id || index} className="space-y-3 rounded border p-3">
+          <div
+            key={hostPanelKeysRef.current[index] || `host-row-fallback-${index}`}
+            className="space-y-3 rounded border p-3"
+          >
             <div className="flex items-center justify-between">
               <p className="text-sm font-semibold">
                 Host
@@ -1107,6 +1151,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                       },
                     }
                   })
+                  hostPanelKeysRef.current = hostPanelKeysRef.current.filter((_, itemIndex) => itemIndex !== index)
                 }}
               >
                 Delete host
@@ -1579,33 +1624,44 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         <div className="space-y-3 rounded border p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm font-semibold">Theme music file</p>
-            <label className="text-xs">
-              Upload theme music
-              <input
-                type="file"
-                accept="audio/*"
-                className="mt-1 block"
-                onChange={(event) => {
-                  const file = event.target.files?.[0]
-                  if (!file) {
-                    return
-                  }
-                  uploadAsset('music', file, (url) => {
-                    setWorkingDraft(prev => ({
-                      ...prev,
-                      tts: {
-                        ...prev.tts,
-                        introMusic: {
-                          ...prev.tts.introMusic,
-                          url,
-                        },
+            <input
+              ref={musicUploadInputRef}
+              type="file"
+              accept="audio/*"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                event.target.value = ''
+                if (!file) {
+                  return
+                }
+                uploadAsset('music', file, (url) => {
+                  setWorkingDraft(prev => ({
+                    ...prev,
+                    tts: {
+                      ...prev.tts,
+                      introMusic: {
+                        ...prev.tts.introMusic,
+                        url,
                       },
-                    }))
-                  })
-                }}
-                disabled={busy}
-              />
-            </label>
+                    },
+                  }))
+                })
+              }}
+              disabled={busy}
+            />
+            <button
+              type="button"
+              className={`
+                rounded border px-3 py-1.5 text-xs font-medium
+                hover:bg-gray-50
+                disabled:cursor-not-allowed disabled:opacity-60
+              `}
+              onClick={() => musicUploadInputRef.current?.click()}
+              disabled={busy}
+            >
+              Upload theme music
+            </button>
           </div>
 
           <label className="block text-sm">
@@ -2513,7 +2569,12 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
 
         <button
           type="button"
-          className="rounded bg-black px-3 py-1.5 text-sm text-white"
+          className={`
+            rounded bg-black px-3 py-1.5 text-sm text-white transition
+            hover:bg-gray-900
+            active:scale-[0.98] active:bg-gray-800
+            disabled:cursor-not-allowed disabled:opacity-60
+          `}
           onClick={saveCurrentSection}
           disabled={busy}
         >

@@ -33,9 +33,23 @@ const themeInitializer = `
   })()
 `
 
-const metadataBase = process.env.NEXT_PUBLIC_BASE_URL
-  ? new URL(process.env.NEXT_PUBLIC_BASE_URL)
-  : undefined
+function resolveMetadataBase() {
+  const candidates = [process.env.NEXT_PUBLIC_BASE_URL, podcast.base.link, 'http://localhost:3000']
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue
+    }
+    try {
+      return new URL(candidate)
+    }
+    catch {
+      continue
+    }
+  }
+  return new URL('http://localhost:3000')
+}
+
+const metadataBase = resolveMetadataBase()
 
 export const metadata: Metadata = {
   metadataBase,

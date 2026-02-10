@@ -36,9 +36,33 @@ function getMimeTypeFromPath(path: string) {
   return 'application/octet-stream'
 }
 
+function applyHttpMetadataHeaders(headers: Headers, metadata: R2HTTPMetadata | undefined) {
+  if (!metadata) {
+    return
+  }
+  if (metadata.contentType) {
+    headers.set('Content-Type', metadata.contentType)
+  }
+  if (metadata.contentLanguage) {
+    headers.set('Content-Language', metadata.contentLanguage)
+  }
+  if (metadata.contentDisposition) {
+    headers.set('Content-Disposition', metadata.contentDisposition)
+  }
+  if (metadata.contentEncoding) {
+    headers.set('Content-Encoding', metadata.contentEncoding)
+  }
+  if (metadata.cacheControl) {
+    headers.set('Cache-Control', metadata.cacheControl)
+  }
+  if (metadata.cacheExpiry instanceof Date) {
+    headers.set('Expires', metadata.cacheExpiry.toUTCString())
+  }
+}
+
 function buildStaticHeaders(file: R2ObjectBody, objectPath: string) {
   const headers = new Headers()
-  file.writeHttpMetadata(headers)
+  applyHttpMetadataHeaders(headers, file.httpMetadata)
   headers.set('Accept-Ranges', 'bytes')
   headers.set('ETag', file.httpEtag)
   headers.set('Content-Type', headers.get('Content-Type') || getMimeTypeFromPath(objectPath))
@@ -59,7 +83,37 @@ function buildStaticHeaders(file: R2ObjectBody, objectPath: string) {
 
 async function fetchFromR2(request: Request, objectPath: string) {
   const { env } = await getCloudflareContext({ async: true })
-  const file = await env.PODCAST_R2.get(objectPath, { range: request.headers })
+  const rangeHeader = request.headers.get('range') || request.headers.get('Range')
+  let file: R2ObjectBody | null
+  if (!rangeHeader) {
+    file = await env.PODCAST_R2.get(objectPath)
+  }
+  else {
+    const match = /^bytes=(\d+)-(\d+)?$/i.exec(rangeHeader.trim())
+    if (!match) {
+      file = await env.PODCAST_R2.get(objectPath)
+    }
+    else {
+      const offset = Number.parseInt(match[1], 10)
+      const end = match[2] ? Number.parseInt(match[2], 10) : undefined
+      if (!Number.isFinite(offset) || offset < 0) {
+        file = await env.PODCAST_R2.get(objectPath)
+      }
+      else if (typeof end === 'number' && Number.isFinite(end) && end >= offset) {
+        file = await env.PODCAST_R2.get(objectPath, {
+          range: {
+            offset,
+            length: end - offset + 1,
+          },
+        })
+      }
+      else {
+        file = await env.PODCAST_R2.get(objectPath, {
+          range: { offset },
+        })
+      }
+    }
+  }
   if (!file) {
     return new Response('Not Found', { status: 404 })
   }
@@ -84,7 +138,11 @@ async function handleWithCache(request: Request, objectPath: string) {
     return fetchFromR2(request, objectPath)
   }
 
-  const cache = caches.default
+  const cacheApi = (globalThis as { caches?: CacheStorage }).caches
+  const cache = cacheApi?.default
+  if (!cache) {
+    return fetchFromR2(request, objectPath)
+  }
   const cacheKey = buildCacheKey(request)
   const cached = await cache.match(cacheKey)
   if (cached) {
@@ -93,7 +151,7 @@ async function handleWithCache(request: Request, objectPath: string) {
 
   const response = await fetchFromR2(request, objectPath)
   if (response.status === 200) {
-    cache.put(cacheKey, response.clone())
+    await cache.put(cacheKey, response.clone())
   }
   return response
 }
@@ -121,7 +179,7 @@ export async function HEAD(request: Request, { params }: { params: Promise<{ pat
     return new Response('Not Found', { status: 404 })
   }
   const headers = new Headers()
-  file.writeHttpMetadata(headers)
+  applyHttpMetadataHeaders(headers, file.httpMetadata)
   headers.set('Content-Type', headers.get('Content-Type') || getMimeTypeFromPath(objectPath))
   headers.set('Content-Length', String(file.size))
   headers.set('Accept-Ranges', 'bytes')

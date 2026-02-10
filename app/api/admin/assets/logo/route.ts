@@ -24,6 +24,40 @@ function extensionFromFile(file: File) {
   return 'bin'
 }
 
+function isSupportedImageFile(file: File) {
+  if (file.type.startsWith('image/')) {
+    return true
+  }
+  const ext = extensionFromFile(file)
+  return new Set(['png', 'jpg', 'jpeg', 'webp', 'svg', 'gif', 'bmp', 'ico', 'avif', 'heic', 'heif', 'tif', 'tiff']).has(ext)
+}
+
+function contentTypeFromExtension(ext: string) {
+  if (ext === 'png')
+    return 'image/png'
+  if (ext === 'jpg' || ext === 'jpeg')
+    return 'image/jpeg'
+  if (ext === 'webp')
+    return 'image/webp'
+  if (ext === 'svg')
+    return 'image/svg+xml'
+  if (ext === 'gif')
+    return 'image/gif'
+  if (ext === 'bmp')
+    return 'image/bmp'
+  if (ext === 'ico')
+    return 'image/x-icon'
+  if (ext === 'avif')
+    return 'image/avif'
+  if (ext === 'heic')
+    return 'image/heic'
+  if (ext === 'heif')
+    return 'image/heif'
+  if (ext === 'tif' || ext === 'tiff')
+    return 'image/tiff'
+  return undefined
+}
+
 export async function POST(request: Request) {
   const { env } = await getCloudflareContext({ async: true })
   const adminEnv = env as AdminEnv
@@ -44,22 +78,26 @@ export async function POST(request: Request) {
     return jsonError('file is required', 400)
   }
 
-  if (!value.type.startsWith('image/')) {
-    return jsonError('file must be image/*', 400)
+  if (!isSupportedImageFile(value)) {
+    return jsonError(
+      `unsupported logo file: name="${value.name}", type="${value.type || '(empty)'}". allowed: image/* or common image extensions`,
+      400,
+    )
   }
 
-  const MAX_LOGO_SIZE = 5 * 1024 * 1024 // 5MB
+  const MAX_LOGO_SIZE = 20 * 1024 * 1024 // 20MB
   if (value.size > MAX_LOGO_SIZE) {
-    return jsonError(`file too large: ${(value.size / 1024 / 1024).toFixed(1)}MB, max 5MB`, 400)
+    return jsonError(`file too large: ${(value.size / 1024 / 1024).toFixed(1)}MB, max 20MB`, 400)
   }
 
   const ext = extensionFromFile(value)
   const key = `assets/${podcastId}/logo/${Date.now()}.${ext}`
   const bytes = await value.arrayBuffer()
+  const contentType = value.type || contentTypeFromExtension(ext)
 
   await adminEnv.PODCAST_R2.put(key, bytes, {
     httpMetadata: {
-      contentType: value.type || undefined,
+      contentType,
     },
   })
 
