@@ -18,7 +18,7 @@
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
-    
+
     "use:cn": "cp wrangler.spectrum-cn.jsonc wrangler.jsonc && cp worker/wrangler.spectrum-cn.jsonc worker/wrangler.jsonc && echo 'Switched to spectrum-cn'",
     "use:en": "cp wrangler.spectrum-en.jsonc wrangler.jsonc && cp worker/wrangler.spectrum-en.jsonc worker/wrangler.jsonc && echo 'Switched to spectrum-en'"
   },

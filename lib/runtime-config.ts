@@ -265,11 +265,11 @@ export async function buildDefaultRuntimeConfig(): Promise<RuntimeConfigBundle> 
       },
       externalLinks: getDefaultExternalLinks(),
       rss: {
-        language: 'zh-CN',
+        language: 'en',
         categories: DEFAULT_RSS_CATEGORIES,
         itunesCategories: DEFAULT_RSS_CATEGORIES.map(text => ({ text })),
         feedDays: 30,
-        relatedLinksLabel: '相关链接：',
+        relatedLinksLabel: 'Related links:',
       },
     },
     hosts,
@@ -279,13 +279,13 @@ export async function buildDefaultRuntimeConfig(): Promise<RuntimeConfigBundle> 
     },
     tts: {
       provider: 'gemini',
-      language: 'zh-CN',
+      language: 'en-US',
       model: 'gemini-2.5-flash-preview-tts',
       voices: {
         [hosts[0].id]: 'Puck',
         [hosts[1].id]: 'Zephyr',
       },
-      geminiPrompt: '请用中文播报以下播客对话，语气自然、节奏流畅、音量稳定。',
+      geminiPrompt: 'Read the following podcast dialogue in English with a natural tone, smooth pacing, and steady volume.',
       introMusic: {
         url: '/static/theme.mp3',
         fadeOutStart: 19,
@@ -295,7 +295,7 @@ export async function buildDefaultRuntimeConfig(): Promise<RuntimeConfigBundle> 
       audioQuality: 5,
     },
     locale: {
-      language: 'zh',
+      language: 'en',
       timezone: 'America/Chicago',
       dateFormat: 'YYYY-MM-DD',
     },

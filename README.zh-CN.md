@@ -62,6 +62,7 @@ cp worker/wrangler.template.jsonc worker/wrangler.jsonc
 ```
 
 编辑 `wrangler.jsonc`：
+
 - `name` — 播客应用名称（如 `"my-podcast"`）
 - `vars.PODCAST_ID` — 播客唯一标识（如 `"my-podcast"`）
 - `kv_namespaces[0].id` — 第 2 步创建的 KV namespace ID
@@ -69,6 +70,7 @@ cp worker/wrangler.template.jsonc worker/wrangler.jsonc
 - `services[0].service` — 必须与下面的 Worker 名称一致
 
 编辑 `worker/wrangler.jsonc`：
+
 - `name` — Worker 名称（如 `"my-podcast-worker"`）
 - `vars.PODCAST_ID` — 与上面保持一致
 - `kv_namespaces[0].id` — 同一个 KV namespace ID
@@ -88,28 +90,28 @@ cp worker/.env.local.example worker/.env.local
 
 编辑 `.env.local`（Next.js 应用）：
 
-| 变量 | 必填 | 说明 |
-|---|---|---|
-| `PODCAST_ID` | 是 | 与 wrangler 配置中一致 |
-| `ADMIN_TOKEN` | 是 | Admin 管理后台的登录密码（设置一个强密码） |
-| `NEXT_STATIC_HOST` | 是 | 音频文件的基础 URL。本地开发：`http://localhost:3000/static`。生产环境：部署后在 wrangler `vars` 中设置（见第 7 步） |
-| `NODE_ENV` | 否 | 本地默认为 `development`。生产环境在 wrangler `vars` 中设置为 `production` |
+| 变量               | 必填 | 说明                                                                                                                 |
+| ------------------ | ---- | -------------------------------------------------------------------------------------------------------------------- |
+| `PODCAST_ID`       | 是   | 与 wrangler 配置中一致                                                                                               |
+| `ADMIN_TOKEN`      | 是   | Admin 管理后台的登录密码（设置一个强密码）                                                                           |
+| `NEXT_STATIC_HOST` | 是   | 音频文件的基础 URL。本地开发：`http://localhost:3000/static`。生产环境：部署后在 wrangler `vars` 中设置（见第 7 步） |
+| `NODE_ENV`         | 否   | 本地默认为 `development`。生产环境在 wrangler `vars` 中设置为 `production`                                           |
 
 编辑 `worker/.env.local`（Worker）：
 
-| 变量 | 必填 | 说明 |
-|---|---|---|
-| `PODCAST_ID` | 是 | 与上面一致 |
-| `GEMINI_API_KEY` | 是 | Google Gemini API 密钥 |
-| `ADMIN_TOKEN` | 是 | 与上面一致 |
-| `PODCAST_WORKER_URL` | 是 | Worker URL。本地开发：`http://localhost:8787`。生产环境：部署后在 wrangler `vars` 中设置（见第 7 步） |
-| `PODCAST_R2_BUCKET_URL` | 是 | R2 存储桶公开 URL。本地开发：`http://localhost:8787/static`。生产环境：你的 R2 自定义域名或公开 URL |
-| `OPENAI_API_KEY` | 否 | OpenAI API 密钥（如使用 OpenAI） |
-| `JINA_KEY` | 否 | Jina API 密钥（用于网页内容提取） |
-| `TTS_API_ID` | 否 | TTS 服务 ID（MiniMax/Murf） |
-| `TTS_API_KEY` | 否 | TTS 服务 API 密钥 |
-| `TRIGGER_TOKEN` | 否 | 通过 curl 手动触发工作流的令牌 |
-| `GMAIL_*` | 否 | Gmail OAuth 凭据（用于 Newsletter 内容源） |
+| 变量                    | 必填 | 说明                                                                                                  |
+| ----------------------- | ---- | ----------------------------------------------------------------------------------------------------- |
+| `PODCAST_ID`            | 是   | 与上面一致                                                                                            |
+| `GEMINI_API_KEY`        | 是   | Google Gemini API 密钥                                                                                |
+| `ADMIN_TOKEN`           | 是   | 与上面一致                                                                                            |
+| `PODCAST_WORKER_URL`    | 是   | Worker URL。本地开发：`http://localhost:8787`。生产环境：部署后在 wrangler `vars` 中设置（见第 7 步） |
+| `PODCAST_R2_BUCKET_URL` | 是   | R2 存储桶公开 URL。本地开发：`http://localhost:8787/static`。生产环境：你的 R2 自定义域名或公开 URL   |
+| `OPENAI_API_KEY`        | 否   | OpenAI API 密钥（如使用 OpenAI）                                                                      |
+| `JINA_KEY`              | 否   | Jina API 密钥（用于网页内容提取）                                                                     |
+| `TTS_API_ID`            | 否   | TTS 服务 ID（MiniMax/Murf）                                                                           |
+| `TTS_API_KEY`           | 否   | TTS 服务 API 密钥                                                                                     |
+| `TRIGGER_TOKEN`         | 否   | 通过 curl 手动触发工作流的令牌                                                                        |
+| `GMAIL_*`               | 否   | Gmail OAuth 凭据（用于 Newsletter 内容源）                                                            |
 
 ### 第 5 步：配置你的播客
 
@@ -179,12 +181,14 @@ pnpm deploy
 首次部署后，需要设置之前未知的生产环境 URL。将它们添加到 wrangler 配置文件的 `vars` 部分，然后重新部署：
 
 在 `wrangler.jsonc`（Next.js 应用）的 `vars` 中添加：
+
 ```jsonc
 "NEXT_STATIC_HOST": "https://my-podcast.<your-subdomain>.workers.dev/static",
 "PODCAST_WORKER_URL": "https://my-podcast-worker.<your-subdomain>.workers.dev"
 ```
 
 在 `worker/wrangler.jsonc`（Worker）的 `vars` 中添加：
+
 ```jsonc
 "PODCAST_WORKER_URL": "https://my-podcast-worker.<your-subdomain>.workers.dev",
 "PODCAST_R2_BUCKET_URL": "https://<your-r2-public-url>"
@@ -258,19 +262,18 @@ pnpm deploy          # 部署该播客的 Next.js 应用
 
 ## 常用命令
 
-| 命令 | 说明 |
-|---|---|
-| `pnpm dev` | 启动 Next.js 开发服务器（端口 3000） |
-| `pnpm dev:worker` | 启动 Worker 开发服务器（端口 8787） |
-| `pnpm build` | 构建 Next.js 应用 |
-| `pnpm deploy` | 构建并部署 Next.js 应用 |
-| `pnpm deploy:worker` | 部署 Worker |
-| `pnpm logs:worker` | 查看 Worker 日志 |
-| `pnpm use:<name>` | 切换当前激活的播客配置（见[运行多个播客](#运行多个播客)） |
-| `pnpm lint:fix` | 自动修复 ESLint 问题 |
-| `pnpm tests` | 运行集成测试（需要远程环境） |
+| 命令                 | 说明                                                      |
+| -------------------- | --------------------------------------------------------- |
+| `pnpm dev`           | 启动 Next.js 开发服务器（端口 3000）                      |
+| `pnpm dev:worker`    | 启动 Worker 开发服务器（端口 8787）                       |
+| `pnpm build`         | 构建 Next.js 应用                                         |
+| `pnpm deploy`        | 构建并部署 Next.js 应用                                   |
+| `pnpm deploy:worker` | 部署 Worker                                               |
+| `pnpm logs:worker`   | 查看 Worker 日志                                          |
+| `pnpm use:<name>`    | 切换当前激活的播客配置（见[运行多个播客](#运行多个播客)） |
+| `pnpm lint:fix`      | 自动修复 ESLint 问题                                      |
+| `pnpm tests`         | 运行集成测试（需要远程环境）                              |
 
 ## 来源
 
 本项目演化自 [hacker-podcast](https://github.com/miantiao-me/hacker-podcast)，感谢原作者的开源分享。
-

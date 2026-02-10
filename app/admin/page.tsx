@@ -38,16 +38,6 @@ export default async function AdminHomePage() {
 
       <AdminWorkbench initialDraft={draft} />
       <EpisodeManagement />
-
-      <section className="rounded-lg border p-4">
-        <h2 className="text-lg font-semibold">Current Draft (Read-only Preview)</h2>
-        <pre className={`
-          mt-3 max-h-120 overflow-auto rounded bg-gray-50 p-3 text-xs
-        `}
-        >
-          {JSON.stringify(draft, null, 2)}
-        </pre>
-      </section>
     </main>
   )
 }

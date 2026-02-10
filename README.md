@@ -62,6 +62,7 @@ cp worker/wrangler.template.jsonc worker/wrangler.jsonc
 ```
 
 Edit `wrangler.jsonc`:
+
 - `name` — your podcast app name (e.g. `"my-podcast"`)
 - `vars.PODCAST_ID` — your podcast identifier (e.g. `"my-podcast"`)
 - `kv_namespaces[0].id` — the KV namespace ID from Step 2
@@ -69,6 +70,7 @@ Edit `wrangler.jsonc`:
 - `services[0].service` — must match the worker name below
 
 Edit `worker/wrangler.jsonc`:
+
 - `name` — your worker name (e.g. `"my-podcast-worker"`)
 - `vars.PODCAST_ID` — same as above
 - `kv_namespaces[0].id` — same KV namespace ID
@@ -88,28 +90,28 @@ cp worker/.env.local.example worker/.env.local
 
 Edit `.env.local` (Next.js app):
 
-| Variable | Required | Description |
-|---|---|---|
-| `PODCAST_ID` | Yes | Same as in wrangler config |
-| `ADMIN_TOKEN` | Yes | Password for the Admin console (choose a strong value) |
-| `NEXT_STATIC_HOST` | Yes | Base URL for audio files. Local dev: `http://localhost:3000/static`. Production: set in wrangler `vars` after deployment (see Step 7) |
-| `NODE_ENV` | No | Defaults to `development` locally. Set to `production` in wrangler `vars` |
+| Variable           | Required | Description                                                                                                                           |
+| ------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `PODCAST_ID`       | Yes      | Same as in wrangler config                                                                                                            |
+| `ADMIN_TOKEN`      | Yes      | Password for the Admin console (choose a strong value)                                                                                |
+| `NEXT_STATIC_HOST` | Yes      | Base URL for audio files. Local dev: `http://localhost:3000/static`. Production: set in wrangler `vars` after deployment (see Step 7) |
+| `NODE_ENV`         | No       | Defaults to `development` locally. Set to `production` in wrangler `vars`                                                             |
 
 Edit `worker/.env.local` (Worker):
 
-| Variable | Required | Description |
-|---|---|---|
-| `PODCAST_ID` | Yes | Same as above |
-| `GEMINI_API_KEY` | Yes | Google Gemini API key |
-| `ADMIN_TOKEN` | Yes | Same as above |
-| `PODCAST_WORKER_URL` | Yes | Worker URL. Local dev: `http://localhost:8787`. Production: set in wrangler `vars` after deployment (see Step 7) |
-| `PODCAST_R2_BUCKET_URL` | Yes | R2 bucket public URL. Local dev: `http://localhost:8787/static`. Production: your R2 custom domain or public URL |
-| `OPENAI_API_KEY` | No | OpenAI API key (if using OpenAI) |
-| `JINA_KEY` | No | Jina API key (for web content extraction) |
-| `TTS_API_ID` | No | TTS provider ID (MiniMax/Murf) |
-| `TTS_API_KEY` | No | TTS provider API key |
-| `TRIGGER_TOKEN` | No | Token for manually triggering the workflow via curl |
-| `GMAIL_*` | No | Gmail OAuth credentials (for newsletter sources) |
+| Variable                | Required | Description                                                                                                      |
+| ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `PODCAST_ID`            | Yes      | Same as above                                                                                                    |
+| `GEMINI_API_KEY`        | Yes      | Google Gemini API key                                                                                            |
+| `ADMIN_TOKEN`           | Yes      | Same as above                                                                                                    |
+| `PODCAST_WORKER_URL`    | Yes      | Worker URL. Local dev: `http://localhost:8787`. Production: set in wrangler `vars` after deployment (see Step 7) |
+| `PODCAST_R2_BUCKET_URL` | Yes      | R2 bucket public URL. Local dev: `http://localhost:8787/static`. Production: your R2 custom domain or public URL |
+| `OPENAI_API_KEY`        | No       | OpenAI API key (if using OpenAI)                                                                                 |
+| `JINA_KEY`              | No       | Jina API key (for web content extraction)                                                                        |
+| `TTS_API_ID`            | No       | TTS provider ID (MiniMax/Murf)                                                                                   |
+| `TTS_API_KEY`           | No       | TTS provider API key                                                                                             |
+| `TRIGGER_TOKEN`         | No       | Token for manually triggering the workflow via curl                                                              |
+| `GMAIL_*`               | No       | Gmail OAuth credentials (for newsletter sources)                                                                 |
 
 ### Step 5: Configure Your Podcast
 
@@ -179,12 +181,14 @@ pnpm deploy
 After the first deploy, you need to set the production URLs that weren't known beforehand. Add them to the `vars` section of your wrangler config files, then redeploy:
 
 In `wrangler.jsonc` (Next.js app), add to `vars`:
+
 ```jsonc
 "NEXT_STATIC_HOST": "https://my-podcast.<your-subdomain>.workers.dev/static",
 "PODCAST_WORKER_URL": "https://my-podcast-worker.<your-subdomain>.workers.dev"
 ```
 
 In `worker/wrangler.jsonc` (Worker), add to `vars`:
+
 ```jsonc
 "PODCAST_WORKER_URL": "https://my-podcast-worker.<your-subdomain>.workers.dev",
 "PODCAST_R2_BUCKET_URL": "https://<your-r2-public-url>"
@@ -258,17 +262,17 @@ Each deployment has its own independent Admin page, prompts, TTS settings, conte
 
 ## Commands
 
-| Command | Description |
-|---|---|
-| `pnpm dev` | Start Next.js dev server (port 3000) |
-| `pnpm dev:worker` | Start Worker dev server (port 8787) |
-| `pnpm build` | Build the Next.js app |
-| `pnpm deploy` | Build and deploy the Next.js app |
-| `pnpm deploy:worker` | Deploy the Worker |
-| `pnpm logs:worker` | Tail Worker logs |
-| `pnpm use:<name>` | Switch active podcast config (see [Running Multiple Podcasts](#running-multiple-podcasts)) |
-| `pnpm lint:fix` | Auto-fix ESLint issues |
-| `pnpm tests` | Run integration tests (requires remote) |
+| Command              | Description                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------ |
+| `pnpm dev`           | Start Next.js dev server (port 3000)                                                       |
+| `pnpm dev:worker`    | Start Worker dev server (port 8787)                                                        |
+| `pnpm build`         | Build the Next.js app                                                                      |
+| `pnpm deploy`        | Build and deploy the Next.js app                                                           |
+| `pnpm deploy:worker` | Deploy the Worker                                                                          |
+| `pnpm logs:worker`   | Tail Worker logs                                                                           |
+| `pnpm use:<name>`    | Switch active podcast config (see [Running Multiple Podcasts](#running-multiple-podcasts)) |
+| `pnpm lint:fix`      | Auto-fix ESLint issues                                                                     |
+| `pnpm tests`         | Run integration tests (requires remote)                                                    |
 
 ## Origin
 

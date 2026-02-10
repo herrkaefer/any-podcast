@@ -2,7 +2,7 @@
 import type { Podcast, Site } from '@/types/podcast'
 
 const defaultTitle = 'Any Podcast'
-const defaultDescription = '一个可配置的 AI 播客平台：自动聚合内容源，生成中文摘要并输出播客音频。'
+const defaultDescription = 'A configurable AI podcast platform that aggregates content sources, generates summaries, and produces podcast audio.\n\nTo configure your podcast, visit the [Admin console](/admin).'
 const defaultContactEmail = 'podcast@any-podcast.local'
 const defaultBaseUrl = process.env.NEXT_PUBLIC_BASE_URL
   ?? (process.env.NODE_ENV === 'development' ? 'http://localhost:3000' : '')
@@ -21,12 +21,12 @@ export const podcast: Podcast = {
   },
   hosts: [
     {
-      name: 'Gemini',
-      link: 'https://gemini.google',
+      name: 'Apple',
+      link: 'https://apple.com',
     },
     {
-      name: 'MiniMax',
-      link: 'https://www.minimaxi.com/audio',
+      name: 'Banana',
+      link: 'https://banana.com',
     },
   ],
   platforms: [
@@ -53,7 +53,7 @@ export const site: Site = {
     defaultDescription,
     defaultImage: '/opengraph-image.png',
     twitterHandle: '',
-    locale: 'zh_CN',
+    locale: 'en_US',
   },
   favicon: '/favicon.png',
 }

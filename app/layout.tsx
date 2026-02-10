@@ -1,11 +1,9 @@
 import type { Metadata } from 'next'
-import type { Locale } from '@/i18n/config'
 import process from 'node:process'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
-import { headers } from 'next/headers'
 import { Providers } from '@/components/providers'
 import { podcast, site } from '@/config'
-import { defaultLocale, detectLocale } from '@/i18n/config'
+import { toLocale } from '@/i18n/config'
 import { getActiveRuntimeConfig } from '@/lib/runtime-config'
 import './globals.css'
 import '@vidstack/react/player/styles/base.css'
@@ -105,13 +103,11 @@ export default async function RootLayout({
   const layoutEnv = env as LayoutEnv
   const runtimeConfig = await getActiveRuntimeConfig(layoutEnv)
   const runtimeSite = runtimeConfig.config.site
-  const headersList = await headers()
-  const acceptLanguage = headersList.get('accept-language')
-  const detectedLocale: Locale = acceptLanguage ? detectLocale(acceptLanguage) : defaultLocale
+  const locale = toLocale(runtimeConfig.config.locale.language)
 
   return (
     <html
-      lang={detectedLocale}
+      lang={locale}
       className={`
         theme-${runtimeSite.themeColor}
       `}
@@ -121,7 +117,7 @@ export default async function RootLayout({
         <script id="theme-initializer">{themeInitializer}</script>
       </head>
       <body>
-        <Providers detectedLocale={detectedLocale}>{children}</Providers>
+        <Providers detectedLocale={locale}>{children}</Providers>
       </body>
     </html>
   )

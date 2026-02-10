@@ -1766,8 +1766,8 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
       `}
       >
         <label className="text-sm">
-          language
-          <input
+          Language (UI &amp; content)
+          <select
             className="mt-1 w-full rounded border px-3 py-2"
             value={locale.language}
             onChange={event => setWorkingDraft(prev => ({
@@ -1777,12 +1777,21 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                 language: event.target.value,
               },
             }))}
-          />
+          >
+            <option value="en">English</option>
+            <option value="zh">中文</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+            <option value="de">Deutsch</option>
+            <option value="fr">Français</option>
+            <option value="es">Español</option>
+            <option value="pt">Português</option>
+          </select>
         </label>
 
         <label className="text-sm">
-          timezone
-          <input
+          Timezone
+          <select
             className="mt-1 w-full rounded border px-3 py-2"
             value={locale.timezone}
             onChange={event => setWorkingDraft(prev => ({
@@ -1792,7 +1801,11 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                 timezone: event.target.value,
               },
             }))}
-          />
+          >
+            {Intl.supportedValuesOf('timeZone').map(tz => (
+              <option key={tz} value={tz}>{tz.replaceAll('_', ' ')}</option>
+            ))}
+          </select>
         </label>
 
         <label className={`
@@ -1800,7 +1813,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
           md:col-span-2
         `}
         >
-          dateFormat
+          Date format
           <input
             className="mt-1 w-full rounded border px-3 py-2"
             value={locale.dateFormat || ''}
