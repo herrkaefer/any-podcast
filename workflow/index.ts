@@ -1,7 +1,7 @@
 import type { WorkflowEvent, WorkflowStep, WorkflowStepConfig } from 'cloudflare:workers'
 import type { AiEnv } from './ai'
 
-import type { RuntimeConfigBundle } from '@/types/runtime-config'
+import type { RuntimeConfigBundle, RuntimeTtsIntroMusicConfig } from '@/types/runtime-config'
 
 import { WorkflowEntrypoint } from 'cloudflare:workers'
 import { buildContentKey, buildPodcastKeyBase } from '@/config'
@@ -30,6 +30,7 @@ interface Env extends CloudflareEnv, AiEnv {
   PODCAST_WORKER_URL: string
   PODCAST_R2_BUCKET_URL: string
   PODCAST_WORKFLOW: Workflow
+  TTS_WORKFLOW: Workflow<TtsWorkflowParams>
   BROWSER: Fetcher
   TTS_API_ID?: string
   TTS_API_KEY?: string
@@ -70,6 +71,17 @@ interface RuntimeTtsSettings {
   geminiPrompt?: string
   voicesBySpeaker: Record<string, string>
   geminiSpeakers: { speaker: string, voice?: string }[]
+}
+
+interface TtsWorkflowParams {
+  parsedConversations: ParsedConversationLine[]
+  podcastKey: string
+  contentKey: string
+  ttsSettings: RuntimeTtsSettings
+  ffmpegAudioQuality: number
+  introThemeUrl?: string
+  introMusicConfig: RuntimeTtsIntroMusicConfig
+  isDev: boolean
 }
 
 const storySummarySchema = {
@@ -343,8 +355,7 @@ const retryConfig: WorkflowStepConfig = {
 
 const DEFAULT_FFMPEG_AUDIO_QUALITY = 5
 const BLOCKED_STORY_HOSTNAMES = new Set(['doi.org', 'dx.doi.org'])
-const NON_GEMINI_TTS_LINES_PER_CHUNK = 2
-const NON_GEMINI_TTS_CHUNK_SLEEP = '12 seconds'
+const NON_GEMINI_TTS_LINE_SLEEP = '12 seconds'
 const NON_GEMINI_TTS_SUBREQUEST_BACKOFF_SLEEP = '20 seconds'
 const NON_GEMINI_TTS_RETRY_SLEEP = '5 seconds'
 const NON_GEMINI_TTS_MAX_ATTEMPTS = 2
@@ -369,6 +380,325 @@ function isBlockedStoryUrl(url: string | undefined) {
   }
   catch {
     return false
+  }
+}
+
+export class TtsWorkflow extends WorkflowEntrypoint<Env, TtsWorkflowParams> {
+  async run(event: WorkflowEvent<TtsWorkflowParams>, step: WorkflowStep) {
+    console.info('trigged event: TtsWorkflow', event)
+
+    const payload = event.payload
+    if (!payload) {
+      throw new Error('TtsWorkflow payload is required')
+    }
+
+    const {
+      parsedConversations,
+      podcastKey,
+      contentKey,
+      ttsSettings,
+      ffmpegAudioQuality,
+      introThemeUrl,
+      introMusicConfig,
+      isDev,
+    } = payload
+
+    if (!parsedConversations.length) {
+      throw new Error('TtsWorkflow payload has no dialog lines')
+    }
+
+    const ttsProvider = await step.do('validate tts config', { ...retryConfig, retries: withRetryLimit(0) }, async () => {
+      const provider = validateTtsConfig(this.env, ttsSettings.provider)
+      console.info('TTS config validated', {
+        provider,
+        hasGeminiApiKey: Boolean(this.env.GEMINI_API_KEY?.trim()),
+        hasTtsApiKey: Boolean(this.env.TTS_API_KEY?.trim()),
+        hasTtsApiId: Boolean(this.env.TTS_API_ID?.trim()),
+      })
+      return provider
+    })
+    const useGeminiTTS = ttsProvider === 'gemini'
+
+    const tmpPrefix = `tmp/${event.instanceId}`
+    const geminiWavKey = `${tmpPrefix}/podcast.wav`
+    const basePodcastKey = `${tmpPrefix}/podcast.base.mp3`
+    const nonGeminiAudioKeys: string[] = []
+    let basePodcastUrl = ''
+
+    if (useGeminiTTS) {
+      const dialogLines = parsedConversations.map(item => item.raw)
+      const geminiPrompt = buildGeminiTtsPrompt(dialogLines, {
+        geminiPrompt: ttsSettings.geminiPrompt,
+        geminiSpeakers: ttsSettings.geminiSpeakers,
+      })
+
+      console.info('Gemini TTS input', {
+        totalLines: parsedConversations.length,
+        promptChars: geminiPrompt.length,
+      })
+
+      const geminiAudioUrl = await step.do('create gemini podcast audio', { ...retryConfig, retries: withRetryLimit(2), timeout: '10 minutes' }, async () => {
+        const startedAt = Date.now()
+        const retryLimit = 2
+        for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
+          try {
+            console.info('Gemini TTS attempt', {
+              attempt: attempt + 1,
+              promptChars: geminiPrompt.length,
+              lines: parsedConversations.length,
+            })
+            const result = await synthesizeGeminiTTS(geminiPrompt, this.env, {
+              model: ttsSettings.model,
+              apiUrl: ttsSettings.apiUrl,
+              geminiSpeakers: ttsSettings.geminiSpeakers,
+            })
+            if (!result.audio.size) {
+              throw new Error('podcast audio size is 0')
+            }
+
+            const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${geminiWavKey}?t=${Date.now()}`
+            await this.env.PODCAST_R2.put(geminiWavKey, result.audio)
+
+            console.info('Gemini TTS done', {
+              key: geminiWavKey,
+              size: result.audio.size,
+              ms: Date.now() - startedAt,
+            })
+            return audioUrl
+          }
+          catch (error) {
+            console.error('Gemini TTS attempt failed', {
+              attempt: attempt + 1,
+              error: formatError(error),
+            })
+            if (attempt >= retryLimit) {
+              throw error
+            }
+          }
+        }
+        throw new Error('Gemini TTS failed after retries')
+      })
+
+      await step.sleep('reset quota before convert', '5 seconds')
+
+      basePodcastUrl = await step.do('convert gemini audio to mp3', { ...retryConfig, retries: withRetryLimit(3) }, async () => {
+        if (!this.env.BROWSER) {
+          throw new Error('BROWSER binding is required for audio convert')
+        }
+
+        const blob = await concatAudioFiles([geminiAudioUrl], this.env.BROWSER, {
+          workerUrl: this.env.PODCAST_WORKER_URL,
+          audioQuality: ffmpegAudioQuality,
+        })
+        await this.env.PODCAST_R2.put(basePodcastKey, blob)
+        const nextBasePodcastUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${basePodcastKey}?t=${Date.now()}`
+
+        console.info('Gemini audio converted to MP3', {
+          key: basePodcastKey,
+          size: blob.size,
+        })
+        return nextBasePodcastUrl
+      })
+    }
+    else {
+      for (const [index, conversation] of parsedConversations.entries()) {
+        let audioUrl = ''
+        for (let attempt = 1; attempt <= NON_GEMINI_TTS_MAX_ATTEMPTS; attempt += 1) {
+          try {
+            audioUrl = await step.do(
+              `create audio ${index} attempt ${attempt}: ${conversation.text.substring(0, 20)}...`,
+              { ...retryConfig, retries: withRetryLimit(0), timeout: '30 minutes' },
+              async () => {
+                const startedAt = Date.now()
+                console.info('create conversation audio', conversation.raw)
+                const audio = await synthesize(conversation.text, conversation.speaker, this.env, {
+                  provider: ttsSettings.provider,
+                  language: ttsSettings.language,
+                  languageBoost: ttsSettings.languageBoost,
+                  model: ttsSettings.model,
+                  speed: ttsSettings.speed,
+                  apiUrl: ttsSettings.apiUrl,
+                  voicesBySpeaker: ttsSettings.voicesBySpeaker,
+                })
+
+                if (!audio.size) {
+                  throw new Error('podcast audio size is 0')
+                }
+
+                const audioKey = `${tmpPrefix}/podcast-${index}.mp3`
+                const nextAudioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${audioKey}?t=${Date.now()}`
+
+                try {
+                  await this.env.PODCAST_R2.put(audioKey, audio)
+                }
+                catch (error) {
+                  console.error('TTS upload to R2 failed', {
+                    index,
+                    key: audioKey,
+                    error: formatError(error),
+                  })
+                  throw error
+                }
+                if (isDev) {
+                  console.info('TTS line duration', { index, ms: Date.now() - startedAt })
+                }
+                return nextAudioUrl
+              },
+            )
+            break
+          }
+          catch (error) {
+            const subrequestLimited = isSubrequestLimitError(error)
+            console.warn('TTS line attempt failed', {
+              index,
+              attempt,
+              subrequestLimited,
+              error: formatError(error),
+            })
+            if (attempt >= NON_GEMINI_TTS_MAX_ATTEMPTS) {
+              console.error('TTS line failed', {
+                index,
+                conversation: conversation.raw,
+                error: formatError(error),
+              })
+              throw error
+            }
+            await step.sleep(
+              subrequestLimited
+                ? `yield subrequest budget before retry audio ${index}`
+                : `wait before retry audio ${index}`,
+              subrequestLimited
+                ? NON_GEMINI_TTS_SUBREQUEST_BACKOFF_SLEEP
+                : NON_GEMINI_TTS_RETRY_SLEEP,
+            )
+          }
+        }
+
+        if (!audioUrl) {
+          throw new Error(`TTS line ${index} failed without output URL`)
+        }
+
+        nonGeminiAudioKeys.push(`${tmpPrefix}/podcast-${index}.mp3`)
+        const hasMoreLines = index < parsedConversations.length - 1
+        if (hasMoreLines) {
+          await step.sleep(
+            `yield between TTS lines after line ${index}`,
+            NON_GEMINI_TTS_LINE_SLEEP,
+          )
+        }
+      }
+
+      basePodcastUrl = await step.do('concat audio files', retryConfig, async () => {
+        if (!this.env.BROWSER) {
+          throw new Error('BROWSER binding is required for concat audio files')
+        }
+
+        const audioFiles = nonGeminiAudioKeys.map(key => `${this.env.PODCAST_R2_BUCKET_URL}/${key}?t=${Date.now()}`)
+        const blob = await concatAudioFiles(audioFiles, this.env.BROWSER, {
+          workerUrl: this.env.PODCAST_WORKER_URL,
+          audioQuality: ffmpegAudioQuality,
+        })
+        await this.env.PODCAST_R2.put(basePodcastKey, blob)
+        const nextBasePodcastUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${basePodcastKey}?t=${Date.now()}`
+
+        console.info('concat audio files done', { key: basePodcastKey, size: blob.size })
+        return nextBasePodcastUrl
+      })
+    }
+
+    await step.sleep('reset quota before intro music', '30 seconds')
+
+    try {
+      await step.do('add intro music', retryConfig, async () => {
+        if (!this.env.BROWSER) {
+          throw new Error('BROWSER binding is required for intro music')
+        }
+        const blob = await addIntroMusic(basePodcastUrl, this.env.BROWSER, {
+          workerUrl: this.env.PODCAST_WORKER_URL,
+          themeUrl: introThemeUrl,
+          fadeOutStart: introMusicConfig.fadeOutStart,
+          fadeOutDuration: introMusicConfig.fadeOutDuration,
+          podcastDelayMs: introMusicConfig.podcastDelay,
+          audioQuality: ffmpegAudioQuality,
+        })
+        await this.env.PODCAST_R2.put(podcastKey, blob)
+        console.info('intro music added', {
+          key: podcastKey,
+          size: blob.size,
+        })
+      })
+    }
+    catch (error) {
+      console.warn('add intro music failed after retries, falling back to base podcast', {
+        error: formatError(error),
+      })
+      await step.do('fallback: copy base podcast', retryConfig, async () => {
+        const baseObj = await this.env.PODCAST_R2.get(basePodcastKey)
+        if (!baseObj) {
+          throw new Error('Base podcast object not found for fallback')
+        }
+        await this.env.PODCAST_R2.put(podcastKey, baseObj.body)
+        console.info('fallback: base podcast copied', { key: podcastKey })
+      })
+    }
+
+    await step.do('update content audio in kv', retryConfig, async () => {
+      const current = await this.env.PODCAST_KV.get(contentKey, 'json')
+      if (!current || typeof current !== 'object') {
+        throw new Error(`content not found for key: ${contentKey}`)
+      }
+      const existing = current as Record<string, unknown>
+      const updatedAt = Date.now()
+      const nextContent = {
+        ...existing,
+        audio: podcastKey,
+        updatedAt,
+        updatedBy: 'tts-workflow',
+      }
+      await this.env.PODCAST_KV.put(contentKey, JSON.stringify(nextContent))
+      console.info('content audio updated in kv', {
+        contentKey,
+        podcastKey,
+      })
+    })
+
+    await step.do('clean up temporary data', retryConfig, async () => {
+      const deletePromises: Array<Promise<unknown>> = [
+        this.env.PODCAST_R2.delete(basePodcastKey).catch((error) => {
+          console.error('delete base podcast temp failed', {
+            key: basePodcastKey,
+            error: formatError(error),
+          })
+        }),
+      ]
+
+      if (useGeminiTTS) {
+        deletePromises.push(this.env.PODCAST_R2.delete(geminiWavKey).catch((error) => {
+          console.error('delete gemini temp wav failed', {
+            key: geminiWavKey,
+            error: formatError(error),
+          })
+        }))
+      }
+      else {
+        for (const key of nonGeminiAudioKeys) {
+          deletePromises.push(this.env.PODCAST_R2.delete(key).catch((error) => {
+            console.error('delete temp files failed', {
+              key,
+              error: formatError(error),
+            })
+          }))
+        }
+      }
+
+      await Promise.all(deletePromises).catch((error) => {
+        console.error('cleanup failed', {
+          error: formatError(error),
+        })
+      })
+
+      return 'temporary data cleaned up'
+    })
   }
 }
 
@@ -1179,20 +1509,6 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
       .map(line => line.trim())
       .filter(Boolean)
     const parsedConversations = parseConversationLines(conversations, speakerMarkers)
-    const dialogLines = parsedConversations.map(item => item.raw)
-    const ttsProvider = skipTTS
-      ? ''
-      : await step.do('validate tts config', { ...retryConfig, retries: withRetryLimit(0) }, async () => {
-          const provider = validateTtsConfig(this.env, runtimeTtsSettings.provider)
-          console.info('TTS config validated', {
-            provider,
-            hasGeminiApiKey: Boolean(this.env.GEMINI_API_KEY?.trim()),
-            hasTtsApiKey: Boolean(this.env.TTS_API_KEY?.trim()),
-            hasTtsApiId: Boolean(this.env.TTS_API_ID?.trim()),
-          })
-          return provider
-        })
-    const useGeminiTTS = ttsProvider === 'gemini'
 
     console.info('TTS input stats', {
       hasOverride: Boolean(ttsInputOverride),
@@ -1202,296 +1518,9 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
       preview: ttsSourceText.slice(0, 200),
     })
 
-    const nonGeminiAudioFiles: string[] = []
-
-    if (skipTTS) {
-      console.info('skip TTS enabled, skip audio generation')
+    if (!skipTTS && parsedConversations.length === 0) {
+      throw new Error('No valid TTS dialog lines found. Please ensure each line starts with configured speaker markers.')
     }
-    else if (useGeminiTTS) {
-      const geminiPrompt = buildGeminiTtsPrompt(dialogLines, {
-        geminiPrompt: runtimeTtsSettings.geminiPrompt,
-        geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
-      })
-
-      console.info('Gemini TTS input', {
-        totalLines: parsedConversations.length,
-        promptChars: geminiPrompt.length,
-      })
-
-      await step.do('create gemini podcast audio', { ...retryConfig, retries: withRetryLimit(2), timeout: '10 minutes' }, async () => {
-        const startedAt = Date.now()
-        const retryLimit = 2
-        for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
-          try {
-            console.info('Gemini TTS attempt', {
-              attempt: attempt + 1,
-              promptChars: geminiPrompt.length,
-              lines: parsedConversations.length,
-            })
-            const result = await synthesizeGeminiTTS(geminiPrompt, this.env, {
-              model: runtimeTtsSettings.model,
-              apiUrl: runtimeTtsSettings.apiUrl,
-              geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
-            })
-            if (!result.audio.size) {
-              throw new Error('podcast audio size is 0')
-            }
-
-            const audioKey = `tmp/${podcastKey}.wav`
-            const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${audioKey}?t=${Date.now()}`
-            await this.env.PODCAST_R2.put(audioKey, result.audio)
-            await this.env.PODCAST_KV.put(`tmp:${event.instanceId}:audio:gemini`, audioUrl, { expirationTtl: 3600 })
-
-            console.info('Gemini TTS done', {
-              key: audioKey,
-              size: result.audio.size,
-              ms: Date.now() - startedAt,
-            })
-            return audioUrl
-          }
-          catch (error) {
-            console.error('Gemini TTS attempt failed', {
-              attempt: attempt + 1,
-              error: formatError(error),
-            })
-            if (attempt >= retryLimit) {
-              throw error
-            }
-          }
-        }
-        throw new Error('Gemini TTS failed after retries')
-      })
-
-      await step.sleep('reset quota before convert', breakTime)
-
-      await step.do('convert gemini audio to mp3', { ...retryConfig, retries: withRetryLimit(3) }, async () => {
-        if (!this.env.BROWSER) {
-          console.warn('browser is not configured, skip audio convert')
-          return
-        }
-        const audioUrl = await this.env.PODCAST_KV.get(`tmp:${event.instanceId}:audio:gemini`)
-        if (!audioUrl) {
-          throw new Error('Gemini audio URL not found in KV')
-        }
-        const blob = await concatAudioFiles([audioUrl], this.env.BROWSER, {
-          workerUrl: this.env.PODCAST_WORKER_URL,
-          audioQuality: ffmpegAudioQuality,
-        })
-        const basePodcastKey = `tmp/${podcastKey}.base.mp3`
-        await this.env.PODCAST_R2.put(basePodcastKey, blob)
-        await this.env.PODCAST_KV.put(`tmp:${event.instanceId}:audio:base`, `${this.env.PODCAST_R2_BUCKET_URL}/${basePodcastKey}?t=${Date.now()}`, { expirationTtl: 3600 })
-        console.info('Gemini audio converted to MP3', {
-          key: basePodcastKey,
-          size: blob.size,
-        })
-      })
-
-      await step.sleep('reset quota before intro music', '30 seconds')
-
-      try {
-        await step.do('add intro music (gemini)', retryConfig, async () => {
-          if (!this.env.BROWSER) {
-            throw new Error('browser is not configured')
-          }
-          const basePodcastUrl = await this.env.PODCAST_KV.get(`tmp:${event.instanceId}:audio:base`)
-          if (!basePodcastUrl) {
-            throw new Error('Base podcast URL not found in KV')
-          }
-          const blob = await addIntroMusic(basePodcastUrl, this.env.BROWSER, {
-            workerUrl: this.env.PODCAST_WORKER_URL,
-            themeUrl: introThemeUrl,
-            fadeOutStart: runtimeConfig.tts.introMusic.fadeOutStart,
-            fadeOutDuration: runtimeConfig.tts.introMusic.fadeOutDuration,
-            podcastDelayMs: runtimeConfig.tts.introMusic.podcastDelay,
-            audioQuality: ffmpegAudioQuality,
-          })
-          await this.env.PODCAST_R2.put(podcastKey, blob)
-          console.info('intro music added (gemini)', {
-            key: podcastKey,
-            size: blob.size,
-          })
-        })
-      }
-      catch (error) {
-        console.warn('add intro music failed after retries, falling back to base podcast', {
-          error: formatError(error),
-        })
-        await step.do('fallback: copy base podcast (gemini)', retryConfig, async () => {
-          const baseKey = `tmp/${podcastKey}.base.mp3`
-          const baseObj = await this.env.PODCAST_R2.get(baseKey)
-          if (baseObj) {
-            await this.env.PODCAST_R2.put(podcastKey, baseObj.body)
-            console.info('fallback: base podcast copied', { key: podcastKey })
-          }
-        })
-      }
-
-      console.info('podcast audio url', `${this.env.PODCAST_R2_BUCKET_URL}/${podcastKey}`)
-    }
-    else {
-      for (const [index, conversation] of parsedConversations.entries()) {
-        let audioUrl = ''
-        for (let attempt = 1; attempt <= NON_GEMINI_TTS_MAX_ATTEMPTS; attempt += 1) {
-          try {
-            audioUrl = await step.do(
-              `create audio ${index} attempt ${attempt}: ${conversation.text.substring(0, 20)}...`,
-              { ...retryConfig, retries: withRetryLimit(0), timeout: '30 minutes' },
-              async () => {
-                const startedAt = Date.now()
-                console.info('create conversation audio', conversation.raw)
-                const audio = await synthesize(conversation.text, conversation.speaker, this.env, {
-                  provider: runtimeTtsSettings.provider,
-                  language: runtimeTtsSettings.language,
-                  languageBoost: runtimeTtsSettings.languageBoost,
-                  model: runtimeTtsSettings.model,
-                  speed: runtimeTtsSettings.speed,
-                  apiUrl: runtimeTtsSettings.apiUrl,
-                  voicesBySpeaker: runtimeTtsSettings.voicesBySpeaker,
-                })
-
-                if (!audio.size) {
-                  throw new Error('podcast audio size is 0')
-                }
-
-                const audioKey = `tmp/${podcastKey}-${index}.mp3`
-                const nextAudioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${audioKey}?t=${Date.now()}`
-
-                try {
-                  await this.env.PODCAST_R2.put(audioKey, audio)
-                }
-                catch (error) {
-                  console.error('TTS upload to R2 failed', {
-                    index,
-                    key: audioKey,
-                    error: formatError(error),
-                  })
-                  throw error
-                }
-                if (isDev) {
-                  console.info('TTS line duration', { index, ms: Date.now() - startedAt })
-                }
-                return nextAudioUrl
-              },
-            )
-            break
-          }
-          catch (error) {
-            const subrequestLimited = isSubrequestLimitError(error)
-            console.warn('TTS line attempt failed', {
-              index,
-              attempt,
-              subrequestLimited,
-              error: formatError(error),
-            })
-            if (attempt >= NON_GEMINI_TTS_MAX_ATTEMPTS) {
-              console.error('TTS line failed', {
-                index,
-                conversation: conversation.raw,
-                error: formatError(error),
-              })
-              throw error
-            }
-            await step.sleep(
-              subrequestLimited
-                ? `yield subrequest budget before retry audio ${index}`
-                : `wait before retry audio ${index}`,
-              subrequestLimited
-                ? NON_GEMINI_TTS_SUBREQUEST_BACKOFF_SLEEP
-                : NON_GEMINI_TTS_RETRY_SLEEP,
-            )
-          }
-        }
-
-        if (!audioUrl) {
-          throw new Error(`TTS line ${index} failed without output URL`)
-        }
-
-        nonGeminiAudioFiles.push(audioUrl)
-        const hasMoreLines = index < parsedConversations.length - 1
-        const isChunkBoundary = (index + 1) % NON_GEMINI_TTS_LINES_PER_CHUNK === 0
-        if (hasMoreLines && isChunkBoundary) {
-          await step.sleep(
-            `yield between TTS chunks after line ${index}`,
-            NON_GEMINI_TTS_CHUNK_SLEEP,
-          )
-        }
-      }
-    }
-
-    const audioFiles = skipTTS || useGeminiTTS
-      ? []
-      : nonGeminiAudioFiles
-
-    if (!skipTTS && !useGeminiTTS) {
-      await step.do('concat audio files', retryConfig, async () => {
-        if (!this.env.BROWSER) {
-          console.warn('browser is not configured, skip concat audio files')
-          return
-        }
-
-        const blob = await concatAudioFiles(audioFiles, this.env.BROWSER, {
-          workerUrl: this.env.PODCAST_WORKER_URL,
-          audioQuality: ffmpegAudioQuality,
-        })
-        const basePodcastKey = `tmp/${podcastKey}.base.mp3`
-        try {
-          await this.env.PODCAST_R2.put(basePodcastKey, blob)
-          await this.env.PODCAST_KV.put(`tmp:${event.instanceId}:audio:base`, `${this.env.PODCAST_R2_BUCKET_URL}/${basePodcastKey}?t=${Date.now()}`, { expirationTtl: 3600 })
-        }
-        catch (error) {
-          console.error('concat audio upload to R2 failed', {
-            key: basePodcastKey,
-            error: formatError(error),
-          })
-          throw error
-        }
-
-        console.info('concat audio files done', { key: basePodcastKey, size: blob.size })
-        return `${this.env.PODCAST_R2_BUCKET_URL}/${basePodcastKey}?t=${Date.now()}`
-      })
-
-      await step.sleep('reset quota before intro music', '30 seconds')
-
-      try {
-        await step.do('add intro music', retryConfig, async () => {
-          if (!this.env.BROWSER) {
-            throw new Error('browser is not configured')
-          }
-          const basePodcastUrl = await this.env.PODCAST_KV.get(`tmp:${event.instanceId}:audio:base`)
-          if (!basePodcastUrl) {
-            throw new Error('Base podcast URL not found in KV')
-          }
-          const blob = await addIntroMusic(basePodcastUrl, this.env.BROWSER, {
-            workerUrl: this.env.PODCAST_WORKER_URL,
-            themeUrl: introThemeUrl,
-            fadeOutStart: runtimeConfig.tts.introMusic.fadeOutStart,
-            fadeOutDuration: runtimeConfig.tts.introMusic.fadeOutDuration,
-            podcastDelayMs: runtimeConfig.tts.introMusic.podcastDelay,
-            audioQuality: ffmpegAudioQuality,
-          })
-          await this.env.PODCAST_R2.put(podcastKey, blob)
-          console.info('intro music added', {
-            key: podcastKey,
-            size: blob.size,
-          })
-        })
-      }
-      catch (error) {
-        console.warn('add intro music failed after retries, falling back to base podcast', {
-          error: formatError(error),
-        })
-        await step.do('fallback: copy base podcast', retryConfig, async () => {
-          const baseKey = `tmp/${podcastKey}.base.mp3`
-          const baseObj = await this.env.PODCAST_R2.get(baseKey)
-          if (baseObj) {
-            await this.env.PODCAST_R2.put(podcastKey, baseObj.body)
-            console.info('fallback: base podcast copied', { key: podcastKey })
-          }
-        })
-      }
-    }
-
-    console.info('save podcast to r2 success')
 
     await step.do('save content to kv', retryConfig, async () => {
       try {
@@ -1504,7 +1533,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           podcastContent,
           blogContent,
           introContent,
-          audio: skipTTS ? '' : podcastKey,
+          audio: '',
           updatedAt,
           configVersion: runtimeState.version,
           updatedBy: 'workflow',
@@ -1523,55 +1552,38 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
 
     console.info('save content to kv success')
 
-    await step.do('clean up temporary data', retryConfig, async () => {
-      const deletePromises = []
+    if (skipTTS) {
+      console.info('skip TTS enabled, skip audio generation')
+      return
+    }
 
-      // Clean up base podcast with intro music (both paths)
-      if (!skipTTS) {
-        deletePromises.push(this.env.PODCAST_KV.delete(`tmp:${event.instanceId}:audio:base`))
-        deletePromises.push(
-          this.env.PODCAST_R2.delete(`tmp/${podcastKey}.base.mp3`).catch((error) => {
-            console.error('delete base podcast temp failed', {
-              key: `tmp/${podcastKey}.base.mp3`,
-              error: formatError(error),
-            })
-          }),
-        )
-      }
-
-      if (!skipTTS && useGeminiTTS) {
-        // Clean up Gemini TTS temporary data
-        deletePromises.push(this.env.PODCAST_KV.delete(`tmp:${event.instanceId}:audio:gemini`))
-        deletePromises.push(
-          this.env.PODCAST_R2.delete(`tmp/${podcastKey}.wav`).catch((error) => {
-            console.error('delete gemini temp wav failed', {
-              key: `tmp/${podcastKey}.wav`,
-              error: formatError(error),
-            })
-          }),
-        )
-      }
-      else if (!skipTTS && !useGeminiTTS) {
-        // Clean up non-Gemini audio temporary data
-        for (const index of audioFiles.keys()) {
-          deletePromises.push(
-            this.env.PODCAST_R2.delete(`tmp/${podcastKey}-${index}.mp3`).catch((error) => {
-              console.error('delete temp files failed', {
-                key: `tmp/${podcastKey}-${index}.mp3`,
-                error: formatError(error),
-              })
-            }),
-          )
-        }
-      }
-
-      await Promise.all(deletePromises).catch((error) => {
-        console.error('cleanup failed', {
-          error: formatError(error),
-        })
+    await step.do('trigger tts workflow', { ...retryConfig, retries: withRetryLimit(2), timeout: '10 minutes' }, async () => {
+      const ttsProvider = validateTtsConfig(this.env, runtimeTtsSettings.provider)
+      const instance = await this.env.TTS_WORKFLOW.create({
+        id: `${event.instanceId}-tts`,
+        params: {
+          parsedConversations,
+          podcastKey,
+          contentKey,
+          ttsSettings: {
+            ...runtimeTtsSettings,
+            provider: ttsProvider,
+          },
+          ffmpegAudioQuality,
+          introThemeUrl,
+          introMusicConfig: runtimeConfig.tts.introMusic,
+          isDev,
+        },
       })
 
-      return 'temporary data cleaned up'
+      const instanceStatus = await instance.status()
+      console.info('tts workflow triggered', {
+        workflowInstanceId: instance.id,
+        status: instanceStatus.status,
+        contentKey,
+        podcastKey,
+      })
+      return instance.id
     })
   }
 }

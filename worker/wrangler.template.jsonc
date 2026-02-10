@@ -39,6 +39,11 @@
       "name": "podcast-workflow",
       "binding": "PODCAST_WORKFLOW",
       "class_name": "PodcastWorkflow"
+    },
+    {
+      "name": "tts-workflow",
+      "binding": "TTS_WORKFLOW",
+      "class_name": "TtsWorkflow"
     }
   ],
   "kv_namespaces": [
