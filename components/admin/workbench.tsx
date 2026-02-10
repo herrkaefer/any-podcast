@@ -2666,6 +2666,17 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         </button>
       </div>
 
+      {message
+        ? (
+            <p className={messageType === 'error'
+              ? 'text-sm text-red-700'
+              : 'text-sm text-green-700'}
+            >
+              {message}
+            </p>
+          )
+        : null}
+
       <div className="rounded border p-4">
         {section === 'site' && renderSiteSection()}
         {section === 'hosts' && renderHostsSection()}
@@ -2677,17 +2688,6 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         {section === 'prompts' && renderPromptsSection()}
         {section === 'test' && renderTestSection()}
       </div>
-
-      {message
-        ? (
-            <p className={messageType === 'error'
-              ? 'text-sm text-red-700'
-              : 'text-sm text-green-700'}
-            >
-              {message}
-            </p>
-          )
-        : null}
     </section>
   )
 }
