@@ -266,3 +266,7 @@ export const episodePatchSchema = z.object({
   introContent: z.string().optional(),
   audio: z.string().optional(),
 }).strict()
+
+export const workflowTriggerSchema = z.object({
+  nowIso: z.string().optional(),
+}).strict()

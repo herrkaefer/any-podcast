@@ -484,6 +484,11 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             .map(line => line.trim())
             .filter(Boolean)
           const parsedConversations = parseConversationLines(conversations, speakerMarkers)
+          if (parsedConversations.length === 0) {
+            throw new Error('No valid TTS dialog lines found. Please ensure each line starts with configured speaker markers.')
+          }
+
+          const testPrefix = `tmp/${event.instanceId}/tts-test`
           const audioUrls: string[] = []
           for (const [index, conversation] of parsedConversations.entries()) {
             const audio = await synthesize(conversation.text, conversation.speaker, this.env, {
@@ -498,12 +503,28 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             if (!audio.size) {
               throw new Error('podcast audio size is 0')
             }
-            const audioKey = `tmp:${event.instanceId}:tts-test-${index}.mp3`
+            const audioKey = `${testPrefix}-${index}.mp3`
             await this.env.PODCAST_R2.put(audioKey, audio)
             const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${audioKey}?t=${Date.now()}`
             audioUrls.push(audioUrl)
           }
-          return `Generated ${audioUrls.length} audio files`
+
+          if (!this.env.BROWSER) {
+            return `Generated ${audioUrls.length} audio files (no BROWSER binding, skipped merge)`
+          }
+
+          const merged = await concatAudioFiles(audioUrls, this.env.BROWSER, {
+            workerUrl: this.env.PODCAST_WORKER_URL,
+            audioQuality: ffmpegAudioQuality,
+          })
+          const mergedKey = `${testPrefix}.merged.mp3`
+          await this.env.PODCAST_R2.put(mergedKey, merged)
+          const mergedUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${mergedKey}?t=${Date.now()}`
+          console.info('tts test merged audio url', {
+            mergedUrl,
+            sourceCount: audioUrls.length,
+          })
+          return mergedUrl
         }
 
         if (testStep === 'tts-intro') {

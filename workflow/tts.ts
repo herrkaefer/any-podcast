@@ -32,6 +32,36 @@ interface GeminiAudioResult {
   mimeType: string
 }
 
+const MINIMAX_MAX_RPM = 60
+const MINIMAX_MIN_INTERVAL_MS = Math.ceil(60000 / MINIMAX_MAX_RPM) + 150
+const MINIMAX_MAX_RETRIES = 3
+const MINIMAX_RETRY_BASE_DELAY_MS = 1500
+
+let minimaxLastRequestAt = 0
+
+function sleepMs(ms: number) {
+  if (ms <= 0) {
+    return Promise.resolve()
+  }
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+function isMinimaxRpmLimitErrorMessage(message: string) {
+  const normalized = message.toLowerCase()
+  return normalized.includes('rate limit') && normalized.includes('rpm')
+}
+
+async function waitForMinimaxRateLimitWindow() {
+  const elapsed = Date.now() - minimaxLastRequestAt
+  const waitMs = MINIMAX_MIN_INTERVAL_MS - elapsed
+  if (waitMs > 0) {
+    await sleepMs(waitMs)
+  }
+  minimaxLastRequestAt = Date.now()
+}
+
 function resolveRateForEdge(speed: string | number | undefined, fallback: string) {
   if (typeof speed === 'number') {
     return `${speed}%`
@@ -74,46 +104,80 @@ async function edgeTTS(text: string, speaker: string, env: Env, options?: Runtim
 
 async function minimaxTTS(text: string, speaker: string, env: Env, options?: RuntimeTtsOptions) {
   const apiUrl = options?.apiUrl || 'https://api.minimaxi.com/v1/t2a_v2'
-  const result = await $fetch<{ data: { audio: string }, base_resp: { status_msg: string } }>(`${apiUrl}?GroupId=${env.TTS_API_ID}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${env.TTS_API_KEY}`,
-    },
-    timeout: 30000,
-    body: JSON.stringify({
-      model: options?.model || 'speech-2.6-hd',
-      text,
-      timber_weights: [
-        {
-          voice_id: resolveVoiceBySpeaker(speaker, options, {
-            male: 'Chinese (Mandarin)_Gentleman',
-            female: 'Chinese (Mandarin)_Gentle_Senior',
-          }),
-          weight: 100,
+  for (let attempt = 0; attempt <= MINIMAX_MAX_RETRIES; attempt += 1) {
+    await waitForMinimaxRateLimitWindow()
+    try {
+      const result = await $fetch<{ data: { audio: string }, base_resp: { status_msg: string } }>(`${apiUrl}?GroupId=${env.TTS_API_ID}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${env.TTS_API_KEY}`,
         },
-      ],
-      voice_setting: {
-        voice_id: '',
-        speed: Number(options?.speed ?? 1.1),
-        pitch: 0,
-        vol: 1,
-        latex_read: false,
-      },
-      audio_setting: {
-        sample_rate: 32000,
-        bitrate: 128000,
-        format: 'mp3',
-      },
-      language_boost: options?.languageBoost || 'Chinese',
-    }),
-  })
+        timeout: 30000,
+        body: JSON.stringify({
+          model: options?.model || 'speech-2.6-hd',
+          text,
+          timber_weights: [
+            {
+              voice_id: resolveVoiceBySpeaker(speaker, options, {
+                male: 'Chinese (Mandarin)_Gentleman',
+                female: 'Chinese (Mandarin)_Gentle_Senior',
+              }),
+              weight: 100,
+            },
+          ],
+          voice_setting: {
+            voice_id: '',
+            speed: Number(options?.speed ?? 1.1),
+            pitch: 0,
+            vol: 1,
+            latex_read: false,
+          },
+          audio_setting: {
+            sample_rate: 32000,
+            bitrate: 128000,
+            format: 'mp3',
+          },
+          language_boost: options?.languageBoost || 'Chinese',
+        }),
+      })
 
-  if (result?.data?.audio) {
-    const buffer = Buffer.from(result.data.audio, 'hex')
-    return new Blob([buffer.buffer], { type: 'audio/mpeg' })
+      if (result?.data?.audio) {
+        const buffer = Buffer.from(result.data.audio, 'hex')
+        return new Blob([buffer], { type: 'audio/mpeg' })
+      }
+
+      const statusMessage = result?.base_resp?.status_msg || 'unknown error'
+      if (isMinimaxRpmLimitErrorMessage(statusMessage) && attempt < MINIMAX_MAX_RETRIES) {
+        const backoffMs = MINIMAX_RETRY_BASE_DELAY_MS * (attempt + 1)
+        console.warn('Minimax TTS RPM limit reached, backing off', {
+          attempt: attempt + 1,
+          retryInMs: backoffMs,
+          statusMessage,
+        })
+        await sleepMs(backoffMs)
+        continue
+      }
+
+      throw new Error(`Failed to fetch audio: ${statusMessage}`)
+    }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (isMinimaxRpmLimitErrorMessage(message) && attempt < MINIMAX_MAX_RETRIES) {
+        const backoffMs = MINIMAX_RETRY_BASE_DELAY_MS * (attempt + 1)
+        console.warn('Minimax TTS request rate limited, retrying', {
+          attempt: attempt + 1,
+          retryInMs: backoffMs,
+          message,
+        })
+        await sleepMs(backoffMs)
+        continue
+      }
+      throw error
+    }
   }
-  throw new Error(`Failed to fetch audio: ${result?.base_resp?.status_msg}`)
+
+  throw new Error('Failed to fetch audio: rate limit exceeded(RPM) after retries')
 }
 
 /**

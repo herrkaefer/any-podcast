@@ -49,6 +49,23 @@ const DEFAULT_TEST_CONFIG: RuntimeConfigBundle['test'] = {
   workflowTtsInput: '',
 }
 
+function normalizeSourceItems(items: RuntimeConfigBundle['sources']['items']) {
+  return items.map((item) => {
+    if (item.type !== 'gmail' || !item.linkRules) {
+      return item
+    }
+    return {
+      ...item,
+      linkRules: {
+        ...item.linkRules,
+        debug: item.linkRules.debug ?? true,
+        resolveTrackingLinks: item.linkRules.resolveTrackingLinks ?? true,
+        preferOnlineVersion: item.linkRules.preferOnlineVersion ?? true,
+      },
+    }
+  })
+}
+
 export function getRuntimeConfigKeys(podcastIdInput = podcastId) {
   const base = `cfg:podcast:${podcastIdInput}`
   return {
@@ -160,6 +177,10 @@ function normalizeTtsConfig(config: RuntimeConfigBundle): RuntimeConfigBundle {
   return {
     ...config,
     hosts,
+    sources: {
+      ...config.sources,
+      items: normalizeSourceItems(config.sources.items),
+    },
     tts: {
       ...config.tts,
       provider,

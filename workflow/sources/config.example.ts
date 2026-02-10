@@ -17,6 +17,9 @@ export const sources: SourceConfig[] = [
     label: 'Spectrum',
     maxMessages: 20,
     linkRules: {
+      debug: true,
+      resolveTrackingLinks: true,
+      preferOnlineVersion: true,
       excludePathKeywords: [
         '/webinar/',
         '/category/',

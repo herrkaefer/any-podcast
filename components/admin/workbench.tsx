@@ -16,6 +16,15 @@ interface PromptMeta {
   description: string
 }
 
+interface WorkflowTriggerResponse {
+  ok?: boolean
+  endpoint?: string
+  mode?: 'local' | 'production'
+  nowIso?: string | null
+  result?: string
+  error?: string
+}
+
 const sections: EditableSection[] = ['site', 'hosts', 'ai', 'tts', 'introMusic', 'locale', 'sources', 'prompts', 'test']
 
 const sectionLabelMap: Record<EditableSection, string> = {
@@ -143,6 +152,14 @@ function getDefaultSource(): SourceItem {
   }
 }
 
+function getDefaultGmailLinkRules(): SourceLinkRules {
+  return {
+    debug: true,
+    resolveTrackingLinks: true,
+    preferOnlineVersion: true,
+  }
+}
+
 function getSectionPatchPayload(config: RuntimeConfigBundle, section: EditableSection): Record<string, unknown> {
   if (section === 'site')
     return { site: config.site }
@@ -181,6 +198,9 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
   const [activePrompt, setActivePrompt] = useState<PromptKey>('summarizeStory')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
+  const [triggerBusy, setTriggerBusy] = useState(false)
+  const [triggerNowIso, setTriggerNowIso] = useState('')
+  const [triggerMessage, setTriggerMessage] = useState('')
   const [collapsedSourcePanels, setCollapsedSourcePanels] = useState<Record<string, boolean>>({})
   const [logoPreviewVersion, setLogoPreviewVersion] = useState<number | null>(null)
   const hostPanelKeysRef = useRef<string[]>(initialDraft.hosts.map(() => buildLocalId('host-panel')))
@@ -417,6 +437,42 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
     }
     finally {
       setBusy(false)
+    }
+  }
+
+  async function triggerWorkflow() {
+    setTriggerBusy(true)
+    setTriggerMessage('')
+    try {
+      const rawNow = triggerNowIso.trim()
+      let nowIso: string | undefined
+      if (rawNow) {
+        const parsed = new Date(rawNow)
+        if (Number.isNaN(parsed.getTime())) {
+          throw new TypeError('now must be a valid datetime')
+        }
+        nowIso = parsed.toISOString()
+      }
+      const response = await fetch('/api/admin/workflow/trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nowIso,
+        }),
+      })
+      const body = (await response.json()) as WorkflowTriggerResponse
+      if (!response.ok || !body.ok) {
+        throw new Error(body.error || 'Failed to trigger workflow')
+      }
+      const modeLabel = body.mode === 'local' ? 'local worker' : 'production worker'
+      const nowLabel = body.nowIso ? `, now=${body.nowIso}` : ''
+      setTriggerMessage(`Triggered ${modeLabel} at ${body.endpoint}${nowLabel}`)
+    }
+    catch (error) {
+      setTriggerMessage(error instanceof Error ? error.message : 'Failed to trigger workflow')
+    }
+    finally {
+      setTriggerBusy(false)
     }
   }
 
@@ -1919,10 +1975,25 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                             <select
                               className="mt-1 w-full rounded border px-3 py-2"
                               value={item.type}
-                              onChange={event => updateSourceItem(index, current => ({
-                                ...current,
-                                type: event.target.value as SourceItem['type'],
-                              }))}
+                              onChange={(event) => {
+                                const nextType = event.target.value as SourceItem['type']
+                                updateSourceItem(index, (current) => {
+                                  if (nextType !== 'gmail') {
+                                    return {
+                                      ...current,
+                                      type: nextType,
+                                    }
+                                  }
+                                  return {
+                                    ...current,
+                                    type: nextType,
+                                    linkRules: {
+                                      ...getDefaultGmailLinkRules(),
+                                      ...(current.linkRules || {}),
+                                    },
+                                  }
+                                })
+                              }}
                             >
                               {sourceTypeOptions.map(type => (
                                 <option key={type} value={type}>{type}</option>
@@ -2015,7 +2086,10 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                                       `}
                                       onClick={() => updateSourceItem(index, current => ({
                                         ...current,
-                                        linkRules: current.linkRules || {},
+                                        linkRules: {
+                                          ...getDefaultGmailLinkRules(),
+                                          ...(current.linkRules || {}),
+                                        },
                                       }))}
                                     >
                                       Enable
@@ -2342,6 +2416,46 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
     const skipTts = workingDraft.tts.skipTts === true
     return (
       <div className="space-y-4">
+        <div className="space-y-3 rounded border bg-gray-50 p-3">
+          <div>
+            <p className="text-sm font-semibold">Manual workflow trigger</p>
+            <p className="text-xs text-gray-600">
+              Trigger the worker from Admin without curl. Leave now empty to use current time.
+            </p>
+          </div>
+          <div className={`
+            grid gap-3
+            md:grid-cols-[minmax(0,1fr)_auto]
+          `}
+          >
+            <label className="text-sm">
+              now (optional, ISO datetime)
+              <input
+                type="datetime-local"
+                className="mt-1 w-full rounded border px-3 py-2"
+                value={triggerNowIso}
+                onChange={event => setTriggerNowIso(event.target.value)}
+                disabled={triggerBusy}
+              />
+            </label>
+            <button
+              type="button"
+              className={`
+                self-end rounded bg-black px-3 py-2 text-sm text-white
+                transition
+                hover:bg-gray-900
+                active:scale-[0.98] active:bg-gray-800
+                disabled:cursor-not-allowed disabled:opacity-60
+              `}
+              onClick={triggerWorkflow}
+              disabled={triggerBusy}
+            >
+              {triggerBusy ? 'Triggering...' : 'Trigger Workflow'}
+            </button>
+          </div>
+          {triggerMessage ? <p className="text-xs text-gray-700">{triggerMessage}</p> : null}
+        </div>
+
         <p className="text-sm text-gray-600">
           Configure workflow test variables without editing worker env. Empty step means normal full workflow.
         </p>
