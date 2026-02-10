@@ -120,6 +120,7 @@ const editableAiPatchSchema = z.object({
 const ttsSchema = z.object({
   provider: z.enum(['edge', 'minimax', 'murf', 'gemini']),
   language: z.string().min(1),
+  languageBoost: z.enum(['auto', 'Chinese', 'English']).optional(),
   model: z.string().optional(),
   voices: z.record(z.string(), z.string()),
   speed: z.union([z.string(), z.number()]).optional(),
@@ -138,7 +139,9 @@ const ttsSchema = z.object({
 const editableTtsPatchSchema = z.object({
   provider: z.enum(['edge', 'minimax', 'murf', 'gemini']).optional(),
   language: z.string().min(1).optional(),
+  languageBoost: z.enum(['auto', 'Chinese', 'English']).optional(),
   model: z.string().optional(),
+  speed: z.union([z.string(), z.number()]).optional(),
   voices: z.record(z.string(), z.string()).optional(),
   geminiPrompt: z.string().optional(),
   introMusic: z.object({

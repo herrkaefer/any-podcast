@@ -124,8 +124,28 @@ function normalizeTestConfig(value: unknown): RuntimeConfigBundle['test'] {
   }
 }
 
+function normalizeMinimaxLanguageBoost(
+  boost: RuntimeConfigBundle['tts']['languageBoost'],
+  language: string | undefined,
+): NonNullable<RuntimeConfigBundle['tts']['languageBoost']> {
+  if (boost === 'auto' || boost === 'Chinese' || boost === 'English') {
+    return boost
+  }
+  const normalizedLanguage = (language || '').toLowerCase()
+  if (normalizedLanguage === 'auto') {
+    return 'auto'
+  }
+  if (normalizedLanguage.startsWith('en')) {
+    return 'English'
+  }
+  return 'Chinese'
+}
+
 function normalizeTtsConfig(config: RuntimeConfigBundle): RuntimeConfigBundle {
   const hosts = config.hosts.length > 0 ? config.hosts : getDefaultHosts()
+  const provider = config.tts.provider || 'gemini'
+  const defaultGeminiModel = 'gemini-2.5-flash-preview-tts'
+  const defaultGeminiPrompt = '请用中文播报以下播客对话，语气自然、节奏流畅、音量稳定。'
   const currentVoices = config.tts.voices || {}
   const hostVoiceDefaults = hosts.map((host, index) => ({
     hostId: host.id,
@@ -142,11 +162,16 @@ function normalizeTtsConfig(config: RuntimeConfigBundle): RuntimeConfigBundle {
     hosts,
     tts: {
       ...config.tts,
-      provider: config.tts.provider || 'gemini',
+      provider,
       language: config.tts.language || 'zh-CN',
-      model: config.tts.model || 'gemini-2.5-flash-preview-tts',
+      languageBoost: provider === 'minimax'
+        ? normalizeMinimaxLanguageBoost(config.tts.languageBoost, config.tts.language)
+        : config.tts.languageBoost,
+      model: config.tts.model ?? (provider === 'gemini' ? defaultGeminiModel : config.tts.model),
       voices,
-      geminiPrompt: config.tts.geminiPrompt || '请用中文播报以下播客对话，语气自然、节奏流畅、音量稳定。',
+      geminiPrompt: provider === 'gemini'
+        ? (config.tts.geminiPrompt ?? defaultGeminiPrompt)
+        : config.tts.geminiPrompt,
       introMusic: {
         url: config.tts.introMusic.url,
         fadeOutStart: config.tts.introMusic.fadeOutStart,

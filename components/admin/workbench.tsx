@@ -16,19 +16,6 @@ interface PromptMeta {
   description: string
 }
 
-interface EpisodeListItem {
-  date: string
-  title: string
-  publishedAt?: string
-  audio?: string
-}
-
-interface EpisodeDetail extends EpisodeListItem {
-  podcastContent?: string
-  blogContent?: string
-  introContent?: string
-}
-
 const sections: EditableSection[] = ['site', 'hosts', 'ai', 'tts', 'introMusic', 'locale', 'sources', 'prompts', 'test']
 
 const sectionLabelMap: Record<EditableSection, string> = {
@@ -82,6 +69,7 @@ const promptMetaMap: Record<PromptKey, PromptMeta> = {
 const themeColorOptions: RuntimeConfigBundle['site']['themeColor'][] = ['blue', 'pink', 'purple', 'green', 'yellow', 'orange', 'red']
 const aiProviderOptions: RuntimeConfigBundle['ai']['provider'][] = ['gemini', 'openai']
 const ttsProviderOptions: RuntimeConfigBundle['tts']['provider'][] = ['edge', 'minimax', 'murf', 'gemini']
+const minimaxLanguageBoostOptions: NonNullable<RuntimeConfigBundle['tts']['languageBoost']>[] = ['auto', 'Chinese', 'English']
 const sourceTypeOptions: SourceItem['type'][] = ['rss', 'url', 'gmail']
 const workflowTestStepOptions: Array<{ value: WorkflowTestStep, label: string }> = [
   { value: '', label: '(None - run full workflow)' },
@@ -155,11 +143,6 @@ function getDefaultSource(): SourceItem {
   }
 }
 
-function getSourcePanelKey(item: SourceItem, index: number) {
-  const id = item.id?.trim()
-  return id ? `id:${id}` : `idx:${index}`
-}
-
 function getSectionPatchPayload(config: RuntimeConfigBundle, section: EditableSection): Record<string, unknown> {
   if (section === 'site')
     return { site: config.site }
@@ -180,8 +163,14 @@ function getSectionPatchPayload(config: RuntimeConfigBundle, section: EditableSe
     return { locale: config.locale }
   if (section === 'sources')
     return { sources: config.sources }
-  if (section === 'test')
-    return { test: config.test }
+  if (section === 'test') {
+    return {
+      test: config.test,
+      tts: {
+        skipTts: config.tts.skipTts,
+      },
+    }
+  }
   return { prompts: config.prompts }
 }
 
@@ -192,13 +181,10 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
   const [activePrompt, setActivePrompt] = useState<PromptKey>('summarizeStory')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
-  const [episodes, setEpisodes] = useState<EpisodeListItem[]>([])
-  const [loadingEpisodes, setLoadingEpisodes] = useState(false)
-  const [selectedEpisode, setSelectedEpisode] = useState<EpisodeDetail | null>(null)
-  const [episodeBusy, setEpisodeBusy] = useState(false)
   const [collapsedSourcePanels, setCollapsedSourcePanels] = useState<Record<string, boolean>>({})
   const [logoPreviewVersion, setLogoPreviewVersion] = useState<number | null>(null)
   const hostPanelKeysRef = useRef<string[]>(initialDraft.hosts.map(() => buildLocalId('host-panel')))
+  const sourcePanelKeysRef = useRef<string[]>(initialDraft.sources.items.map(() => buildLocalId('source-panel')))
   const promptEditorRef = useRef<HTMLTextAreaElement | null>(null)
   const logoUploadInputRef = useRef<HTMLInputElement | null>(null)
   const musicUploadInputRef = useRef<HTMLInputElement | null>(null)
@@ -211,6 +197,15 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
   }
   if (hostPanelKeysRef.current.length > workingDraft.hosts.length) {
     hostPanelKeysRef.current = hostPanelKeysRef.current.slice(0, workingDraft.hosts.length)
+  }
+  if (sourcePanelKeysRef.current.length < workingDraft.sources.items.length) {
+    const missing = workingDraft.sources.items.length - sourcePanelKeysRef.current.length
+    for (let i = 0; i < missing; i += 1) {
+      sourcePanelKeysRef.current.push(buildLocalId('source-panel'))
+    }
+  }
+  if (sourcePanelKeysRef.current.length > workingDraft.sources.items.length) {
+    sourcePanelKeysRef.current = sourcePanelKeysRef.current.slice(0, workingDraft.sources.items.length)
   }
 
   const templateVariables = useMemo(() => {
@@ -230,6 +225,14 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
   const activePromptUnknownVariables = useMemo(() => {
     return findUnknownTemplateVariables(activePromptTemplate, templateVariables)
   }, [activePromptTemplate, templateVariables])
+
+  const hasPromptChanges = useMemo(() => {
+    return JSON.stringify(workingDraft.prompts) !== JSON.stringify(serverDraft.prompts)
+  }, [workingDraft.prompts, serverDraft.prompts])
+
+  const hasActivePromptChanges = useMemo(() => {
+    return workingDraft.prompts[activePrompt] !== serverDraft.prompts[activePrompt]
+  }, [workingDraft.prompts, serverDraft.prompts, activePrompt])
 
   const extraVoiceEntries = useMemo(() => {
     const hostIds = new Set(workingDraft.hosts.map(host => host.id))
@@ -331,13 +334,23 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         return { ...prev, sources: serverDraft.sources }
       }
       if (section === 'test') {
-        return { ...prev, test: serverDraft.test }
+        return {
+          ...prev,
+          test: serverDraft.test,
+          tts: {
+            ...prev.tts,
+            skipTts: serverDraft.tts.skipTts,
+          },
+        }
       }
       return { ...prev, prompts: serverDraft.prompts }
     })
   }
 
   function resetActivePrompt() {
+    if (!hasActivePromptChanges) {
+      return
+    }
     if (!confirmAction('Reset unsaved changes in the current prompt?')) {
       return
     }
@@ -345,6 +358,9 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
   }
 
   function resetAllPrompts() {
+    if (!hasPromptChanges) {
+      return
+    }
     if (!confirmAction('Reset unsaved changes in all prompts?')) {
       return
     }
@@ -415,119 +431,6 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
     const separator = base.includes('?') ? '&' : '?'
     return `${base}${separator}v=${logoPreviewVersion}`
   }, [workingDraft.site.coverLogoUrl, logoPreviewVersion])
-
-  async function loadEpisodes() {
-    setLoadingEpisodes(true)
-    setMessage('')
-    try {
-      const response = await fetch('/api/admin/episodes?limit=30')
-      const body = (await response.json()) as { items?: EpisodeListItem[], error?: string }
-      if (!response.ok || !body.items) {
-        throw new Error(body.error || 'Failed to load episodes')
-      }
-      setEpisodes(body.items)
-    }
-    catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to load episodes')
-    }
-    finally {
-      setLoadingEpisodes(false)
-    }
-  }
-
-  async function openEpisodeEditor(date: string) {
-    setEpisodeBusy(true)
-    setMessage('')
-    try {
-      const response = await fetch(`/api/admin/episodes/${date}`)
-      const body = (await response.json()) as { item?: EpisodeDetail, error?: string }
-      if (!response.ok || !body.item) {
-        throw new Error(body.error || 'Failed to load episode details')
-      }
-      setSelectedEpisode(body.item)
-    }
-    catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to load episode details')
-    }
-    finally {
-      setEpisodeBusy(false)
-    }
-  }
-
-  async function saveEpisode() {
-    if (!selectedEpisode) {
-      return
-    }
-
-    setEpisodeBusy(true)
-    setMessage('')
-    try {
-      const payload: Record<string, string> = {
-        title: selectedEpisode.title.trim(),
-        audio: (selectedEpisode.audio || '').trim(),
-      }
-      const publishedAt = (selectedEpisode.publishedAt || '').trim()
-      if (publishedAt) {
-        payload.publishedAt = publishedAt
-      }
-
-      const response = await fetch(`/api/admin/episodes/${selectedEpisode.date}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      const body = (await response.json()) as { ok?: boolean, item?: EpisodeDetail, error?: string }
-      if (!response.ok || !body.ok || !body.item) {
-        throw new Error(body.error || 'Failed to save episode')
-      }
-      const nextItem = body.item
-
-      setSelectedEpisode(nextItem)
-      setEpisodes(prev => prev.map(item => item.date === nextItem.date
-        ? {
-            date: nextItem.date,
-            title: nextItem.title,
-            publishedAt: nextItem.publishedAt,
-            audio: nextItem.audio,
-          }
-        : item))
-      setMessage(`Updated ${nextItem.date}`)
-    }
-    catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to save episode')
-    }
-    finally {
-      setEpisodeBusy(false)
-    }
-  }
-
-  async function deleteEpisode(date: string) {
-    if (!confirmAction(`Delete episode ${date}? This action cannot be undone and the audio file will also be deleted.`)) {
-      return
-    }
-    setBusy(true)
-    setMessage('')
-    try {
-      const response = await fetch(`/api/admin/episodes/${date}`, {
-        method: 'DELETE',
-      })
-      const body = (await response.json()) as { ok?: boolean, error?: string }
-      if (!response.ok || !body.ok) {
-        throw new Error(body.error || 'Delete failed')
-      }
-      setEpisodes(prev => prev.filter(item => item.date !== date))
-      if (selectedEpisode?.date === date) {
-        setSelectedEpisode(null)
-      }
-      setMessage(`Deleted ${date}`)
-    }
-    catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Delete failed')
-    }
-    finally {
-      setBusy(false)
-    }
-  }
 
   function renderSiteSection() {
     const site = workingDraft.site
@@ -1393,6 +1296,16 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
 
   function renderTtsSection() {
     const tts = workingDraft.tts
+    const provider = tts.provider
+    const isGemini = provider === 'gemini'
+    const isMinimax = provider === 'minimax'
+    const isEdge = provider === 'edge'
+    const isMurf = provider === 'murf'
+    const showLanguage = isEdge || isMurf
+    const showLanguageBoost = isMinimax
+    const showModel = isGemini || isMinimax || isMurf
+    const showSpeed = isEdge || isMinimax || isMurf
+    const showApiUrl = isMinimax || isMurf
     return (
       <div className="space-y-4">
         <div className={`
@@ -1419,120 +1332,127 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
             </select>
           </label>
 
-          <label className="text-sm">
-            language
-            <input
-              className="mt-1 w-full rounded border px-3 py-2"
-              value={tts.language}
-              onChange={event => setWorkingDraft(prev => ({
-                ...prev,
-                tts: {
-                  ...prev.tts,
-                  language: event.target.value,
-                },
-              }))}
-            />
-          </label>
+          {showLanguageBoost
+            ? (
+                <label className="text-sm">
+                  language_boost
+                  <select
+                    className="mt-1 w-full rounded border px-3 py-2"
+                    value={tts.languageBoost || 'Chinese'}
+                    onChange={event => setWorkingDraft(prev => ({
+                      ...prev,
+                      tts: {
+                        ...prev.tts,
+                        languageBoost: event.target.value as NonNullable<RuntimeConfigBundle['tts']['languageBoost']>,
+                      },
+                    }))}
+                  >
+                    {minimaxLanguageBoostOptions.map(option => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
+                </label>
+              )
+            : null}
 
-          <label className="text-sm">
-            model
-            <input
-              className="mt-1 w-full rounded border px-3 py-2"
-              value={tts.model || ''}
-              onChange={event => setWorkingDraft(prev => ({
-                ...prev,
-                tts: {
-                  ...prev.tts,
-                  model: event.target.value,
-                },
-              }))}
-            />
-          </label>
+          {showLanguage
+            ? (
+                <label className="text-sm">
+                  language
+                  <input
+                    className="mt-1 w-full rounded border px-3 py-2"
+                    value={tts.language}
+                    onChange={event => setWorkingDraft(prev => ({
+                      ...prev,
+                      tts: {
+                        ...prev.tts,
+                        language: event.target.value,
+                      },
+                    }))}
+                  />
+                </label>
+              )
+            : null}
 
-          <label className="text-sm">
-            speed
-            <input
-              className="mt-1 w-full rounded border px-3 py-2"
-              value={tts.speed === undefined ? '' : String(tts.speed)}
-              onChange={event => setWorkingDraft(prev => ({
-                ...prev,
-                tts: {
-                  ...prev.tts,
-                  speed: event.target.value,
-                },
-              }))}
-            />
-          </label>
+          {showModel
+            ? (
+                <label className="text-sm">
+                  model
+                  <input
+                    className="mt-1 w-full rounded border px-3 py-2"
+                    value={tts.model || ''}
+                    onChange={event => setWorkingDraft(prev => ({
+                      ...prev,
+                      tts: {
+                        ...prev.tts,
+                        model: event.target.value,
+                      },
+                    }))}
+                  />
+                </label>
+              )
+            : null}
 
-          <label className="text-sm">
-            apiUrl
-            <input
-              className="mt-1 w-full rounded border px-3 py-2"
-              value={tts.apiUrl || ''}
-              onChange={event => setWorkingDraft(prev => ({
-                ...prev,
-                tts: {
-                  ...prev.tts,
-                  apiUrl: event.target.value,
-                },
-              }))}
-            />
-          </label>
+          {showSpeed
+            ? (
+                <label className="text-sm">
+                  speed
+                  <input
+                    className="mt-1 w-full rounded border px-3 py-2"
+                    value={tts.speed === undefined ? '' : String(tts.speed)}
+                    onChange={event => setWorkingDraft(prev => ({
+                      ...prev,
+                      tts: {
+                        ...prev.tts,
+                        speed: event.target.value,
+                      },
+                    }))}
+                  />
+                </label>
+              )
+            : null}
 
-          <label className="text-sm">
-            audioQuality
-            <input
-              type="number"
-              min={0}
-              className="mt-1 w-full rounded border px-3 py-2"
-              value={tts.audioQuality ?? ''}
-              onChange={event => setWorkingDraft(prev => ({
-                ...prev,
-                tts: {
-                  ...prev.tts,
-                  audioQuality: parseOptionalNumber(event.target.value),
-                },
-              }))}
-            />
-          </label>
+          {showApiUrl
+            ? (
+                <label className="text-sm">
+                  apiUrl
+                  <input
+                    className="mt-1 w-full rounded border px-3 py-2"
+                    value={tts.apiUrl || ''}
+                    onChange={event => setWorkingDraft(prev => ({
+                      ...prev,
+                      tts: {
+                        ...prev.tts,
+                        apiUrl: event.target.value,
+                      },
+                    }))}
+                  />
+                </label>
+              )
+            : null}
 
-          <label className={`
-            flex items-center gap-2 text-sm
-            md:col-span-2
-          `}
-          >
-            <input
-              type="checkbox"
-              checked={tts.skipTts === true}
-              onChange={event => setWorkingDraft(prev => ({
-                ...prev,
-                tts: {
-                  ...prev.tts,
-                  skipTts: event.target.checked,
-                },
-              }))}
-            />
-            <span>skipTts</span>
-          </label>
-
-          <label className={`
-            text-sm
-            md:col-span-2
-          `}
-          >
-            geminiPrompt
-            <textarea
-              className="mt-1 min-h-24 w-full rounded border px-3 py-2"
-              value={tts.geminiPrompt || ''}
-              onChange={event => setWorkingDraft(prev => ({
-                ...prev,
-                tts: {
-                  ...prev.tts,
-                  geminiPrompt: event.target.value,
-                },
-              }))}
-            />
-          </label>
+          {isGemini
+            ? (
+                <label className={`
+                  text-sm
+                  md:col-span-2
+                `}
+                >
+                  geminiPrompt
+                  <textarea
+                    className="mt-1 min-h-24 w-full rounded border px-3 py-2"
+                    value={tts.geminiPrompt || ''}
+                    onChange={event => setWorkingDraft(prev => ({
+                      ...prev,
+                      tts: {
+                        ...prev.tts,
+                        geminiPrompt: event.target.value,
+                      },
+                    }))}
+                  />
+                </label>
+              )
+            : null}
         </div>
 
         <div className="space-y-3 rounded border p-3">
@@ -1894,7 +1814,8 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
               className="rounded border px-2 py-1 text-xs"
               onClick={() => {
                 const nextSource = getDefaultSource()
-                const panelKey = getSourcePanelKey(nextSource, sources.items.length)
+                const panelKey = buildLocalId('source-panel')
+                sourcePanelKeysRef.current = [...sourcePanelKeysRef.current, panelKey]
                 setCollapsedSourcePanels(prev => ({
                   ...prev,
                   [panelKey]: true,
@@ -1913,7 +1834,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
           </div>
 
           {sources.items.map((item, index) => {
-            const panelKey = getSourcePanelKey(item, index)
+            const panelKey = sourcePanelKeysRef.current[index] || `source-panel-fallback-${index}`
             const isCollapsed = collapsedSourcePanels[panelKey] ?? true
             const sourceName = item.name.trim() || `Source ${index + 1}`
 
@@ -1952,6 +1873,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                                 delete next[panelKey]
                                 return next
                               })
+                              sourcePanelKeysRef.current = sourcePanelKeysRef.current.filter((_, itemIndex) => itemIndex !== index)
                               setWorkingDraft(prev => ({
                                 ...prev,
                                 sources: {
@@ -2417,11 +2339,27 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
 
   function renderTestSection() {
     const test = workingDraft.test
+    const skipTts = workingDraft.tts.skipTts === true
     return (
       <div className="space-y-4">
         <p className="text-sm text-gray-600">
           Configure workflow test variables without editing worker env. Empty step means normal full workflow.
         </p>
+
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={skipTts}
+            onChange={event => setWorkingDraft(prev => ({
+              ...prev,
+              tts: {
+                ...prev.tts,
+                skipTts: event.target.checked,
+              },
+            }))}
+          />
+          <span>skipTts</span>
+        </label>
 
         <div className={`
           grid gap-4
@@ -2593,118 +2531,6 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         {section === 'prompts' && renderPromptsSection()}
         {section === 'test' && renderTestSection()}
       </div>
-
-      <div className="space-y-2 border-t pt-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Episode Management</h3>
-          <button
-            type="button"
-            className="rounded border px-3 py-1.5 text-sm"
-            onClick={loadEpisodes}
-            disabled={loadingEpisodes || busy}
-          >
-            {loadingEpisodes ? 'Loading...' : 'Refresh episode list'}
-          </button>
-        </div>
-        <ul className="space-y-2">
-          {episodes.map(item => (
-            <li
-              key={item.date}
-              className={`
-                flex items-center justify-between gap-2 rounded border px-3 py-2
-                text-sm
-              `}
-            >
-              <div className="min-w-0">
-                <p className="truncate font-medium">{item.title}</p>
-                <p className="text-xs text-gray-500">{item.date}</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className="rounded border px-2 py-1 text-xs"
-                  onClick={() => openEpisodeEditor(item.date)}
-                  disabled={busy || episodeBusy}
-                >
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  className="rounded border px-2 py-1 text-xs text-red-700"
-                  onClick={() => deleteEpisode(item.date)}
-                  disabled={busy || episodeBusy}
-                >
-                  Delete
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      {selectedEpisode
-        ? (
-            <div className="space-y-3 border-t pt-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold">
-                  Edit episode
-                  {' '}
-                  {selectedEpisode.date}
-                </h3>
-                <button
-                  type="button"
-                  className="rounded border px-2 py-1 text-xs"
-                  onClick={() => setSelectedEpisode(null)}
-                  disabled={episodeBusy}
-                >
-                  Close
-                </button>
-              </div>
-
-              <label className="block text-sm">
-                Title
-                <input
-                  className="mt-1 w-full rounded border px-3 py-2"
-                  value={selectedEpisode.title}
-                  onChange={event => setSelectedEpisode(prev => (prev
-                    ? { ...prev, title: event.target.value }
-                    : prev))}
-                />
-              </label>
-
-              <label className="block text-sm">
-                Publish time (ISO)
-                <input
-                  className="mt-1 w-full rounded border px-3 py-2"
-                  value={selectedEpisode.publishedAt || ''}
-                  onChange={event => setSelectedEpisode(prev => (prev
-                    ? { ...prev, publishedAt: event.target.value }
-                    : prev))}
-                />
-              </label>
-
-              <label className="block text-sm">
-                Audio key
-                <input
-                  className="mt-1 w-full rounded border px-3 py-2"
-                  value={selectedEpisode.audio || ''}
-                  onChange={event => setSelectedEpisode(prev => (prev
-                    ? { ...prev, audio: event.target.value }
-                    : prev))}
-                />
-              </label>
-
-              <button
-                type="button"
-                className="rounded bg-black px-3 py-1.5 text-sm text-white"
-                onClick={saveEpisode}
-                disabled={episodeBusy}
-              >
-                {episodeBusy ? 'Saving...' : 'Save episode changes'}
-              </button>
-            </div>
-          )
-        : null}
 
       {message ? <p className="text-sm">{message}</p> : null}
     </section>

@@ -17,6 +17,7 @@ export interface GeminiSpeakerConfig {
 export interface RuntimeTtsOptions {
   provider?: 'edge' | 'minimax' | 'murf' | 'gemini'
   language?: string
+  languageBoost?: 'auto' | 'Chinese' | 'English'
   model?: string
   speed?: string | number
   apiUrl?: string
@@ -104,7 +105,7 @@ async function minimaxTTS(text: string, speaker: string, env: Env, options?: Run
         bitrate: 128000,
         format: 'mp3',
       },
-      language_boost: 'Chinese',
+      language_boost: options?.languageBoost || 'Chinese',
     }),
   })
 

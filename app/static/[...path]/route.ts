@@ -2,6 +2,8 @@ import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { NextResponse } from 'next/server'
 
 const CACHE_TTL = 60 * 60 * 24 * 30 // 30 days
+const DEFAULT_THEME_MUSIC_PATH = 'theme.mp3'
+const DEFAULT_THEME_PUBLIC_PATH = '/theme.mp3'
 
 /**
  * Redirect legacy .wav URLs to .mp3 equivalents.
@@ -81,6 +83,10 @@ function buildStaticHeaders(file: R2ObjectBody, objectPath: string) {
   return { headers, status: 200 }
 }
 
+function isDefaultThemeMusicPath(objectPath: string) {
+  return objectPath.replace(/^\/+/, '') === DEFAULT_THEME_MUSIC_PATH
+}
+
 async function fetchFromR2(request: Request, objectPath: string) {
   const { env } = await getCloudflareContext({ async: true })
   const rangeHeader = request.headers.get('range') || request.headers.get('Range')
@@ -115,6 +121,10 @@ async function fetchFromR2(request: Request, objectPath: string) {
     }
   }
   if (!file) {
+    if (isDefaultThemeMusicPath(objectPath)) {
+      const fallbackUrl = new URL(DEFAULT_THEME_PUBLIC_PATH, request.url)
+      return NextResponse.redirect(fallbackUrl, 307)
+    }
     return new Response('Not Found', { status: 404 })
   }
 
@@ -176,6 +186,10 @@ export async function HEAD(request: Request, { params }: { params: Promise<{ pat
   const { env } = await getCloudflareContext({ async: true })
   const file = await env.PODCAST_R2.head(objectPath)
   if (!file) {
+    if (isDefaultThemeMusicPath(objectPath)) {
+      const fallbackUrl = new URL(DEFAULT_THEME_PUBLIC_PATH, request.url)
+      return NextResponse.redirect(fallbackUrl, 307)
+    }
     return new Response('Not Found', { status: 404 })
   }
   const headers = new Headers()

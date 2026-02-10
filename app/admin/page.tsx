@@ -2,6 +2,7 @@ import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { AdminConfigConsole } from '@/components/admin/config-console'
+import { EpisodeManagement } from '@/components/admin/episode-management'
 import { AdminWorkbench } from '@/components/admin/workbench'
 import { ADMIN_SESSION_COOKIE, readAdminSession } from '@/lib/admin-auth'
 import { getDraftRuntimeConfig } from '@/lib/runtime-config'
@@ -34,7 +35,9 @@ export default async function AdminHomePage() {
       </section>
 
       <AdminConfigConsole />
+
       <AdminWorkbench initialDraft={draft} />
+      <EpisodeManagement />
 
       <section className="rounded-lg border p-4">
         <h2 className="text-lg font-semibold">Current Draft (Read-only Preview)</h2>

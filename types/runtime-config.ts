@@ -75,6 +75,7 @@ export interface RuntimeAiConfig {
 export interface RuntimeTtsConfig {
   provider: 'edge' | 'minimax' | 'murf' | 'gemini'
   language: string
+  languageBoost?: 'auto' | 'Chinese' | 'English'
   model?: string
   voices: Record<string, string>
   speed?: string | number

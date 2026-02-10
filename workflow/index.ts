@@ -63,6 +63,7 @@ interface ParsedConversationLine {
 interface RuntimeTtsSettings {
   provider: 'edge' | 'minimax' | 'murf' | 'gemini'
   language: string
+  languageBoost?: 'auto' | 'Chinese' | 'English'
   model?: string
   speed?: string | number
   apiUrl?: string
@@ -198,6 +199,7 @@ function buildRuntimeTtsSettings(config: RuntimeConfigBundle): RuntimeTtsSetting
   return {
     provider,
     language: config.tts.language || 'zh-CN',
+    languageBoost: config.tts.languageBoost,
     model: config.tts.model || undefined,
     speed: config.tts.speed,
     apiUrl: config.tts.apiUrl,
@@ -339,6 +341,8 @@ const retryConfig: WorkflowStepConfig = {
   timeout: '3 minutes',
 }
 
+const DEFAULT_FFMPEG_AUDIO_QUALITY = 5
+
 function withRetryLimit(limit: number) {
   const delay = retryConfig.retries?.delay || '10 seconds'
   const backoff = retryConfig.retries?.backoff || 'exponential'
@@ -366,7 +370,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
     const introThemeUrl = runtimeConfig.tts.introMusic.url
       ? new URL(runtimeConfig.tts.introMusic.url, this.env.PODCAST_WORKER_URL).toString()
       : undefined
-    const ffmpegAudioQuality = runtimeConfig.tts.audioQuality
+    const ffmpegAudioQuality = DEFAULT_FFMPEG_AUDIO_QUALITY
     const breakTime = isDev ? '2 seconds' : '5 seconds'
     const payloadNow = event.payload?.nowIso ? new Date(event.payload.nowIso) : null
     const now = payloadNow && !Number.isNaN(payloadNow.getTime())
@@ -485,6 +489,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             const audio = await synthesize(conversation.text, conversation.speaker, this.env, {
               provider: runtimeTtsSettings.provider,
               language: runtimeTtsSettings.language,
+              languageBoost: runtimeTtsSettings.languageBoost,
               model: runtimeTtsSettings.model,
               speed: runtimeTtsSettings.speed,
               apiUrl: runtimeTtsSettings.apiUrl,
@@ -551,6 +556,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
               const audio = await synthesize(conversation.text, conversation.speaker, this.env, {
                 provider: runtimeTtsSettings.provider,
                 language: runtimeTtsSettings.language,
+                languageBoost: runtimeTtsSettings.languageBoost,
                 model: runtimeTtsSettings.model,
                 speed: runtimeTtsSettings.speed,
                 apiUrl: runtimeTtsSettings.apiUrl,
@@ -1258,6 +1264,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
                 const audio = await synthesize(conversation.text, conversation.speaker, this.env, {
                   provider: runtimeTtsSettings.provider,
                   language: runtimeTtsSettings.language,
+                  languageBoost: runtimeTtsSettings.languageBoost,
                   model: runtimeTtsSettings.model,
                   speed: runtimeTtsSettings.speed,
                   apiUrl: runtimeTtsSettings.apiUrl,
