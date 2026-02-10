@@ -370,18 +370,22 @@ export async function getDraftRuntimeConfig(env: RuntimeConfigEnv, podcastIdInpu
     return normalizeTtsConfig(draft)
   }
   const defaultConfig = await buildDefaultRuntimeConfig()
-  const fallback = runtimeConfigBundleSchema.parse({
+  const configForChecksum = {
     ...defaultConfig,
     meta: {
       ...defaultConfig.meta,
       podcastId: resolvedPodcastId,
       checksum: '',
     },
+  }
+  const checksum = await sha256(stableJsonStringify(configForChecksum))
+  const fallback = runtimeConfigBundleSchema.parse({
+    ...configForChecksum,
+    meta: {
+      ...configForChecksum.meta,
+      checksum,
+    },
   })
-  fallback.meta.checksum = await sha256(stableJsonStringify({
-    ...fallback,
-    meta: { ...fallback.meta, checksum: '' },
-  }))
   await writeBundle(env, keys.draft, fallback)
   return fallback
 }
