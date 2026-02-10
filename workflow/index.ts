@@ -343,6 +343,11 @@ const retryConfig: WorkflowStepConfig = {
 
 const DEFAULT_FFMPEG_AUDIO_QUALITY = 5
 const BLOCKED_STORY_HOSTNAMES = new Set(['doi.org', 'dx.doi.org'])
+const NON_GEMINI_TTS_LINES_PER_CHUNK = 2
+const NON_GEMINI_TTS_CHUNK_SLEEP = '12 seconds'
+const NON_GEMINI_TTS_SUBREQUEST_BACKOFF_SLEEP = '20 seconds'
+const NON_GEMINI_TTS_RETRY_SLEEP = '5 seconds'
+const NON_GEMINI_TTS_MAX_ATTEMPTS = 2
 
 function withRetryLimit(limit: number) {
   const delay = retryConfig.retries?.delay || '10 seconds'
@@ -1197,6 +1202,8 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
       preview: ttsSourceText.slice(0, 200),
     })
 
+    const nonGeminiAudioFiles: string[] = []
+
     if (skipTTS) {
       console.info('skip TTS enabled, skip audio generation')
     }
@@ -1323,12 +1330,14 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
     }
     else {
       for (const [index, conversation] of parsedConversations.entries()) {
-        try {
-          await step.do(`create audio ${index}: ${conversation.text.substring(0, 20)}...`, { ...retryConfig, retries: withRetryLimit(0), timeout: '30 minutes' }, async () => {
-            const retryLimit = 1
-            const startedAt = Date.now()
-            for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
-              try {
+        let audioUrl = ''
+        for (let attempt = 1; attempt <= NON_GEMINI_TTS_MAX_ATTEMPTS; attempt += 1) {
+          try {
+            audioUrl = await step.do(
+              `create audio ${index} attempt ${attempt}: ${conversation.text.substring(0, 20)}...`,
+              { ...retryConfig, retries: withRetryLimit(0), timeout: '30 minutes' },
+              async () => {
+                const startedAt = Date.now()
                 console.info('create conversation audio', conversation.raw)
                 const audio = await synthesize(conversation.text, conversation.speaker, this.env, {
                   provider: runtimeTtsSettings.provider,
@@ -1345,7 +1354,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
                 }
 
                 const audioKey = `tmp/${podcastKey}-${index}.mp3`
-                const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${audioKey}?t=${Date.now()}`
+                const nextAudioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${audioKey}?t=${Date.now()}`
 
                 try {
                   await this.env.PODCAST_R2.put(audioKey, audio)
@@ -1358,71 +1367,60 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
                   })
                   throw error
                 }
-
-                try {
-                  await this.env.PODCAST_KV.put(`tmp:${event.instanceId}:audio:${index}`, audioUrl, { expirationTtl: 3600 })
-                }
-                catch (error) {
-                  console.error('TTS write to KV failed', {
-                    index,
-                    key: `tmp:${event.instanceId}:audio:${index}`,
-                    error: formatError(error),
-                  })
-                  throw error
-                }
                 if (isDev) {
                   console.info('TTS line duration', { index, ms: Date.now() - startedAt })
                 }
-                return audioUrl
-              }
-              catch (error) {
-                console.warn('TTS attempt failed', {
-                  index,
-                  attempt: attempt + 1,
-                  error: formatError(error),
-                })
-                if (attempt >= retryLimit) {
-                  throw error
-                }
-              }
+                return nextAudioUrl
+              },
+            )
+            break
+          }
+          catch (error) {
+            const subrequestLimited = isSubrequestLimitError(error)
+            console.warn('TTS line attempt failed', {
+              index,
+              attempt,
+              subrequestLimited,
+              error: formatError(error),
+            })
+            if (attempt >= NON_GEMINI_TTS_MAX_ATTEMPTS) {
+              console.error('TTS line failed', {
+                index,
+                conversation: conversation.raw,
+                error: formatError(error),
+              })
+              throw error
             }
-
-            throw new Error('TTS failed after retries')
-          })
+            await step.sleep(
+              subrequestLimited
+                ? `yield subrequest budget before retry audio ${index}`
+                : `wait before retry audio ${index}`,
+              subrequestLimited
+                ? NON_GEMINI_TTS_SUBREQUEST_BACKOFF_SLEEP
+                : NON_GEMINI_TTS_RETRY_SLEEP,
+            )
+          }
         }
-        catch (error) {
-          console.error('TTS line failed', {
-            index,
-            conversation: conversation.raw,
-            error: formatError(error),
-          })
-          throw error
+
+        if (!audioUrl) {
+          throw new Error(`TTS line ${index} failed without output URL`)
+        }
+
+        nonGeminiAudioFiles.push(audioUrl)
+        const hasMoreLines = index < parsedConversations.length - 1
+        const isChunkBoundary = (index + 1) % NON_GEMINI_TTS_LINES_PER_CHUNK === 0
+        if (hasMoreLines && isChunkBoundary) {
+          await step.sleep(
+            `yield between TTS chunks after line ${index}`,
+            NON_GEMINI_TTS_CHUNK_SLEEP,
+          )
         }
       }
     }
 
     const audioFiles = skipTTS || useGeminiTTS
       ? []
-      : await step.do('collect all audio files', retryConfig, async () => {
-          const audioUrls: string[] = []
-          for (const [index] of parsedConversations.entries()) {
-            try {
-              const audioUrl = await this.env.PODCAST_KV.get(`tmp:${event.instanceId}:audio:${index}`)
-              if (audioUrl) {
-                audioUrls.push(audioUrl)
-              }
-            }
-            catch (error) {
-              console.error('collect TTS audio url failed', {
-                index,
-                key: `tmp:${event.instanceId}:audio:${index}`,
-                error: formatError(error),
-              })
-              throw error
-            }
-          }
-          return audioUrls
-        })
+      : nonGeminiAudioFiles
 
     if (!skipTTS && !useGeminiTTS) {
       await step.do('concat audio files', retryConfig, async () => {
@@ -1555,10 +1553,6 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
       }
       else if (!skipTTS && !useGeminiTTS) {
         // Clean up non-Gemini audio temporary data
-        for (const [index] of parsedConversations.entries()) {
-          const audioKey = `tmp:${event.instanceId}:audio:${index}`
-          deletePromises.push(this.env.PODCAST_KV.delete(audioKey))
-        }
         for (const index of audioFiles.keys()) {
           deletePromises.push(
             this.env.PODCAST_R2.delete(`tmp/${podcastKey}-${index}.mp3`).catch((error) => {
