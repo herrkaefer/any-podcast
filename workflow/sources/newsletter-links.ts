@@ -37,6 +37,26 @@ export const trackingHostnames = [
   'links',
 ]
 
+const blockedLinkHostnames = new Set([
+  'doi.org',
+  'dx.doi.org',
+])
+
+function isBlockedLinkHostname(hostname: string) {
+  if (!hostname) {
+    return false
+  }
+  if (blockedLinkHostnames.has(hostname)) {
+    return true
+  }
+  for (const blocked of blockedLinkHostnames) {
+    if (hostname.endsWith(`.${blocked}`)) {
+      return true
+    }
+  }
+  return false
+}
+
 export function normalizeText(text: string) {
   return text.replace(/\s+/g, ' ').trim()
 }
@@ -283,6 +303,7 @@ export async function extractNewsletterLinksWithAi(params: {
   const resolveTrackingLinks = rules?.resolveTrackingLinks !== false
   let resolvedCount = 0
   let failedResolveCount = 0
+  let blockedDomainCount = 0
 
   const normalizedCandidates: Array<NewsletterLinkCandidate | null> = await Promise.all(rawCandidates.map(async (candidate) => {
     const normalizedLink = normalizeUrl(candidate.link)
@@ -322,7 +343,12 @@ export async function extractNewsletterLinksWithAi(params: {
       return false
     }
     try {
-      return Boolean(new URL(candidate.link))
+      const hostname = new URL(candidate.link).hostname.toLowerCase()
+      if (isBlockedLinkHostname(hostname)) {
+        blockedDomainCount += 1
+        return false
+      }
+      return true
     }
     catch {
       return false
@@ -348,6 +374,7 @@ export async function extractNewsletterLinksWithAi(params: {
       rawCount: rawCandidates.length,
       trackingResolved: resolvedCount,
       trackingResolveFailed: failedResolveCount,
+      blockedDomains: blockedDomainCount,
       afterFilter: filtered.length,
       afterDedup: deduped.size,
       finalCount: results.length,

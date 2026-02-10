@@ -342,6 +342,7 @@ const retryConfig: WorkflowStepConfig = {
 }
 
 const DEFAULT_FFMPEG_AUDIO_QUALITY = 5
+const BLOCKED_STORY_HOSTNAMES = new Set(['doi.org', 'dx.doi.org'])
 
 function withRetryLimit(limit: number) {
   const delay = retryConfig.retries?.delay || '10 seconds'
@@ -350,6 +351,19 @@ function withRetryLimit(limit: number) {
     limit,
     delay,
     backoff,
+  }
+}
+
+function isBlockedStoryUrl(url: string | undefined) {
+  if (!url) {
+    return false
+  }
+  try {
+    const hostname = new URL(url).hostname.toLowerCase()
+    return BLOCKED_STORY_HOSTNAMES.has(hostname)
+  }
+  catch {
+    return false
   }
 }
 
@@ -818,24 +832,41 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
       }
     }
 
-    if (!stories.length) {
+    const blockedStories = stories.filter(story => isBlockedStoryUrl(story.url))
+    const candidateStories = stories.filter(story => !isBlockedStoryUrl(story.url))
+
+    if (blockedStories.length > 0) {
+      console.warn('blocked story urls skipped', {
+        count: blockedStories.length,
+        hosts: Array.from(new Set(blockedStories.map((story) => {
+          try {
+            return new URL(story.url || '').hostname.toLowerCase()
+          }
+          catch {
+            return ''
+          }
+        }).filter(Boolean))),
+      })
+    }
+
+    if (!candidateStories.length) {
       console.info('no stories found after filtering, exit workflow run')
       return
     }
 
-    console.info('top stories', isDev ? stories : JSON.stringify(stories))
-    console.info(`total stories: ${stories.length}`)
+    console.info('top stories', isDev ? candidateStories : JSON.stringify(candidateStories))
+    console.info(`total stories: ${candidateStories.length}`)
 
     if (testStep === 'stories') {
       console.info('workflow test step "stories" completed, stopping before summarization', {
-        totalStories: stories.length,
-        stories: stories.map(s => ({ id: s.id, title: s.title, url: s.url, sourceName: s.sourceName })),
+        totalStories: candidateStories.length,
+        stories: candidateStories.map(s => ({ id: s.id, title: s.title, url: s.url, sourceName: s.sourceName })),
       })
       return
     }
 
     const storyGroups = new Map<string, { count: number, label: string }>()
-    for (const story of stories) {
+    for (const story of candidateStories) {
       const sourceLabel = story.sourceItemTitle || story.sourceName || story.sourceUrl || 'unknown'
       const groupKey = story.sourceItemId || sourceLabel
       const existing = storyGroups.get(groupKey)
@@ -853,10 +884,29 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
 
     const keptStories: Story[] = []
     const allStories: string[] = []
-    for (const story of stories) {
-      const storyResponse = await step.do(`get story ${story.id}: ${story.title}`, retryConfig, async () => {
-        return await getStoryContent(story, maxTokens, this.env)
-      })
+    for (const story of candidateStories) {
+      let storyResponse = ''
+      try {
+        storyResponse = await step.do(`get story ${story.id}: ${story.title}`, retryConfig, async () => {
+          return await getStoryContent(story, maxTokens, this.env)
+        })
+      }
+      catch (error) {
+        console.warn(`get story ${story.id} content failed, skip story`, {
+          title: story.title,
+          error: formatError(error),
+        })
+        await step.sleep('Give AI a break', breakTime)
+        continue
+      }
+
+      if (!storyResponse.trim()) {
+        console.warn(`get story ${story.id} content empty, skip`, {
+          title: story.title,
+        })
+        await step.sleep('Give AI a break', breakTime)
+        continue
+      }
 
       console.info(`get story ${story.id} content success`, {
         title: story.title,
@@ -892,8 +942,6 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         })
       }
       catch (error) {
-        if (isSubrequestLimitError(error))
-          throw error
         console.warn(`get story ${story.id} summary failed after retries`, {
           title: story.title,
           error: formatError(error),
