@@ -102,7 +102,7 @@ export function EpisodeItem({ episode }: EpisodeItemProps) {
             href={linkHref}
             className={cn(
               `
-                line-clamp-2 cursor-pointer leading-relaxed text-foreground/80
+                line-clamp-3 cursor-pointer leading-relaxed text-foreground/80
                 transition-colors
                 hover:text-theme
               `,

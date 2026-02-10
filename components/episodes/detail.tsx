@@ -110,6 +110,7 @@ function EpisodeDetailContent({ episode, markdownComponents, initialPage }: Epis
   const { t, i18n } = useTranslation()
   const publishedDate = new Date(episode.published)
   const isoPublishedDate = publishedDate.toISOString()
+  const summary = (episode.summary || '').trim()
   const headlineId = useId()
   const pageStore = getPageStore()
   const currentPage = useStore(pageStore, state => state.currentPage)
@@ -286,6 +287,31 @@ function EpisodeDetailContent({ episode, markdownComponents, initialPage }: Epis
             <EpisodeFullscreenToggle className="flex-shrink-0 self-center" />
           </div>
         </header>
+
+        {summary && (
+          <section
+            className={`
+              relative mt-10 overflow-hidden rounded-2xl border border-border/70
+              bg-muted/55 px-5 py-4
+              md:px-7 md:py-5
+            `}
+            itemProp="description"
+          >
+            <span
+              className="absolute inset-y-0 left-0 w-1 bg-theme/75"
+              aria-hidden="true"
+            />
+            <p
+              className={`
+                pl-3 text-[1rem] leading-8 whitespace-pre-line
+                text-foreground/85
+                md:text-[1.05rem]
+              `}
+            >
+              {summary}
+            </p>
+          </section>
+        )}
 
         <div
           className={cn(

@@ -101,9 +101,13 @@ export async function GET(request: Request) {
       .map(s => `<li><a href="${escapeHtml(s.url || '')}" title="${escapeHtml(s.title || '')}">${escapeHtml(s.title || '')}</a></li>`)
       .join('')
     const linkContent = `<p><b>${runtimeSite.rss.relatedLinksLabel}</b></p><ul>${links}</ul>`
+    const introText = (post.introContent || '').trim()
+    const introContentHtml = introText
+      ? md.render(introText)
+      : ''
     const blogContentHtml = md.render(post.blogContent || '')
     const finalContent = `
-      <div>${blogContentHtml}<hr/>${linkContent}</div>
+      <div>${introContentHtml}${introContentHtml ? '<hr/>' : ''}${blogContentHtml}<hr/>${linkContent}</div>
       ${rssEnv.NEXT_TRACKING_IMAGE ? `<img src="${rssEnv.NEXT_TRACKING_IMAGE}/${post.date}" alt="${post.title}" width="1" height="1" loading="lazy" aria-hidden="true" style="opacity: 0;pointer-events: none;" />` : ''}
     `
 
