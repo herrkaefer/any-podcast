@@ -20,6 +20,7 @@ import {
 
 interface RuntimeConfigEnv {
   PODCAST_KV: KVNamespace
+  PODCAST_ID?: string
 }
 
 const DEFAULT_NEWSLETTER_HOSTS = ['kill-the-newsletter.com']
@@ -71,6 +72,18 @@ export function getRuntimeConfigKeys(podcastIdInput = podcastId) {
   return {
     draft: `${base}:draft`,
   }
+}
+
+function resolveRuntimePodcastId(env: RuntimeConfigEnv, podcastIdInput?: string) {
+  const explicit = podcastIdInput?.trim()
+  if (explicit) {
+    return explicit
+  }
+  const fromEnv = env.PODCAST_ID?.trim()
+  if (fromEnv) {
+    return fromEnv
+  }
+  return podcastId
 }
 
 function getDefaultHosts() {
@@ -349,18 +362,31 @@ async function writeBundle(env: RuntimeConfigEnv, key: string, config: RuntimeCo
   await env.PODCAST_KV.put(key, JSON.stringify(config))
 }
 
-export async function getDraftRuntimeConfig(env: RuntimeConfigEnv, podcastIdInput = podcastId): Promise<RuntimeConfigBundle> {
-  const keys = getRuntimeConfigKeys(podcastIdInput)
+export async function getDraftRuntimeConfig(env: RuntimeConfigEnv, podcastIdInput?: string): Promise<RuntimeConfigBundle> {
+  const resolvedPodcastId = resolveRuntimePodcastId(env, podcastIdInput)
+  const keys = getRuntimeConfigKeys(resolvedPodcastId)
   const draft = await readBundle(env, keys.draft)
   if (draft) {
     return normalizeTtsConfig(draft)
   }
-  const fallback = await buildDefaultRuntimeConfig()
+  const defaultConfig = await buildDefaultRuntimeConfig()
+  const fallback = runtimeConfigBundleSchema.parse({
+    ...defaultConfig,
+    meta: {
+      ...defaultConfig.meta,
+      podcastId: resolvedPodcastId,
+      checksum: '',
+    },
+  })
+  fallback.meta.checksum = await sha256(stableJsonStringify({
+    ...fallback,
+    meta: { ...fallback.meta, checksum: '' },
+  }))
   await writeBundle(env, keys.draft, fallback)
   return fallback
 }
 
-export async function getActiveRuntimeConfig(env: RuntimeConfigEnv, podcastIdInput = podcastId): Promise<RuntimeConfigState> {
+export async function getActiveRuntimeConfig(env: RuntimeConfigEnv, podcastIdInput?: string): Promise<RuntimeConfigState> {
   const active = await getDraftRuntimeConfig(env, podcastIdInput)
   return {
     config: active,
@@ -431,7 +457,7 @@ export async function saveDraftRuntimeConfig(
     podcastId?: string
   },
 ) {
-  const podcastIdInput = options?.podcastId || podcastId
+  const podcastIdInput = resolveRuntimePodcastId(env, options?.podcastId)
   const keys = getRuntimeConfigKeys(podcastIdInput)
   const updatedAt = new Date().toISOString()
   const payload = runtimeConfigBundleSchema.parse(normalizeTtsConfig({

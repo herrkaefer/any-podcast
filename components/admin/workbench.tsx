@@ -197,6 +197,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
   const [section, setSection] = useState<EditableSection>('site')
   const [activePrompt, setActivePrompt] = useState<PromptKey>('summarizeStory')
   const [message, setMessage] = useState('')
+  const [messageType, setMessageType] = useState<'success' | 'error'>('success')
   const [busy, setBusy] = useState(false)
   const [triggerBusy, setTriggerBusy] = useState(false)
   const [triggerNowIso, setTriggerNowIso] = useState('')
@@ -297,6 +298,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
   async function saveCurrentSection() {
     setBusy(true)
     setMessage('')
+    setMessageType('success')
     try {
       const payload = getSectionPatchPayload(workingDraft, section)
       const response = await fetch('/api/admin/config/draft', {
@@ -310,10 +312,13 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
       }
       setServerDraft(body.draft)
       setWorkingDraft(body.draft)
-      setMessage(`Saved ${sectionLabelMap[section]}`)
+      const savedAt = new Date(body.draft.meta.updatedAt).toLocaleString()
+      setMessage(`Saved ${sectionLabelMap[section]} at ${savedAt}`)
+      setMessageType('success')
     }
     catch (error) {
       setMessage(error instanceof Error ? error.message : 'Save failed')
+      setMessageType('error')
     }
     finally {
       setBusy(false)
@@ -416,6 +421,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
   async function uploadAsset(kind: 'logo' | 'music', file: File, onUploaded?: (url: string) => void) {
     setBusy(true)
     setMessage('')
+    setMessageType('success')
     try {
       const form = new FormData()
       form.append('file', file)
@@ -431,9 +437,11 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         onUploaded(body.url)
       }
       setMessage(`${kind} uploaded: ${body.url}`)
+      setMessageType('success')
     }
     catch (error) {
       setMessage(error instanceof Error ? error.message : 'Upload failed')
+      setMessageType('error')
     }
     finally {
       setBusy(false)
@@ -2657,7 +2665,16 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         {section === 'test' && renderTestSection()}
       </div>
 
-      {message ? <p className="text-sm">{message}</p> : null}
+      {message
+        ? (
+            <p className={messageType === 'error'
+              ? 'text-sm text-red-700'
+              : 'text-sm text-green-700'}
+            >
+              {message}
+            </p>
+          )
+        : null}
     </section>
   )
 }
