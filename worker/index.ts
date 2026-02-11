@@ -7,6 +7,7 @@ interface WorkflowTriggerParams {
   today?: string
   windowMode?: WindowMode
   windowHours?: number
+  jobId?: string
 }
 
 interface Env extends CloudflareEnv {
@@ -58,6 +59,26 @@ function toWindowHoursOrThrow(raw: unknown, field: string) {
   return value
 }
 
+function toJobIdOrThrow(raw: unknown, field: string) {
+  if (raw === undefined || raw === null || raw === '') {
+    return undefined
+  }
+  if (typeof raw !== 'string') {
+    throw new TypeError(`${field} must be a string`)
+  }
+  const value = raw.trim()
+  if (!value) {
+    return undefined
+  }
+  if (value.length > 128) {
+    throw new TypeError(`${field} must be 128 chars or less`)
+  }
+  if (!/^[\w:-]+$/.test(value)) {
+    throw new TypeError(`${field} contains invalid characters`)
+  }
+  return value
+}
+
 async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
   const contentType = request.headers.get('content-type') || ''
   if (!contentType.includes('application/json')) {
@@ -87,12 +108,14 @@ async function getRequestWorkflowParams(request: Request): Promise<WorkflowTrigg
   const todayRaw = searchParams.get('today') || body.today
   const windowModeRaw = searchParams.get('windowMode') || body.windowMode || 'calendar'
   const windowHoursRaw = searchParams.get('windowHours') || body.windowHours
+  const jobIdRaw = searchParams.get('jobId') || body.jobId
 
   return {
     nowIso: toDateIsoOrThrow(nowIsoRaw, 'nowIso'),
     today: toDateKeyOrThrow(todayRaw, 'today'),
     windowMode: toWindowModeOrThrow(windowModeRaw, 'windowMode'),
     windowHours: toWindowHoursOrThrow(windowHoursRaw, 'windowHours'),
+    jobId: toJobIdOrThrow(jobIdRaw, 'jobId'),
   }
 }
 

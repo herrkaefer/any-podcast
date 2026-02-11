@@ -308,6 +308,7 @@ export async function synthesizeGeminiTTS(text: string, env: Env, options?: Runt
   const decodeStartedAt = Date.now()
   const inlineData = extractInlineData(response)
   if (!inlineData?.data) {
+    console.warn('Gemini TTS returned no inline audio data', summarizeGeminiAudioResponse(response))
     throw new Error('Gemini TTS returned empty audio data')
   }
 
@@ -350,17 +351,102 @@ export default function (text: string, speaker: string, env: Env, options?: Runt
   }
 }
 
-function extractInlineData(response: { candidates?: { content?: { parts?: { inlineData?: { data?: string, mimeType?: string } }[] } }[] }) {
-  const parts = response.candidates?.[0]?.content?.parts
-  if (!parts) {
-    return null
-  }
-  for (const part of parts) {
-    if (part?.inlineData?.data) {
-      return part.inlineData
+function extractInlineData(response: unknown) {
+  const record = response && typeof response === 'object'
+    ? response as Record<string, unknown>
+    : {}
+  const candidates = Array.isArray(record.candidates) ? record.candidates : []
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object') {
+      continue
+    }
+    const content = (candidate as Record<string, unknown>).content
+    if (!content || typeof content !== 'object') {
+      continue
+    }
+    const parts = Array.isArray((content as Record<string, unknown>).parts)
+      ? (content as Record<string, unknown>).parts as unknown[]
+      : []
+    for (const part of parts) {
+      if (!part || typeof part !== 'object') {
+        continue
+      }
+      const inlineData = (part as Record<string, unknown>).inlineData
+      if (inlineData && typeof inlineData === 'object') {
+        const data = (inlineData as Record<string, unknown>).data
+        const mimeType = (inlineData as Record<string, unknown>).mimeType
+        if (typeof data === 'string' && data) {
+          return {
+            data,
+            mimeType: typeof mimeType === 'string' ? mimeType : undefined,
+          }
+        }
+      }
+
+      // Extra compatibility path: some raw payloads may still use snake_case.
+      const inlineDataSnake = (part as Record<string, unknown>).inline_data
+      if (inlineDataSnake && typeof inlineDataSnake === 'object') {
+        const data = (inlineDataSnake as Record<string, unknown>).data
+        const mimeType = (inlineDataSnake as Record<string, unknown>).mime_type
+        if (typeof data === 'string' && data) {
+          return {
+            data,
+            mimeType: typeof mimeType === 'string' ? mimeType : undefined,
+          }
+        }
+      }
     }
   }
   return null
+}
+
+function summarizeGeminiAudioResponse(response: unknown) {
+  const record = response && typeof response === 'object'
+    ? response as Record<string, unknown>
+    : {}
+  const candidates = Array.isArray(record.candidates) ? record.candidates : []
+  const summary = candidates.map((candidate, index) => {
+    if (!candidate || typeof candidate !== 'object') {
+      return {
+        index,
+        finishReason: undefined,
+        parts: [],
+      }
+    }
+    const candidateRecord = candidate as Record<string, unknown>
+    const content = candidateRecord.content
+    const parts = content && typeof content === 'object' && Array.isArray((content as Record<string, unknown>).parts)
+      ? (content as Record<string, unknown>).parts as Array<Record<string, unknown>>
+      : []
+    return {
+      index,
+      finishReason: candidateRecord.finishReason,
+      parts: parts.map((part) => {
+        const keys = Object.keys(part || {})
+        const text = typeof part?.text === 'string' ? part.text : ''
+        return {
+          keys,
+          hasInlineData: Boolean(
+            part?.inlineData && typeof part.inlineData === 'object' && typeof (part.inlineData as Record<string, unknown>).data === 'string',
+          ) || Boolean(
+            part?.inline_data && typeof part.inline_data === 'object' && typeof (part.inline_data as Record<string, unknown>).data === 'string',
+          ),
+          textPreview: text ? text.slice(0, 200) : '',
+        }
+      }),
+    }
+  })
+
+  const responseText = typeof (record as { text?: unknown }).text === 'string'
+    ? (record as { text: string }).text.slice(0, 200)
+    : ''
+
+  return {
+    candidateCount: candidates.length,
+    promptFeedback: record.promptFeedback,
+    responseText,
+    candidates: summary,
+  }
 }
 
 function getExtensionFromMime(mimeType: string) {

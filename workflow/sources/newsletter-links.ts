@@ -42,6 +42,9 @@ const blockedLinkHostnames = new Set([
   'dx.doi.org',
 ])
 
+const NEWSLETTER_AI_MAX_ATTEMPTS = 3
+const NEWSLETTER_AI_RETRY_BASE_DELAY_MS = 1500
+
 function isBlockedLinkHostname(hostname: string) {
   if (!hostname) {
     return false
@@ -55,6 +58,41 @@ function isBlockedLinkHostname(hostname: string) {
     }
   }
   return false
+}
+
+function sleepMs(ms: number) {
+  if (ms <= 0) {
+    return Promise.resolve()
+  }
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+function isTooManySubrequestsError(error: unknown) {
+  const message = (error as { message?: string })?.message || ''
+  return message.includes('Too many subrequests') || message.includes('too many subrequests')
+}
+
+function isRetryableAiRateLimitError(error: unknown) {
+  const err = error as {
+    status?: number
+    response?: { status?: number }
+    message?: string
+    data?: unknown
+  }
+  const status = err?.status ?? err?.response?.status
+  if (status === 429) {
+    return true
+  }
+  const message = err?.message?.toLowerCase() || ''
+  if (message.includes('429')) {
+    return true
+  }
+  return message.includes('rate limit')
+    || message.includes('resource exhausted')
+    || message.includes('quota')
+    || message.includes('too many requests')
 }
 
 export function normalizeText(text: string) {
@@ -248,16 +286,48 @@ export async function extractNewsletterLinksWithAi(params: {
   const input = buildNewsletterInput({ subject, content, rules })
   const maxOutputTokens = 8192
 
-  const response = await createResponseText({
-    env,
-    runtimeAi,
-    model,
-    instructions: prompt || extractNewsletterLinksPrompt,
-    input,
-    maxOutputTokens,
-    responseMimeType: 'application/json',
-    responseSchema: newsletterLinkSchema,
-  })
+  async function callAiWithRetry(instructions: string, phase: 'initial' | 'json-retry') {
+    let lastError: unknown = null
+    for (let attempt = 1; attempt <= NEWSLETTER_AI_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        return await createResponseText({
+          env,
+          runtimeAi,
+          model,
+          instructions,
+          input,
+          maxOutputTokens,
+          responseMimeType: 'application/json',
+          responseSchema: newsletterLinkSchema,
+        })
+      }
+      catch (error) {
+        if (isTooManySubrequestsError(error)) {
+          throw error
+        }
+        lastError = error
+        if (!isRetryableAiRateLimitError(error) || attempt >= NEWSLETTER_AI_MAX_ATTEMPTS) {
+          throw error
+        }
+        const retryDelayMs = NEWSLETTER_AI_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)
+        console.warn('newsletter ai rate limited, retrying', {
+          phase,
+          subject,
+          messageId,
+          receivedAt,
+          attempt,
+          retryInMs: retryDelayMs,
+          provider,
+          model,
+          error: (error as { message?: string })?.message || String(error),
+        })
+        await sleepMs(retryDelayMs)
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('newsletter ai request failed after retries')
+  }
+
+  const response = await callAiWithRetry(prompt || extractNewsletterLinksPrompt, 'initial')
 
   if (rules?.debug) {
     console.info('newsletter ai raw response', {
@@ -275,16 +345,7 @@ export async function extractNewsletterLinksWithAi(params: {
   let rawCandidates = parseNewsletterLinks(response.text)
   if (rawCandidates.length === 0 && response.text.trim()) {
     const retryInstructions = `${prompt || extractNewsletterLinksPrompt}\n\n【重要】上一次输出不是有效 JSON，请仅输出完整 JSON 数组，不要代码块或多余文字。`
-    const retryResponse = await createResponseText({
-      env,
-      runtimeAi,
-      model,
-      instructions: retryInstructions,
-      input,
-      maxOutputTokens,
-      responseMimeType: 'application/json',
-      responseSchema: newsletterLinkSchema,
-    })
+    const retryResponse = await callAiWithRetry(retryInstructions, 'json-retry')
     if (rules?.debug) {
       console.info('newsletter ai retry response', {
         subject,

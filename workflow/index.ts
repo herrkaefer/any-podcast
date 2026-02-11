@@ -1,5 +1,6 @@
 import type { WorkflowEvent, WorkflowStep, WorkflowStepConfig } from 'cloudflare:workers'
 import type { AiEnv } from './ai'
+import type { SourceConfig } from './sources/types'
 
 import type { RuntimeConfigBundle, RuntimeTtsIntroMusicConfig } from '@/types/runtime-config'
 
@@ -9,6 +10,8 @@ import { getActiveRuntimeConfig } from '@/lib/runtime-config'
 import { getTemplateVariables, renderPromptTemplates } from '@/lib/template'
 import { createResponseText, getAiProvider, getMaxTokens, getPrimaryModel, getThinkingModel } from './ai'
 import { getStoryCandidatesFromSources, processGmailMessage } from './sources'
+import { listGmailMessageRefs } from './sources/gmail'
+import { fetchRssItems } from './sources/rss'
 import { getDateKeyInTimeZone, zonedTimeToUtc } from './timezone'
 import synthesize, { buildGeminiTtsPrompt, synthesizeGeminiTTS } from './tts'
 import { addIntroMusic, concatAudioFiles, getStoryContent, isSubrequestLimitError } from './utils'
@@ -18,6 +21,8 @@ interface Params {
   nowIso?: string
   windowMode?: 'calendar' | 'rolling'
   windowHours?: number
+  jobId?: string
+  continuationSeq?: number
 }
 
 interface Env extends CloudflareEnv, AiEnv {
@@ -84,6 +89,93 @@ interface TtsWorkflowParams {
   isDev: boolean
 }
 
+type WorkflowStage
+  = | 'collect_candidates'
+    | 'expand_gmail'
+    | 'summarize_stories'
+    | 'compose_text'
+    | 'tts_render'
+    | 'done'
+
+interface WorkflowCursorState {
+  sourceIndex: number
+  gmailIndex: number
+  storyIndex: number
+  ttsLineIndex: number
+}
+
+interface WorkflowProgressState {
+  sourcesTotal: number
+  sourcesProcessed: number
+  gmailTotal: number
+  gmailProcessed: number
+  storiesTotal: number
+  storiesProcessed: number
+  storiesRelevant: number
+  ttsTotal: number
+  ttsProcessed: number
+}
+
+interface WorkflowJobState {
+  jobId: string
+  stage: WorkflowStage
+  continuationSeq: number
+  nowIso: string
+  today: string
+  windowMode: 'calendar' | 'rolling'
+  windowHours: number
+  publishDateKey: string
+  publishedAt: string
+  cursor: WorkflowCursorState
+  progress: WorkflowProgressState
+  candidatesKey?: string
+  summaryKey?: string
+  composeKey?: string
+  contentKey?: string
+  podcastKey?: string
+  provider?: RuntimeTtsSettings['provider']
+  updatedAt: number
+  status: 'running' | 'done'
+}
+
+interface BudgetTracker {
+  used: number
+  limit: number
+  reserve: number
+}
+
+interface CandidateSnapshot {
+  stories: Story[]
+  gmailMessages: Array<{
+    id: string
+    source: SourceConfig
+    lookbackDays: number
+    subject?: string
+    receivedAt?: string
+  }>
+}
+
+interface SummarySnapshot {
+  keptStories: Story[]
+  allStories: string[]
+}
+
+interface ComposeSnapshot {
+  stories: Story[]
+  podcastContent: string
+  blogContent: string
+  introContent: string
+  episodeTitle: string
+  parsedConversations: ParsedConversationLine[]
+  contentKey: string
+  podcastKey: string
+  ttsSettings: RuntimeTtsSettings
+  ffmpegAudioQuality: number
+  introThemeUrl?: string
+  introMusicConfig: RuntimeTtsIntroMusicConfig
+  isDev: boolean
+}
+
 const storySummarySchema = {
   type: 'OBJECT',
   properties: {
@@ -116,7 +208,7 @@ function formatError(error: unknown) {
   }
 }
 
-function validateTtsConfig(env: Env, providerInput?: string) {
+function validateTtsConfig(env: Env, providerInput?: string): RuntimeTtsSettings['provider'] {
   const provider = (providerInput || '').trim().toLowerCase()
   if (!provider) {
     throw new Error('runtime config tts.provider is required when skipTts is false')
@@ -141,7 +233,7 @@ function validateTtsConfig(env: Env, providerInput?: string) {
     }
   }
 
-  return provider
+  return provider as RuntimeTtsSettings['provider']
 }
 
 function getSpeakerMarkers(config: RuntimeConfigBundle) {
@@ -394,6 +486,27 @@ const NON_GEMINI_TTS_LINE_SLEEP = '12 seconds'
 const NON_GEMINI_TTS_SUBREQUEST_BACKOFF_SLEEP = '20 seconds'
 const NON_GEMINI_TTS_RETRY_SLEEP = '5 seconds'
 const NON_GEMINI_TTS_MAX_ATTEMPTS = 2
+const SUBREQUEST_SOFT_LIMIT = 35
+const SUBREQUEST_SOFT_RESERVE = 6
+
+const BUDGET_COST = {
+  kvRead: 1,
+  kvWrite: 1,
+  r2Read: 1,
+  r2Write: 1,
+  sourceFetchRssBase: 1,
+  sourceFetchRssNewsletterItem: 2,
+  sourceFetchGmailBase: 2,
+  sourceFetchGmailPerRef: 1,
+  gmailExpand: 3,
+  storyContent: 2,
+  storySummary: 2,
+  llmCompose: 2,
+  ttsLine: 3,
+  audioMerge: 3,
+  introMusic: 3,
+  workflowCreate: 1,
+} as const
 
 function withRetryLimit(limit: number) {
   const delay = retryConfig.retries?.delay || '10 seconds'
@@ -416,6 +529,303 @@ function isBlockedStoryUrl(url: string | undefined) {
   catch {
     return false
   }
+}
+
+function buildJobStateKey(jobId: string) {
+  return `workflow:job:${jobId}:state`
+}
+
+function buildJobDataKey(jobId: string, name: string) {
+  return `workflow/jobs/${jobId}/${name}.json`
+}
+
+function createBudgetTracker(): BudgetTracker {
+  return {
+    used: 0,
+    limit: SUBREQUEST_SOFT_LIMIT,
+    reserve: SUBREQUEST_SOFT_RESERVE,
+  }
+}
+
+function consumeBudget(
+  budget: BudgetTracker,
+  cost: number,
+  label: string,
+  jobId: string,
+  extra?: Record<string, unknown>,
+) {
+  budget.used += Math.max(0, Math.floor(cost))
+  console.info('subrequest budget consumed', {
+    jobId,
+    label,
+    cost,
+    used: budget.used,
+    limit: budget.limit,
+    reserve: budget.reserve,
+    ...(extra || {}),
+  })
+}
+
+function shouldHandoff(budget: BudgetTracker, nextCost: number) {
+  return budget.used + Math.max(0, Math.floor(nextCost)) + budget.reserve > budget.limit
+}
+
+function estimateRssSourceFetchCost(stories: Story[]) {
+  const newsletterItemIds = new Set(
+    stories
+      .map(story => (story.sourceItemId || '').trim())
+      .filter(Boolean),
+  )
+  return BUDGET_COST.sourceFetchRssBase
+    + newsletterItemIds.size * BUDGET_COST.sourceFetchRssNewsletterItem
+}
+
+function estimateGmailSourceFetchCost(refCount: number) {
+  return BUDGET_COST.sourceFetchGmailBase
+    + Math.max(0, Math.floor(refCount)) * BUDGET_COST.sourceFetchGmailPerRef
+}
+
+function normalizeNonNegativeInt(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : 0
+}
+
+function createInitialProgress(sourceTotal: number): WorkflowProgressState {
+  return {
+    sourcesTotal: Math.max(0, Math.floor(sourceTotal)),
+    sourcesProcessed: 0,
+    gmailTotal: 0,
+    gmailProcessed: 0,
+    storiesTotal: 0,
+    storiesProcessed: 0,
+    storiesRelevant: 0,
+    ttsTotal: 0,
+    ttsProcessed: 0,
+  }
+}
+
+function normalizeProgress(
+  progress: WorkflowProgressState,
+  cursor: WorkflowCursorState,
+): WorkflowProgressState {
+  const normalized = {
+    ...progress,
+  }
+  normalized.sourcesProcessed = Math.max(normalized.sourcesProcessed, cursor.sourceIndex)
+  normalized.gmailProcessed = Math.max(normalized.gmailProcessed, cursor.gmailIndex)
+  normalized.storiesProcessed = Math.max(normalized.storiesProcessed, cursor.storyIndex)
+  normalized.ttsProcessed = Math.max(normalized.ttsProcessed, cursor.ttsLineIndex)
+
+  normalized.sourcesTotal = Math.max(normalized.sourcesTotal, normalized.sourcesProcessed)
+  normalized.gmailTotal = Math.max(normalized.gmailTotal, normalized.gmailProcessed)
+  normalized.storiesTotal = Math.max(normalized.storiesTotal, normalized.storiesProcessed)
+  normalized.ttsTotal = Math.max(normalized.ttsTotal, normalized.ttsProcessed)
+
+  normalized.storiesRelevant = Math.min(
+    Math.max(0, Math.floor(normalized.storiesRelevant)),
+    normalized.storiesTotal,
+  )
+
+  return normalized
+}
+
+function parseWorkflowProgress(
+  value: unknown,
+  cursor: WorkflowCursorState,
+): WorkflowProgressState {
+  const record = value && typeof value === 'object'
+    ? value as Record<string, unknown>
+    : {}
+  return normalizeProgress({
+    sourcesTotal: normalizeNonNegativeInt(record.sourcesTotal),
+    sourcesProcessed: normalizeNonNegativeInt(record.sourcesProcessed),
+    gmailTotal: normalizeNonNegativeInt(record.gmailTotal),
+    gmailProcessed: normalizeNonNegativeInt(record.gmailProcessed),
+    storiesTotal: normalizeNonNegativeInt(record.storiesTotal),
+    storiesProcessed: normalizeNonNegativeInt(record.storiesProcessed),
+    storiesRelevant: normalizeNonNegativeInt(record.storiesRelevant),
+    ttsTotal: normalizeNonNegativeInt(record.ttsTotal),
+    ttsProcessed: normalizeNonNegativeInt(record.ttsProcessed),
+  }, cursor)
+}
+
+const WORKFLOW_STAGE_FLOW: Array<{ stage: WorkflowStage, name: string }> = [
+  { stage: 'collect_candidates', name: 'collect candidates' },
+  { stage: 'expand_gmail', name: 'expand gmail links' },
+  { stage: 'summarize_stories', name: 'summarize stories' },
+  { stage: 'compose_text', name: 'compose podcast/blog text' },
+  { stage: 'tts_render', name: 'render tts audio' },
+  { stage: 'done', name: 'done' },
+]
+
+function logWorkflowObservation(params: {
+  jobId: string
+  stage: WorkflowStage
+  continuationSeq: number
+  status: WorkflowJobState['status']
+  cursor: WorkflowCursorState
+  progress: WorkflowProgressState
+  budget: BudgetTracker
+  label: string
+  extra?: Record<string, unknown>
+}) {
+  const progress = normalizeProgress(params.progress, params.cursor)
+  const stageIndex = WORKFLOW_STAGE_FLOW.findIndex(item => item.stage === params.stage)
+  const currentStageIndex = stageIndex >= 0 ? stageIndex + 1 : 0
+  const currentStageName = stageIndex >= 0 ? WORKFLOW_STAGE_FLOW[stageIndex].name : params.stage
+  console.info('workflow observation', {
+    jobId: params.jobId,
+    stage: params.stage,
+    stageName: currentStageName,
+    stageOrder: {
+      current: currentStageIndex,
+      total: WORKFLOW_STAGE_FLOW.length,
+    },
+    stageFlow: WORKFLOW_STAGE_FLOW.map(item => item.stage),
+    continuationSeq: params.continuationSeq,
+    status: params.status,
+    cursor: params.cursor,
+    progress: {
+      sources: {
+        processed: progress.sourcesProcessed,
+        total: progress.sourcesTotal,
+      },
+      gmailMessages: {
+        processed: progress.gmailProcessed,
+        total: progress.gmailTotal,
+      },
+      stories: {
+        processed: progress.storiesProcessed,
+        total: progress.storiesTotal,
+        relevant: progress.storiesRelevant,
+      },
+      ttsLines: {
+        processed: progress.ttsProcessed,
+        total: progress.ttsTotal,
+      },
+    },
+    budgetUsed: params.budget.used,
+    budgetLimit: params.budget.limit,
+    budgetReserve: params.budget.reserve,
+    label: params.label,
+    ...(params.extra || {}),
+  })
+}
+
+function createInitialCursor(): WorkflowCursorState {
+  return {
+    sourceIndex: 0,
+    gmailIndex: 0,
+    storyIndex: 0,
+    ttsLineIndex: 0,
+  }
+}
+
+function isWorkflowStage(value: unknown): value is WorkflowStage {
+  return value === 'collect_candidates'
+    || value === 'expand_gmail'
+    || value === 'summarize_stories'
+    || value === 'compose_text'
+    || value === 'tts_render'
+    || value === 'done'
+}
+
+function parseWorkflowCursor(value: unknown): WorkflowCursorState {
+  const record = value && typeof value === 'object'
+    ? value as Record<string, unknown>
+    : {}
+  return {
+    sourceIndex: normalizeNonNegativeInt(record.sourceIndex),
+    gmailIndex: normalizeNonNegativeInt(record.gmailIndex),
+    storyIndex: normalizeNonNegativeInt(record.storyIndex),
+    ttsLineIndex: normalizeNonNegativeInt(record.ttsLineIndex),
+  }
+}
+
+function parseWorkflowJobState(value: unknown): WorkflowJobState | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+  const record = value as Record<string, unknown>
+  if (typeof record.jobId !== 'string' || !record.jobId.trim()) {
+    return null
+  }
+  if (!isWorkflowStage(record.stage)) {
+    return null
+  }
+  const cursor = parseWorkflowCursor(record.cursor)
+  return {
+    jobId: record.jobId,
+    stage: record.stage,
+    continuationSeq: typeof record.continuationSeq === 'number' && Number.isFinite(record.continuationSeq)
+      ? Math.max(0, Math.floor(record.continuationSeq))
+      : 0,
+    nowIso: typeof record.nowIso === 'string' ? record.nowIso : new Date().toISOString(),
+    today: typeof record.today === 'string' ? record.today : '',
+    windowMode: record.windowMode === 'rolling' ? 'rolling' : 'calendar',
+    windowHours: typeof record.windowHours === 'number' && Number.isFinite(record.windowHours)
+      ? Math.max(1, Math.floor(record.windowHours))
+      : 24,
+    publishDateKey: typeof record.publishDateKey === 'string' ? record.publishDateKey : '',
+    publishedAt: typeof record.publishedAt === 'string' ? record.publishedAt : '',
+    cursor,
+    progress: parseWorkflowProgress(record.progress, cursor),
+    candidatesKey: typeof record.candidatesKey === 'string' ? record.candidatesKey : undefined,
+    summaryKey: typeof record.summaryKey === 'string' ? record.summaryKey : undefined,
+    composeKey: typeof record.composeKey === 'string' ? record.composeKey : undefined,
+    contentKey: typeof record.contentKey === 'string' ? record.contentKey : undefined,
+    podcastKey: typeof record.podcastKey === 'string' ? record.podcastKey : undefined,
+    provider: record.provider === 'edge' || record.provider === 'gemini' || record.provider === 'minimax' || record.provider === 'murf'
+      ? record.provider
+      : undefined,
+    updatedAt: typeof record.updatedAt === 'number' && Number.isFinite(record.updatedAt) ? record.updatedAt : Date.now(),
+    status: record.status === 'done' ? 'done' : 'running',
+  }
+}
+
+function createInitialWorkflowJobState(params: {
+  jobId: string
+  continuationSeq: number
+  nowIso: string
+  today: string
+  windowMode: 'calendar' | 'rolling'
+  windowHours: number
+  publishDateKey: string
+  publishedAt: string
+  sourceTotal: number
+}): WorkflowJobState {
+  return {
+    jobId: params.jobId,
+    stage: 'collect_candidates',
+    continuationSeq: params.continuationSeq,
+    nowIso: params.nowIso,
+    today: params.today,
+    windowMode: params.windowMode,
+    windowHours: params.windowHours,
+    publishDateKey: params.publishDateKey,
+    publishedAt: params.publishedAt,
+    cursor: createInitialCursor(),
+    progress: createInitialProgress(params.sourceTotal),
+    updatedAt: Date.now(),
+    status: 'running',
+  }
+}
+
+async function loadJsonFromR2<T>(r2: R2Bucket, key: string): Promise<T | null> {
+  const object = await r2.get(key)
+  if (!object) {
+    return null
+  }
+  const text = await object.text()
+  if (!text.trim()) {
+    return null
+  }
+  return JSON.parse(text) as T
+}
+
+async function saveJsonToR2(r2: R2Bucket, key: string, value: unknown) {
+  await r2.put(key, JSON.stringify(value))
 }
 
 export class TtsWorkflow extends WorkflowEntrypoint<Env, TtsWorkflowParams> {
@@ -920,6 +1330,11 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
               `${primarySpeaker}：如果你能听到片头音乐淡出后接上人声，说明流程是通的。`,
             ].join('\n')
 
+          console.info('TTS intro test input', {
+            chars: sampleInput.length,
+            preview: sampleInput.slice(0, 200),
+          })
+
           if (skipTTS) {
             return 'skip TTS enabled, skip audio generation'
           }
@@ -938,6 +1353,11 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
               const prompt = buildGeminiTtsPrompt(lines, {
                 geminiPrompt: runtimeTtsSettings.geminiPrompt,
                 geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
+              })
+              console.info('tts-intro: gemini prompt', {
+                lines: lines.length,
+                chars: prompt.length,
+                preview: prompt.slice(0, 240),
               })
               const { audio } = await synthesizeGeminiTTS(prompt, this.env, {
                 model: runtimeTtsSettings.model,
@@ -1132,493 +1552,1175 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
       return
     }
 
-    const candidates = await step.do(`list story candidates ${today}`, retryConfig, async () => {
-      const result = await getStoryCandidatesFromSources({
-        now,
-        env: this.env,
-        window: {
-          start: windowStart,
-          end: windowEnd,
-          timeZone,
-        },
-        sourceConfig: {
-          lookbackDays: runtimeConfig.sources.lookbackDays,
-          sources: runtimeConfig.sources.items,
-        },
-        sourceOptions: {
-          timeZone,
-          newsletterHosts: runtimeConfig.sources.newsletterHosts,
-          archiveLinkKeywords: runtimeConfig.sources.archiveLinkKeywords,
-          extractNewsletterLinksPrompt: runtimePrompts.extractNewsletterLinks,
-          runtimeAi,
-        },
-      })
+    const jobId = event.payload?.jobId?.trim() || event.instanceId
+    const stateKey = buildJobStateKey(jobId)
+    const enabledSources = runtimeConfig.sources.items.filter(source => source.enabled !== false)
+    const requestedContinuationSeq = typeof event.payload?.continuationSeq === 'number'
+      ? Math.max(0, Math.floor(event.payload.continuationSeq))
+      : 0
+    const budget = createBudgetTracker()
 
-      if (!result.stories.length && !result.gmailMessages.length) {
-        console.warn('no story candidates found, skip workflow run')
-        return { stories: [], gmailMessages: [] }
-      }
-
-      return result
+    let workflowState = await step.do('load workflow state', retryConfig, async () => {
+      const raw = await this.env.PODCAST_KV.get(stateKey, 'json')
+      return parseWorkflowJobState(raw)
     })
+    consumeBudget(budget, BUDGET_COST.kvRead, 'load workflow state', jobId)
 
-    await step.sleep('reset quota after candidates', breakTime)
+    if (!workflowState) {
+      workflowState = createInitialWorkflowJobState({
+        jobId,
+        continuationSeq: requestedContinuationSeq,
+        nowIso: now.toISOString(),
+        today,
+        windowMode: windowMode === 'rolling' ? 'rolling' : 'calendar',
+        windowHours,
+        publishDateKey,
+        publishedAt,
+        sourceTotal: enabledSources.length,
+      })
+      logWorkflowObservation({
+        jobId,
+        stage: workflowState.stage,
+        continuationSeq: workflowState.continuationSeq,
+        status: workflowState.status,
+        cursor: workflowState.cursor,
+        progress: workflowState.progress,
+        budget,
+        label: 'create initial state',
+      })
+    }
+    else {
+      workflowState.progress = normalizeProgress({
+        ...workflowState.progress,
+        sourcesTotal: Math.max(workflowState.progress.sourcesTotal, enabledSources.length),
+      }, workflowState.cursor)
+      logWorkflowObservation({
+        jobId,
+        stage: workflowState.stage,
+        continuationSeq: workflowState.continuationSeq,
+        status: workflowState.status,
+        cursor: workflowState.cursor,
+        progress: workflowState.progress,
+        budget,
+        label: 'resume from persisted state',
+      })
+    }
 
-    const stories: Story[] = [...candidates.stories]
-    const gmailMessages = candidates.gmailMessages
+    const saveWorkflowState = async (label: string) => {
+      await step.do(label, retryConfig, async () => {
+        workflowState.progress = normalizeProgress(workflowState.progress, workflowState.cursor)
+        workflowState.updatedAt = Date.now()
+        await this.env.PODCAST_KV.put(stateKey, JSON.stringify(workflowState))
+        return workflowState.stage
+      })
+      consumeBudget(budget, BUDGET_COST.kvWrite, label, jobId)
+      logWorkflowObservation({
+        jobId,
+        stage: workflowState.stage,
+        continuationSeq: workflowState.continuationSeq,
+        status: workflowState.status,
+        cursor: workflowState.cursor,
+        progress: workflowState.progress,
+        budget,
+        label: `state saved: ${label}`,
+      })
+    }
 
-    if (gmailMessages.length > 0) {
-      for (const messageRef of gmailMessages) {
-        await step.sleep('reset quota before gmail', breakTime)
-        const gmailResult = await step.do(`process gmail ${messageRef.id}`, retryConfig, async () => {
-          const result = await processGmailMessage({
-            messageId: messageRef.id,
-            source: messageRef.source,
-            now,
-            lookbackDays: messageRef.lookbackDays,
-            env: this.env,
-            runtimeAi,
-            window: {
-              start: windowStart,
-              end: windowEnd,
-              timeZone,
+    const loadCandidatesSnapshot = async () => {
+      if (!workflowState.candidatesKey) {
+        return { stories: [], gmailMessages: [] } satisfies CandidateSnapshot
+      }
+      const loaded = await step.do('load candidates snapshot', retryConfig, async () => {
+        return await loadJsonFromR2<CandidateSnapshot>(this.env.PODCAST_R2, workflowState.candidatesKey as string)
+      })
+      consumeBudget(budget, BUDGET_COST.r2Read, 'load candidates snapshot', jobId)
+      return loaded || { stories: [], gmailMessages: [] } satisfies CandidateSnapshot
+    }
+
+    const saveCandidatesSnapshot = async (snapshot: CandidateSnapshot) => {
+      const key = workflowState.candidatesKey || buildJobDataKey(jobId, 'candidates')
+      await step.do('save candidates snapshot', retryConfig, async () => {
+        await saveJsonToR2(this.env.PODCAST_R2, key, snapshot)
+        return key
+      })
+      consumeBudget(budget, BUDGET_COST.r2Write, 'save candidates snapshot', jobId)
+      workflowState.candidatesKey = key
+    }
+
+    const loadSummarySnapshot = async () => {
+      if (!workflowState.summaryKey) {
+        return { keptStories: [], allStories: [] } satisfies SummarySnapshot
+      }
+      const loaded = await step.do('load summary snapshot', retryConfig, async () => {
+        return await loadJsonFromR2<SummarySnapshot>(this.env.PODCAST_R2, workflowState.summaryKey as string)
+      })
+      consumeBudget(budget, BUDGET_COST.r2Read, 'load summary snapshot', jobId)
+      return loaded || { keptStories: [], allStories: [] } satisfies SummarySnapshot
+    }
+
+    const saveSummarySnapshot = async (snapshot: SummarySnapshot) => {
+      const key = workflowState.summaryKey || buildJobDataKey(jobId, 'summary')
+      await step.do('save summary snapshot', retryConfig, async () => {
+        await saveJsonToR2(this.env.PODCAST_R2, key, snapshot)
+        return key
+      })
+      consumeBudget(budget, BUDGET_COST.r2Write, 'save summary snapshot', jobId)
+      workflowState.summaryKey = key
+    }
+
+    const loadComposeSnapshot = async () => {
+      if (!workflowState.composeKey) {
+        return null
+      }
+      const loaded = await step.do('load compose snapshot', retryConfig, async () => {
+        return await loadJsonFromR2<ComposeSnapshot>(this.env.PODCAST_R2, workflowState.composeKey as string)
+      })
+      consumeBudget(budget, BUDGET_COST.r2Read, 'load compose snapshot', jobId)
+      return loaded
+    }
+
+    const saveComposeSnapshot = async (snapshot: ComposeSnapshot) => {
+      const key = workflowState.composeKey || buildJobDataKey(jobId, 'compose')
+      await step.do('save compose snapshot', retryConfig, async () => {
+        await saveJsonToR2(this.env.PODCAST_R2, key, snapshot)
+        return key
+      })
+      consumeBudget(budget, BUDGET_COST.r2Write, 'save compose snapshot', jobId)
+      workflowState.composeKey = key
+    }
+
+    const spawnContinuation = async (reason: string) => {
+      workflowState.continuationSeq += 1
+      await saveWorkflowState(`checkpoint before continuation: ${reason}`)
+      const nextSeq = workflowState.continuationSeq
+      const nextInstanceId = `${jobId}-c${nextSeq}`
+      const instanceId = await step.do(`spawn continuation #${nextSeq}`, { ...retryConfig, retries: withRetryLimit(2) }, async () => {
+        try {
+          const instance = await this.env.PODCAST_WORKFLOW.create({
+            id: nextInstanceId,
+            params: {
+              jobId,
+              continuationSeq: nextSeq,
+              nowIso: workflowState.nowIso,
+              today: workflowState.today,
+              windowMode: workflowState.windowMode,
+              windowHours: workflowState.windowHours,
             },
-            timeZone,
-            archiveLinkKeywords: runtimeConfig.sources.archiveLinkKeywords,
-            extractNewsletterLinksPrompt: runtimePrompts.extractNewsletterLinks,
           })
-          return {
-            messageId: messageRef.id,
-            subject: messageRef.subject,
-            receivedAt: messageRef.receivedAt,
-            count: result.length,
-            stories: result.map(s => ({ title: s.title, url: s.url })),
-            _raw: result,
-          }
-        })
-        if (gmailResult._raw.length > 0) {
-          stories.push(...gmailResult._raw)
+          return instance.id
         }
-      }
-    }
-
-    const blockedStories = stories.filter(story => isBlockedStoryUrl(story.url))
-    const candidateStories = stories.filter(story => !isBlockedStoryUrl(story.url))
-
-    if (blockedStories.length > 0) {
-      console.warn('blocked story urls skipped', {
-        count: blockedStories.length,
-        hosts: Array.from(new Set(blockedStories.map((story) => {
-          try {
-            return new URL(story.url || '').hostname.toLowerCase()
+        catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (message.toLowerCase().includes('already exists') || message.toLowerCase().includes('duplicate')) {
+            return nextInstanceId
           }
-          catch {
-            return ''
-          }
-        }).filter(Boolean))),
+          throw error
+        }
+      })
+      consumeBudget(budget, BUDGET_COST.workflowCreate, 'spawn continuation', jobId)
+      console.info('continuation spawned', {
+        jobId,
+        reason,
+        currentInstanceId: event.instanceId,
+        nextInstanceId: instanceId,
+        stage: workflowState.stage,
+      })
+      logWorkflowObservation({
+        jobId,
+        stage: workflowState.stage,
+        continuationSeq: workflowState.continuationSeq,
+        status: workflowState.status,
+        cursor: workflowState.cursor,
+        progress: workflowState.progress,
+        budget,
+        label: 'continuation spawned',
+        extra: {
+          reason,
+          nextInstanceId: instanceId,
+        },
       })
     }
 
-    if (!candidateStories.length) {
-      console.info('no stories found after filtering, exit workflow run')
-      return
-    }
-
-    console.info('top stories', isDev ? candidateStories : JSON.stringify(candidateStories))
-    console.info(`total stories: ${candidateStories.length}`)
-
-    if (testStep === 'stories') {
-      console.info('workflow test step "stories" completed, stopping before summarization', {
-        totalStories: candidateStories.length,
-        stories: candidateStories.map(s => ({ id: s.id, title: s.title, url: s.url, sourceName: s.sourceName })),
+    const maybeHandoff = async (
+      stage: WorkflowStage,
+      nextCost: number,
+      reason: string,
+      cursorPatch?: Partial<WorkflowCursorState>,
+    ) => {
+      if (!shouldHandoff(budget, nextCost)) {
+        return false
+      }
+      logWorkflowObservation({
+        jobId,
+        stage,
+        continuationSeq: workflowState.continuationSeq,
+        status: workflowState.status,
+        cursor: {
+          ...workflowState.cursor,
+          ...(cursorPatch || {}),
+        },
+        progress: workflowState.progress,
+        budget,
+        label: 'handoff required',
+        extra: {
+          reason,
+          nextCost,
+        },
       })
-      return
-    }
-
-    const storyGroups = new Map<string, { count: number, label: string }>()
-    for (const story of candidateStories) {
-      const sourceLabel = story.sourceItemTitle || story.sourceName || story.sourceUrl || 'unknown'
-      const groupKey = story.sourceItemId || sourceLabel
-      const existing = storyGroups.get(groupKey)
-      if (existing) {
-        existing.count += 1
+      workflowState.stage = stage
+      workflowState.cursor = {
+        ...workflowState.cursor,
+        ...cursorPatch,
       }
-      else {
-        storyGroups.set(groupKey, { count: 1, label: sourceLabel })
+      workflowState.progress = normalizeProgress(workflowState.progress, workflowState.cursor)
+      await spawnContinuation(reason)
+      return true
+    }
+
+    if (!workflowState.today) {
+      workflowState.today = today
+    }
+    if (!workflowState.publishDateKey) {
+      workflowState.publishDateKey = publishDateKey
+    }
+    if (!workflowState.publishedAt) {
+      workflowState.publishedAt = publishedAt
+    }
+    if (!workflowState.nowIso) {
+      workflowState.nowIso = now.toISOString()
+    }
+    await saveWorkflowState('save workflow state bootstrap')
+
+    let stageLogCursor = ''
+    while (true) {
+      if (workflowState.status === 'done' || workflowState.stage === 'done') {
+        logWorkflowObservation({
+          jobId,
+          stage: workflowState.stage,
+          continuationSeq: workflowState.continuationSeq,
+          status: workflowState.status,
+          cursor: workflowState.cursor,
+          progress: workflowState.progress,
+          budget,
+          label: 'workflow loop exit',
+        })
+        return
       }
-    }
-
-    for (const [groupKey, group] of storyGroups.entries()) {
-      console.info(`newsletter: ${group.label} (${groupKey}) -> ${group.count} articles`)
-    }
-
-    const keptStories: Story[] = []
-    const allStories: string[] = []
-    for (const story of candidateStories) {
-      let storyResponse = ''
-      try {
-        storyResponse = await step.do(`get story ${story.id}: ${story.title}`, retryConfig, async () => {
-          return await getStoryContent(story, maxTokens, this.env)
+      const currentStageCursor = `${workflowState.stage}:${workflowState.cursor.sourceIndex}:${workflowState.cursor.gmailIndex}:${workflowState.cursor.storyIndex}:${workflowState.cursor.ttsLineIndex}`
+      if (stageLogCursor !== currentStageCursor) {
+        stageLogCursor = currentStageCursor
+        logWorkflowObservation({
+          jobId,
+          stage: workflowState.stage,
+          continuationSeq: workflowState.continuationSeq,
+          status: workflowState.status,
+          cursor: workflowState.cursor,
+          progress: workflowState.progress,
+          budget,
+          label: 'enter stage',
         })
       }
-      catch (error) {
-        console.warn(`get story ${story.id} content failed, skip story`, {
-          title: story.title,
-          error: formatError(error),
-        })
-        await step.sleep('Give AI a break', breakTime)
+      if (workflowState.stage === 'collect_candidates') {
+        const candidatesSnapshot = await loadCandidatesSnapshot()
+        workflowState.progress.sourcesTotal = Math.max(
+          workflowState.progress.sourcesTotal,
+          enabledSources.length,
+        )
+        for (let sourceIndex = workflowState.cursor.sourceIndex; sourceIndex < enabledSources.length; sourceIndex += 1) {
+          const source = enabledSources[sourceIndex]
+          const predictedSourceCost = source.type === 'rss'
+            ? BUDGET_COST.sourceFetchRssBase + BUDGET_COST.sourceFetchRssNewsletterItem
+            : source.type === 'gmail'
+              ? BUDGET_COST.sourceFetchGmailBase + BUDGET_COST.sourceFetchGmailPerRef
+              : 0
+          if (await maybeHandoff(
+            'collect_candidates',
+            predictedSourceCost + BUDGET_COST.r2Write + BUDGET_COST.workflowCreate,
+            `collect source index ${sourceIndex}`,
+            { sourceIndex },
+          )) {
+            return
+          }
+
+          const lookbackDays = source.lookbackDays ?? runtimeConfig.sources.lookbackDays
+          if (source.type === 'rss') {
+            const stories = await step.do(`collect source rss ${source.id}`, retryConfig, async () => {
+              return await fetchRssItems(source, now, lookbackDays, {
+                start: windowStart,
+                end: windowEnd,
+                timeZone,
+              }, this.env, {
+                timeZone,
+                newsletterHosts: runtimeConfig.sources.newsletterHosts,
+                extractNewsletterLinksPrompt: runtimePrompts.extractNewsletterLinks,
+                runtimeAi,
+              })
+            })
+            const sourceCost = estimateRssSourceFetchCost(stories)
+            consumeBudget(budget, sourceCost, `collect rss ${source.id}`, jobId, {
+              stories: stories.length,
+              newsletterItems: new Set(
+                stories.map(story => (story.sourceItemId || '').trim()).filter(Boolean),
+              ).size,
+            })
+            if (stories.length > 0) {
+              candidatesSnapshot.stories.push(...stories)
+            }
+          }
+          else if (source.type === 'gmail') {
+            const refs = await step.do(`collect source gmail ${source.id}`, retryConfig, async () => {
+              return await listGmailMessageRefs(source, now, lookbackDays, this.env, {
+                start: windowStart,
+                end: windowEnd,
+                timeZone,
+              }, {
+                timeZone,
+              })
+            })
+            const sourceCost = estimateGmailSourceFetchCost(refs.length)
+            consumeBudget(budget, sourceCost, `collect gmail ${source.id}`, jobId, {
+              refs: refs.length,
+            })
+            if (refs.length > 0) {
+              candidatesSnapshot.gmailMessages.push(...refs)
+            }
+          }
+          else {
+            candidatesSnapshot.stories.push({
+              id: source.id,
+              title: source.name,
+              url: source.url,
+              sourceName: source.name,
+              sourceUrl: source.url,
+            })
+          }
+          workflowState.cursor.sourceIndex = sourceIndex + 1
+          workflowState.progress.sourcesProcessed = workflowState.cursor.sourceIndex
+        }
+
+        await saveCandidatesSnapshot(candidatesSnapshot)
+        workflowState.progress.gmailTotal = Math.max(
+          workflowState.progress.gmailTotal,
+          candidatesSnapshot.gmailMessages.length,
+        )
+        workflowState.progress.gmailProcessed = workflowState.cursor.gmailIndex
+        workflowState.stage = 'expand_gmail'
+        workflowState.cursor.gmailIndex = 0
+        await saveWorkflowState('stage transition: collect_candidates -> expand_gmail')
         continue
       }
 
-      if (!storyResponse.trim()) {
-        console.warn(`get story ${story.id} content empty, skip`, {
-          title: story.title,
-        })
-        await step.sleep('Give AI a break', breakTime)
-        continue
-      }
+      if (workflowState.stage === 'expand_gmail') {
+        const candidatesSnapshot = await loadCandidatesSnapshot()
+        workflowState.progress.gmailTotal = Math.max(
+          workflowState.progress.gmailTotal,
+          candidatesSnapshot.gmailMessages.length,
+        )
+        for (let gmailIndex = workflowState.cursor.gmailIndex; gmailIndex < candidatesSnapshot.gmailMessages.length; gmailIndex += 1) {
+          if (await maybeHandoff(
+            'expand_gmail',
+            BUDGET_COST.gmailExpand + BUDGET_COST.r2Write + BUDGET_COST.workflowCreate,
+            `expand gmail index ${gmailIndex}`,
+            { gmailIndex },
+          )) {
+            return
+          }
 
-      console.info(`get story ${story.id} content success`, {
-        title: story.title,
-        chars: storyResponse.length,
-      })
-
-      await step.sleep('reset quota before summarize', breakTime)
-
-      let summaryResult: StorySummaryResult | null = null
-      try {
-        summaryResult = await step.do(`summarize story ${story.id}: ${story.title}`, { ...retryConfig, retries: withRetryLimit(2) }, async () => {
-          console.info(`summarize story ${story.id} start`, {
-            title: story.title,
-            inputChars: storyResponse.length,
+          const messageRef = candidatesSnapshot.gmailMessages[gmailIndex]
+          const expandedStories = await step.do(`expand gmail ${messageRef.id}`, retryConfig, async () => {
+            return await processGmailMessage({
+              messageId: messageRef.id,
+              source: messageRef.source,
+              now,
+              lookbackDays: messageRef.lookbackDays,
+              env: this.env,
+              runtimeAi,
+              window: {
+                start: windowStart,
+                end: windowEnd,
+                timeZone,
+              },
+              timeZone,
+              archiveLinkKeywords: runtimeConfig.sources.archiveLinkKeywords,
+              extractNewsletterLinksPrompt: runtimePrompts.extractNewsletterLinks,
+            })
           })
-          const { result, usage, finishReason } = await summarizeStoryWithRelevance({
+          consumeBudget(budget, BUDGET_COST.gmailExpand, `expand gmail ${messageRef.id}`, jobId)
+          if (expandedStories.length > 0) {
+            candidatesSnapshot.stories.push(...expandedStories)
+          }
+          workflowState.cursor.gmailIndex = gmailIndex + 1
+          workflowState.progress.gmailProcessed = workflowState.cursor.gmailIndex
+        }
+
+        const blockedStories = candidatesSnapshot.stories.filter(story => isBlockedStoryUrl(story.url))
+        const candidateStories = candidatesSnapshot.stories.filter(story => !isBlockedStoryUrl(story.url))
+        if (blockedStories.length > 0) {
+          console.warn('blocked story urls skipped', {
+            count: blockedStories.length,
+            hosts: Array.from(new Set(blockedStories.map((story) => {
+              try {
+                return new URL(story.url || '').hostname.toLowerCase()
+              }
+              catch {
+                return ''
+              }
+            }).filter(Boolean))),
+          })
+        }
+
+        if (!candidateStories.length) {
+          workflowState.status = 'done'
+          workflowState.stage = 'done'
+          logWorkflowObservation({
+            jobId,
+            stage: workflowState.stage,
+            continuationSeq: workflowState.continuationSeq,
+            status: workflowState.status,
+            cursor: workflowState.cursor,
+            progress: workflowState.progress,
+            budget,
+            label: 'no candidate stories',
+          })
+          await saveWorkflowState('no candidate stories, mark done')
+          return
+        }
+
+        console.info('top stories', isDev ? candidateStories : JSON.stringify(candidateStories))
+        console.info(`total stories: ${candidateStories.length}`)
+
+        candidatesSnapshot.stories = candidateStories
+        candidatesSnapshot.gmailMessages = []
+        await saveCandidatesSnapshot(candidatesSnapshot)
+        workflowState.progress.storiesTotal = candidateStories.length
+        workflowState.progress.storiesProcessed = workflowState.cursor.storyIndex
+        workflowState.progress.storiesRelevant = 0
+
+        if (testStep === 'stories') {
+          console.info('workflow test step "stories" completed, stopping before summarization', {
+            totalStories: candidateStories.length,
+            stories: candidateStories.map(s => ({ id: s.id, title: s.title, url: s.url, sourceName: s.sourceName })),
+          })
+          workflowState.status = 'done'
+          workflowState.stage = 'done'
+          await saveWorkflowState('workflow test stories done')
+          return
+        }
+
+        const storyGroups = new Map<string, { count: number, label: string }>()
+        for (const story of candidateStories) {
+          const sourceLabel = story.sourceItemTitle || story.sourceName || story.sourceUrl || 'unknown'
+          const groupKey = story.sourceItemId || sourceLabel
+          const existing = storyGroups.get(groupKey)
+          if (existing) {
+            existing.count += 1
+          }
+          else {
+            storyGroups.set(groupKey, { count: 1, label: sourceLabel })
+          }
+        }
+        for (const [groupKey, group] of storyGroups.entries()) {
+          console.info(`newsletter: ${group.label} (${groupKey}) -> ${group.count} articles`)
+        }
+
+        workflowState.stage = 'summarize_stories'
+        workflowState.cursor.storyIndex = 0
+        await saveWorkflowState('stage transition: expand_gmail -> summarize_stories')
+        continue
+      }
+
+      if (workflowState.stage === 'summarize_stories') {
+        const candidatesSnapshot = await loadCandidatesSnapshot()
+        const summarySnapshot = await loadSummarySnapshot()
+        const candidateStories = candidatesSnapshot.stories
+        workflowState.progress.storiesTotal = candidateStories.length
+        workflowState.progress.storiesProcessed = workflowState.cursor.storyIndex
+        workflowState.progress.storiesRelevant = summarySnapshot.keptStories.length
+        logWorkflowObservation({
+          jobId,
+          stage: workflowState.stage,
+          continuationSeq: workflowState.continuationSeq,
+          status: workflowState.status,
+          cursor: workflowState.cursor,
+          progress: workflowState.progress,
+          budget,
+          label: 'summarize snapshot loaded',
+          extra: {
+            summarySnapshot: {
+              candidatesTotal: candidateStories.length,
+              summariesTotal: summarySnapshot.allStories.length,
+              relevantTotal: summarySnapshot.keptStories.length,
+            },
+          },
+        })
+
+        for (let storyIndex = workflowState.cursor.storyIndex; storyIndex < candidateStories.length; storyIndex += 1) {
+          if (await maybeHandoff(
+            'summarize_stories',
+            BUDGET_COST.storyContent + BUDGET_COST.storySummary + BUDGET_COST.r2Write + BUDGET_COST.workflowCreate,
+            `summarize story index ${storyIndex}`,
+            { storyIndex },
+          )) {
+            await saveSummarySnapshot(summarySnapshot)
+            return
+          }
+
+          const story = candidateStories[storyIndex]
+          const storyId = story.id || `story-${storyIndex + 1}`
+          let storyResponse = ''
+          try {
+            storyResponse = await step.do(`get story ${storyId}: ${story.title}`, retryConfig, async () => {
+              return await getStoryContent(story, maxTokens, this.env)
+            })
+            consumeBudget(budget, BUDGET_COST.storyContent, `get story ${storyId}`, jobId)
+          }
+          catch (error) {
+            console.warn(`get story ${storyId} content failed, skip story`, {
+              title: story.title,
+              error: formatError(error),
+            })
+            workflowState.cursor.storyIndex = storyIndex + 1
+            workflowState.progress.storiesProcessed = workflowState.cursor.storyIndex
+            await step.sleep('Give AI a break', breakTime)
+            continue
+          }
+
+          if (!storyResponse.trim()) {
+            console.warn(`get story ${storyId} content empty, skip`, {
+              title: story.title,
+            })
+            workflowState.cursor.storyIndex = storyIndex + 1
+            workflowState.progress.storiesProcessed = workflowState.cursor.storyIndex
+            await step.sleep('Give AI a break', breakTime)
+            continue
+          }
+
+          await step.sleep('reset quota before summarize', breakTime)
+          let summaryResult: StorySummaryResult | null = null
+          try {
+            summaryResult = await step.do(`summarize story ${storyId}: ${story.title}`, { ...retryConfig, retries: withRetryLimit(2) }, async () => {
+              const { result, usage, finishReason } = await summarizeStoryWithRelevance({
+                env: this.env,
+                runtimeAi,
+                model: primaryModel,
+                instructions: runtimePrompts.summarizeStory,
+                input: storyResponse,
+                maxOutputTokens: maxTokens,
+              })
+              console.info(`get story ${storyId} summary success`, {
+                relevant: result.relevant,
+                reason: result.reason,
+                summaryLength: result.summary?.length || 0,
+                usage,
+                finishReason,
+              })
+              return result
+            })
+            consumeBudget(budget, BUDGET_COST.storySummary, `summarize story ${storyId}`, jobId)
+          }
+          catch (error) {
+            console.warn(`get story ${storyId} summary failed after retries`, {
+              title: story.title,
+              error: formatError(error),
+            })
+          }
+
+          if (!summaryResult || !summaryResult.relevant) {
+            workflowState.cursor.storyIndex = storyIndex + 1
+            workflowState.progress.storiesProcessed = workflowState.cursor.storyIndex
+            await step.sleep('Give AI a break', breakTime)
+            continue
+          }
+
+          const summaryText = summaryResult.summary?.trim()
+          if (!summaryText) {
+            workflowState.cursor.storyIndex = storyIndex + 1
+            workflowState.progress.storiesProcessed = workflowState.cursor.storyIndex
+            await step.sleep('Give AI a break', breakTime)
+            continue
+          }
+
+          summarySnapshot.allStories.push(`<story>${summaryText}</story>`)
+          summarySnapshot.keptStories.push(story)
+          workflowState.cursor.storyIndex = storyIndex + 1
+          workflowState.progress.storiesProcessed = workflowState.cursor.storyIndex
+          workflowState.progress.storiesRelevant = summarySnapshot.keptStories.length
+          await step.sleep('Give AI a break', breakTime)
+        }
+
+        await saveSummarySnapshot(summarySnapshot)
+        workflowState.progress.storiesRelevant = summarySnapshot.keptStories.length
+        logWorkflowObservation({
+          jobId,
+          stage: workflowState.stage,
+          continuationSeq: workflowState.continuationSeq,
+          status: workflowState.status,
+          cursor: workflowState.cursor,
+          progress: workflowState.progress,
+          budget,
+          label: 'summarize snapshot persisted',
+          extra: {
+            summarySnapshot: {
+              candidatesTotal: candidateStories.length,
+              summariesTotal: summarySnapshot.allStories.length,
+              relevantTotal: summarySnapshot.keptStories.length,
+            },
+          },
+        })
+        if (!summarySnapshot.keptStories.length) {
+          workflowState.status = 'done'
+          workflowState.stage = 'done'
+          logWorkflowObservation({
+            jobId,
+            stage: workflowState.stage,
+            continuationSeq: workflowState.continuationSeq,
+            status: workflowState.status,
+            cursor: workflowState.cursor,
+            progress: workflowState.progress,
+            budget,
+            label: 'no relevant stories after summarize',
+          })
+          await saveWorkflowState('no relevant stories after summarize')
+          return
+        }
+
+        workflowState.stage = 'compose_text'
+        await saveWorkflowState('stage transition: summarize_stories -> compose_text')
+        continue
+      }
+
+      if (workflowState.stage === 'compose_text') {
+        if (await maybeHandoff(
+          'compose_text',
+          BUDGET_COST.llmCompose * 4 + BUDGET_COST.kvWrite + BUDGET_COST.r2Write + BUDGET_COST.workflowCreate,
+          'compose text stage needs fresh budget',
+        )) {
+          return
+        }
+
+        const summarySnapshot = await loadSummarySnapshot()
+        const keptStories = summarySnapshot.keptStories
+        const allStories = summarySnapshot.allStories
+        workflowState.progress.storiesRelevant = keptStories.length
+        const composeStepsTotal = 4
+        const logComposeStep = (
+          stepIndex: number,
+          stepName: string,
+          phase: 'start' | 'done',
+          extra?: Record<string, unknown>,
+        ) => {
+          logWorkflowObservation({
+            jobId,
+            stage: workflowState.stage,
+            continuationSeq: workflowState.continuationSeq,
+            status: workflowState.status,
+            cursor: workflowState.cursor,
+            progress: workflowState.progress,
+            budget,
+            label: `compose ${phase}: ${stepName}`,
+            extra: {
+              composeStep: {
+                current: stepIndex,
+                total: composeStepsTotal,
+                name: stepName,
+                phase,
+              },
+              ...(extra || {}),
+            },
+          })
+        }
+        logComposeStep(0, 'prepare summary input', 'done', {
+          summarySnapshot: {
+            summariesTotal: allStories.length,
+            relevantTotal: keptStories.length,
+          },
+        })
+        if (!keptStories.length || !allStories.length) {
+          workflowState.status = 'done'
+          workflowState.stage = 'done'
+          logWorkflowObservation({
+            jobId,
+            stage: workflowState.stage,
+            continuationSeq: workflowState.continuationSeq,
+            status: workflowState.status,
+            cursor: workflowState.cursor,
+            progress: workflowState.progress,
+            budget,
+            label: 'compose skipped due to empty summary snapshot',
+          })
+          await saveWorkflowState('summary snapshot empty before compose')
+          return
+        }
+
+        const blogStories = keptStories.map((story) => {
+          const resolvedLink = story.url || ''
+          return {
+            title: story.title || '',
+            link: resolvedLink,
+            url: resolvedLink,
+            publishedAt: story.publishedAt || '',
+          }
+        })
+
+        await step.sleep('Give AI a break', breakTime)
+
+        logComposeStep(1, 'podcast content', 'start', {
+          inputStories: allStories.length,
+        })
+        const podcastContent = await step.do('create podcast content', { ...retryConfig, retries: withRetryLimit(3) }, async () => {
+          const attemptInputs: { label: string, stories: string[] }[] = [
+            { label: 'all', stories: allStories },
+          ]
+          if (allStories.length > 6) {
+            attemptInputs.push({ label: 'first-6', stories: allStories.slice(0, 6) })
+          }
+
+          for (const attempt of attemptInputs) {
+            const input = attempt.stories.join('\n\n---\n\n')
+            try {
+              const { text } = await createResponseText({
+                env: this.env,
+                runtimeAi,
+                model: thinkingModel,
+                instructions: runtimePrompts.summarizePodcast,
+                input,
+                maxOutputTokens: maxTokens,
+              })
+              return text
+            }
+            catch (error) {
+              if (isSubrequestLimitError(error))
+                throw error
+            }
+          }
+          return ''
+        })
+        consumeBudget(budget, BUDGET_COST.llmCompose, 'create podcast content', jobId)
+        logComposeStep(1, 'podcast content', 'done', {
+          outputChars: podcastContent.length,
+        })
+        if (!podcastContent) {
+          workflowState.status = 'done'
+          workflowState.stage = 'done'
+          logWorkflowObservation({
+            jobId,
+            stage: workflowState.stage,
+            continuationSeq: workflowState.continuationSeq,
+            status: workflowState.status,
+            cursor: workflowState.cursor,
+            progress: workflowState.progress,
+            budget,
+            label: 'podcast content empty',
+          })
+          await saveWorkflowState('podcast content empty')
+          return
+        }
+
+        await step.sleep('Give AI a break', breakTime)
+
+        logComposeStep(2, 'blog content', 'start', {
+          inputStories: allStories.length,
+        })
+        const blogContent = await step.do('create blog content', { ...retryConfig, retries: withRetryLimit(3) }, async () => {
+          const attemptInputs: { label: string, storyMeta: typeof blogStories, stories: string[] }[] = [
+            { label: 'all', storyMeta: blogStories, stories: allStories },
+          ]
+          if (allStories.length > 6) {
+            attemptInputs.push({
+              label: 'first-6',
+              storyMeta: blogStories.slice(0, 6),
+              stories: allStories.slice(0, 6),
+            })
+          }
+
+          for (const attempt of attemptInputs) {
+            const input = `<stories>${JSON.stringify(attempt.storyMeta)}</stories>\n\n---\n\n${attempt.stories.join('\n\n---\n\n')}`
+            try {
+              const { text } = await createResponseText({
+                env: this.env,
+                runtimeAi,
+                model: thinkingModel,
+                instructions: runtimePrompts.summarizeBlog,
+                input,
+                maxOutputTokens: maxTokens,
+              })
+              return text
+            }
+            catch (error) {
+              if (isSubrequestLimitError(error))
+                throw error
+            }
+          }
+          return ''
+        })
+        consumeBudget(budget, BUDGET_COST.llmCompose, 'create blog content', jobId)
+        logComposeStep(2, 'blog content', 'done', {
+          outputChars: blogContent.length,
+        })
+        if (!blogContent) {
+          workflowState.status = 'done'
+          workflowState.stage = 'done'
+          logWorkflowObservation({
+            jobId,
+            stage: workflowState.stage,
+            continuationSeq: workflowState.continuationSeq,
+            status: workflowState.status,
+            cursor: workflowState.cursor,
+            progress: workflowState.progress,
+            budget,
+            label: 'blog content empty',
+          })
+          await saveWorkflowState('blog content empty')
+          return
+        }
+
+        logComposeStep(3, 'intro content', 'start')
+        const introContent = await step.do('create intro content', retryConfig, async () => {
+          const { text } = await createResponseText({
             env: this.env,
             runtimeAi,
             model: primaryModel,
-            instructions: runtimePrompts.summarizeStory,
-            input: storyResponse,
-            maxOutputTokens: maxTokens,
+            instructions: runtimePrompts.intro,
+            input: podcastContent,
           })
-
-          console.info(`get story ${story.id} summary success`, {
-            relevant: result.relevant,
-            reason: result.reason,
-            summaryLength: result.summary?.length || 0,
-            usage,
-            finishReason,
-          })
-          return result
+          return text
         })
-      }
-      catch (error) {
-        console.warn(`get story ${story.id} summary failed after retries`, {
-          title: story.title,
-          error: formatError(error),
+        consumeBudget(budget, BUDGET_COST.llmCompose, 'create intro content', jobId)
+        logComposeStep(3, 'intro content', 'done', {
+          outputChars: introContent.length,
         })
-      }
 
-      if (!summaryResult) {
-        console.info(`story ${story.id} skipped due to summary error`, { title: story.title })
-        await step.sleep('Give AI a break', breakTime)
-        continue
-      }
-
-      if (!summaryResult.relevant) {
-        console.info(`story ${story.id} filtered out`, {
-          title: story.title,
-          reason: summaryResult.reason,
-        })
-        await step.sleep('Give AI a break', breakTime)
-        continue
-      }
-
-      const summaryText = summaryResult.summary?.trim()
-      if (!summaryText) {
-        console.warn(`story ${story.id} summary empty, skip`, { title: story.title })
-        await step.sleep('Give AI a break', breakTime)
-        continue
-      }
-
-      console.info(`story ${story.id} kept`, {
-        title: story.title,
-        reason: summaryResult.reason,
-        summaryLength: summaryText.length,
-      })
-
-      allStories.push(`<story>${summaryText}</story>`)
-      keptStories.push(story)
-
-      await step.sleep('Give AI a break', breakTime)
-    }
-
-    if (!keptStories.length) {
-      console.info('no relevant stories after summarization, exit workflow run')
-      return
-    }
-
-    const blogStories = keptStories.map((story) => {
-      const resolvedLink = story.url || ''
-      return {
-        title: story.title || '',
-        link: resolvedLink,
-        url: resolvedLink,
-        publishedAt: story.publishedAt || '',
-      }
-    })
-
-    await step.sleep('Give AI a break', breakTime)
-
-    const podcastContent = await step.do('create podcast content', { ...retryConfig, retries: withRetryLimit(3) }, async () => {
-      const attemptInputs: { label: string, stories: string[] }[] = [
-        { label: 'all', stories: allStories },
-      ]
-      if (allStories.length > 6) {
-        attemptInputs.push({ label: 'first-6', stories: allStories.slice(0, 6) })
-      }
-
-      for (const attempt of attemptInputs) {
-        const input = attempt.stories.join('\n\n---\n\n')
-        console.info('create podcast content attempt', {
-          attempt: attempt.label,
-          stories: attempt.stories.length,
-          inputChars: input.length,
-        })
-        try {
-          const { text, usage, finishReason } = await createResponseText({
+        logComposeStep(4, 'episode title', 'start')
+        const episodeTitle = await step.do('generate episode title', retryConfig, async () => {
+          const { text } = await createResponseText({
             env: this.env,
             runtimeAi,
-            model: thinkingModel,
-            instructions: runtimePrompts.summarizePodcast,
-            input,
-            maxOutputTokens: maxTokens,
+            model: primaryModel,
+            instructions: runtimePrompts.title,
+            input: podcastContent,
           })
-
-          console.info(`create podcast content success`, {
-            attempt: attempt.label,
-            stories: attempt.stories.length,
-            inputChars: input.length,
-            usage,
-            finishReason,
-          })
-
-          return text
-        }
-        catch (error) {
-          if (isSubrequestLimitError(error))
-            throw error
-          console.warn('create podcast content failed', {
-            attempt: attempt.label,
-            stories: attempt.stories.length,
-            inputChars: input.length,
-            error: formatError(error),
-          })
-        }
-      }
-
-      console.warn('create podcast content failed after retries, skip workflow')
-      return ''
-    })
-
-    if (!podcastContent) {
-      console.warn('podcast content is empty, exit workflow run')
-      return
-    }
-
-    console.info('podcast content:\n', isDev ? podcastContent : podcastContent.slice(0, 100))
-
-    await step.sleep('Give AI a break', breakTime)
-
-    const blogContent = await step.do('create blog content', { ...retryConfig, retries: withRetryLimit(3) }, async () => {
-      const attemptInputs: { label: string, storyMeta: typeof blogStories, stories: string[] }[] = [
-        { label: 'all', storyMeta: blogStories, stories: allStories },
-      ]
-      if (allStories.length > 6) {
-        attemptInputs.push({
-          label: 'first-6',
-          storyMeta: blogStories.slice(0, 6),
-          stories: allStories.slice(0, 6),
+          const parsedTitle = extractEpisodeTitle(text)
+          return parsedTitle || `${runtimeConfig.site.title} ${workflowState.publishDateKey}`
         })
-      }
-
-      for (const attempt of attemptInputs) {
-        const input = `<stories>${JSON.stringify(attempt.storyMeta)}</stories>\n\n---\n\n${attempt.stories.join('\n\n---\n\n')}`
-        console.info('create blog content attempt', {
-          attempt: attempt.label,
-          stories: attempt.stories.length,
-          metaStories: attempt.storyMeta.length,
-          inputChars: input.length,
-        })
-        try {
-          const { text, usage, finishReason } = await createResponseText({
-            env: this.env,
-            runtimeAi,
-            model: thinkingModel,
-            instructions: runtimePrompts.summarizeBlog,
-            input,
-            maxOutputTokens: maxTokens,
-          })
-
-          console.info('create blog content success', {
-            attempt: attempt.label,
-            stories: attempt.stories.length,
-            metaStories: attempt.storyMeta.length,
-            inputChars: input.length,
-            usage,
-            finishReason,
-          })
-
-          return text
-        }
-        catch (error) {
-          if (isSubrequestLimitError(error))
-            throw error
-          console.warn('create blog content failed', {
-            attempt: attempt.label,
-            stories: attempt.stories.length,
-            metaStories: attempt.storyMeta.length,
-            inputChars: input.length,
-            error: formatError(error),
-          })
-        }
-      }
-
-      console.warn('create blog content failed after retries, skip workflow')
-      return ''
-    })
-
-    if (!blogContent) {
-      console.warn('blog content is empty, exit workflow run')
-      return
-    }
-
-    console.info('blog content:\n', isDev ? blogContent : blogContent.slice(0, 100))
-
-    await step.sleep('Give AI a break', breakTime)
-
-    const introContent = await step.do('create intro content', retryConfig, async () => {
-      const { text, usage, finishReason } = await createResponseText({
-        env: this.env,
-        runtimeAi,
-        model: primaryModel,
-        instructions: runtimePrompts.intro,
-        input: podcastContent,
-      })
-
-      console.info(`create intro content success`, { text, usage, finishReason })
-
-      return text
-    })
-
-    const episodeTitle = await step.do('generate episode title', retryConfig, async () => {
-      const { text } = await createResponseText({
-        env: this.env,
-        runtimeAi,
-        model: primaryModel,
-        instructions: runtimePrompts.title,
-        input: podcastContent,
-      })
-
-      console.info('title generation output:\n', text)
-
-      const parsedTitle = extractEpisodeTitle(text)
-      return parsedTitle || `${runtimeConfig.site.title} ${publishDateKey}`
-    })
-
-    console.info('episode title:', episodeTitle)
-
-    await step.sleep('reset quota before TTS', breakTime)
-
-    const contentKey = buildContentKey(runEnv, publishDateKey)
-    const podcastKeyBase = buildPodcastKeyBase(runEnv, publishDateKey)
-    const podcastKey = `${podcastKeyBase}.mp3`
-
-    const ttsInputOverride = ttsTestInputOverride.trim()
-    if (ttsInputOverride) {
-      console.info('TTS input overridden by runtime test config or env variable')
-    }
-    const ttsSourceText = ttsInputOverride || podcastContent
-
-    const conversations = ttsSourceText
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-    const parsedConversations = parseConversationLines(conversations, speakerMarkers)
-
-    console.info('TTS input stats', {
-      hasOverride: Boolean(ttsInputOverride),
-      chars: ttsSourceText.length,
-      lines: conversations.length,
-      dialogLines: parsedConversations.length,
-      preview: ttsSourceText.slice(0, 200),
-    })
-
-    if (!skipTTS && parsedConversations.length === 0) {
-      throw new Error('No valid TTS dialog lines found. Please ensure each line starts with configured speaker markers.')
-    }
-
-    await step.do('save content to kv', retryConfig, async () => {
-      try {
-        const updatedAt = Date.now()
-        await this.env.PODCAST_KV.put(contentKey, JSON.stringify({
-          date: publishDateKey,
-          publishedAt,
+        consumeBudget(budget, BUDGET_COST.llmCompose, 'generate episode title', jobId)
+        logComposeStep(4, 'episode title', 'done', {
           title: episodeTitle,
+        })
+
+        const contentKey = buildContentKey(runEnv, workflowState.publishDateKey)
+        const podcastKeyBase = buildPodcastKeyBase(runEnv, workflowState.publishDateKey)
+        const podcastKey = `${podcastKeyBase}.mp3`
+        const ttsInputOverride = ttsTestInputOverride.trim()
+        const ttsSourceText = ttsInputOverride || podcastContent
+        const conversations = ttsSourceText
+          .split('\n')
+          .map(line => line.trim())
+          .filter(Boolean)
+        const parsedConversations = parseConversationLines(conversations, speakerMarkers)
+        if (!skipTTS && parsedConversations.length === 0) {
+          throw new Error('No valid TTS dialog lines found. Please ensure each line starts with configured speaker markers.')
+        }
+
+        await step.do('save content to kv', retryConfig, async () => {
+          const updatedAt = Date.now()
+          await this.env.PODCAST_KV.put(contentKey, JSON.stringify({
+            date: workflowState.publishDateKey,
+            publishedAt: workflowState.publishedAt,
+            title: episodeTitle,
+            stories: keptStories,
+            podcastContent,
+            blogContent,
+            introContent,
+            audio: '',
+            updatedAt,
+            configVersion: runtimeState.version,
+            updatedBy: 'workflow',
+          }))
+          return true
+        })
+        consumeBudget(budget, BUDGET_COST.kvWrite, 'save content to kv', jobId)
+
+        await saveComposeSnapshot({
           stories: keptStories,
           podcastContent,
           blogContent,
           introContent,
-          audio: '',
-          updatedAt,
-          configVersion: runtimeState.version,
-          updatedBy: 'workflow',
-        }))
-      }
-      catch (error) {
-        console.error('save content to KV failed', {
-          key: contentKey,
-          error: formatError(error),
-        })
-        throw error
-      }
-
-      return introContent
-    })
-
-    console.info('save content to kv success')
-
-    if (skipTTS) {
-      console.info('skip TTS enabled, skip audio generation')
-      return
-    }
-
-    await step.do('trigger tts workflow', { ...retryConfig, retries: withRetryLimit(2), timeout: '10 minutes' }, async () => {
-      const ttsProvider = validateTtsConfig(this.env, runtimeTtsSettings.provider)
-      const instance = await this.env.TTS_WORKFLOW.create({
-        id: `${event.instanceId}-tts`,
-        params: {
+          episodeTitle,
           parsedConversations,
-          podcastKey,
           contentKey,
-          ttsSettings: {
-            ...runtimeTtsSettings,
-            provider: ttsProvider,
-          },
+          podcastKey,
+          ttsSettings: runtimeTtsSettings,
           ffmpegAudioQuality,
           introThemeUrl,
           introMusicConfig: runtimeConfig.tts.introMusic,
           isDev,
-        },
-      })
+        })
+        workflowState.contentKey = contentKey
+        workflowState.podcastKey = podcastKey
+        workflowState.progress.storiesRelevant = keptStories.length
+        workflowState.progress.ttsTotal = parsedConversations.length
+        workflowState.progress.ttsProcessed = workflowState.cursor.ttsLineIndex
+        logWorkflowObservation({
+          jobId,
+          stage: workflowState.stage,
+          continuationSeq: workflowState.continuationSeq,
+          status: workflowState.status,
+          cursor: workflowState.cursor,
+          progress: workflowState.progress,
+          budget,
+          label: 'compose stage complete',
+          extra: {
+            summarySnapshot: {
+              summariesTotal: allStories.length,
+              relevantTotal: keptStories.length,
+            },
+            content: {
+              title: episodeTitle,
+              contentKey,
+              podcastKey,
+            },
+          },
+        })
 
-      const instanceStatus = await instance.status()
-      console.info('tts workflow triggered', {
-        workflowInstanceId: instance.id,
-        status: instanceStatus.status,
-        contentKey,
-        podcastKey,
-      })
-      return instance.id
-    })
+        if (skipTTS) {
+          workflowState.status = 'done'
+          workflowState.stage = 'done'
+          logWorkflowObservation({
+            jobId,
+            stage: workflowState.stage,
+            continuationSeq: workflowState.continuationSeq,
+            status: workflowState.status,
+            cursor: workflowState.cursor,
+            progress: workflowState.progress,
+            budget,
+            label: 'skip TTS complete',
+          })
+          await saveWorkflowState('skip TTS, mark done')
+          return
+        }
+
+        workflowState.stage = 'tts_render'
+        workflowState.cursor.ttsLineIndex = 0
+        await saveWorkflowState('stage transition: compose_text -> tts_render')
+        continue
+      }
+
+      if (workflowState.stage === 'tts_render') {
+        const composeSnapshot = await loadComposeSnapshot()
+        if (!composeSnapshot) {
+          throw new Error(`compose snapshot missing for job ${jobId}`)
+        }
+        workflowState.progress.ttsTotal = composeSnapshot.parsedConversations.length
+        workflowState.progress.ttsProcessed = workflowState.cursor.ttsLineIndex
+
+        const provider = workflowState.provider || validateTtsConfig(this.env, composeSnapshot.ttsSettings.provider)
+        workflowState.provider = provider
+        const tmpPrefix = `tmp/${jobId}`
+        const geminiWavKey = `${tmpPrefix}/podcast.wav`
+        const basePodcastKey = `${tmpPrefix}/podcast.base.mp3`
+        let basePodcastUrl = ''
+
+        if (provider === 'gemini') {
+          if (await maybeHandoff(
+            'tts_render',
+            BUDGET_COST.ttsLine + BUDGET_COST.audioMerge + BUDGET_COST.introMusic + BUDGET_COST.kvWrite + BUDGET_COST.workflowCreate,
+            'gemini tts stage requires fresh budget',
+          )) {
+            return
+          }
+
+          const dialogLines = composeSnapshot.parsedConversations.map(item => item.raw)
+          const geminiPrompt = buildGeminiTtsPrompt(dialogLines, {
+            geminiPrompt: composeSnapshot.ttsSettings.geminiPrompt,
+            geminiSpeakers: composeSnapshot.ttsSettings.geminiSpeakers,
+          })
+
+          const geminiAudioUrl = await step.do('create gemini podcast audio', { ...retryConfig, retries: withRetryLimit(2), timeout: '10 minutes' }, async () => {
+            const result = await synthesizeGeminiTTS(geminiPrompt, this.env, {
+              model: composeSnapshot.ttsSettings.model,
+              apiUrl: composeSnapshot.ttsSettings.apiUrl,
+              geminiSpeakers: composeSnapshot.ttsSettings.geminiSpeakers,
+            })
+            if (!result.audio.size) {
+              throw new Error('podcast audio size is 0')
+            }
+            await this.env.PODCAST_R2.put(geminiWavKey, result.audio)
+            return `${this.env.PODCAST_R2_BUCKET_URL}/${geminiWavKey}?t=${Date.now()}`
+          })
+          consumeBudget(budget, BUDGET_COST.ttsLine, 'gemini tts render', jobId)
+          workflowState.progress.ttsProcessed = composeSnapshot.parsedConversations.length
+
+          basePodcastUrl = await step.do('convert gemini audio to mp3', { ...retryConfig, retries: withRetryLimit(3) }, async () => {
+            if (!this.env.BROWSER) {
+              throw new Error('BROWSER binding is required for audio convert')
+            }
+            const blob = await concatAudioFiles([geminiAudioUrl], this.env.BROWSER, {
+              workerUrl: this.env.PODCAST_WORKER_URL,
+              audioQuality: composeSnapshot.ffmpegAudioQuality,
+            })
+            await this.env.PODCAST_R2.put(basePodcastKey, blob)
+            return `${this.env.PODCAST_R2_BUCKET_URL}/${basePodcastKey}?t=${Date.now()}`
+          })
+          consumeBudget(budget, BUDGET_COST.audioMerge, 'convert gemini audio', jobId)
+        }
+        else {
+          for (let index = workflowState.cursor.ttsLineIndex; index < composeSnapshot.parsedConversations.length; index += 1) {
+            if (await maybeHandoff(
+              'tts_render',
+              BUDGET_COST.ttsLine + BUDGET_COST.workflowCreate,
+              `render tts line ${index}`,
+              { ttsLineIndex: index },
+            )) {
+              return
+            }
+
+            const conversation = composeSnapshot.parsedConversations[index]
+            await step.do(
+              `create audio ${index}`,
+              { ...retryConfig, retries: withRetryLimit(0), timeout: '30 minutes' },
+              async () => {
+                const audio = await synthesize(conversation.text, conversation.speaker, this.env, {
+                  provider: composeSnapshot.ttsSettings.provider,
+                  language: composeSnapshot.ttsSettings.language,
+                  languageBoost: composeSnapshot.ttsSettings.languageBoost,
+                  model: composeSnapshot.ttsSettings.model,
+                  speed: composeSnapshot.ttsSettings.speed,
+                  apiUrl: composeSnapshot.ttsSettings.apiUrl,
+                  voicesBySpeaker: composeSnapshot.ttsSettings.voicesBySpeaker,
+                })
+                if (!audio.size) {
+                  throw new Error('podcast audio size is 0')
+                }
+                const audioKey = `${tmpPrefix}/podcast-${index}.mp3`
+                await this.env.PODCAST_R2.put(audioKey, audio)
+                return audioKey
+              },
+            )
+            consumeBudget(budget, BUDGET_COST.ttsLine, `render tts line ${index}`, jobId)
+            workflowState.cursor.ttsLineIndex = index + 1
+            workflowState.progress.ttsProcessed = workflowState.cursor.ttsLineIndex
+            const hasMoreLines = index < composeSnapshot.parsedConversations.length - 1
+            if (hasMoreLines) {
+              await step.sleep(
+                `yield between TTS lines after line ${index}`,
+                NON_GEMINI_TTS_LINE_SLEEP,
+              )
+            }
+          }
+
+          if (await maybeHandoff(
+            'tts_render',
+            BUDGET_COST.audioMerge + BUDGET_COST.introMusic + BUDGET_COST.kvWrite + BUDGET_COST.workflowCreate,
+            'tts post process needs fresh budget',
+            { ttsLineIndex: composeSnapshot.parsedConversations.length },
+          )) {
+            return
+          }
+
+          basePodcastUrl = await step.do('concat audio files', retryConfig, async () => {
+            if (!this.env.BROWSER) {
+              throw new Error('BROWSER binding is required for concat audio files')
+            }
+            const audioFiles = composeSnapshot.parsedConversations.map((_, index) => {
+              return `${this.env.PODCAST_R2_BUCKET_URL}/${tmpPrefix}/podcast-${index}.mp3?t=${Date.now()}`
+            })
+            const blob = await concatAudioFiles(audioFiles, this.env.BROWSER, {
+              workerUrl: this.env.PODCAST_WORKER_URL,
+              audioQuality: composeSnapshot.ffmpegAudioQuality,
+            })
+            await this.env.PODCAST_R2.put(basePodcastKey, blob)
+            return `${this.env.PODCAST_R2_BUCKET_URL}/${basePodcastKey}?t=${Date.now()}`
+          })
+          consumeBudget(budget, BUDGET_COST.audioMerge, 'concat audio files', jobId)
+        }
+
+        await step.sleep('reset quota before intro music', '30 seconds')
+        try {
+          await step.do('add intro music', retryConfig, async () => {
+            if (!this.env.BROWSER) {
+              throw new Error('BROWSER binding is required for intro music')
+            }
+            const blob = await addIntroMusic(basePodcastUrl, this.env.BROWSER, {
+              workerUrl: this.env.PODCAST_WORKER_URL,
+              themeUrl: composeSnapshot.introThemeUrl,
+              fadeOutStart: composeSnapshot.introMusicConfig.fadeOutStart,
+              fadeOutDuration: composeSnapshot.introMusicConfig.fadeOutDuration,
+              podcastDelayMs: composeSnapshot.introMusicConfig.podcastDelay,
+              audioQuality: composeSnapshot.ffmpegAudioQuality,
+            })
+            await this.env.PODCAST_R2.put(composeSnapshot.podcastKey, blob)
+            return composeSnapshot.podcastKey
+          })
+        }
+        catch (error) {
+          console.warn('add intro music failed after retries, fallback to base', {
+            error: formatError(error),
+          })
+          await step.do('fallback: copy base podcast', retryConfig, async () => {
+            const baseObj = await this.env.PODCAST_R2.get(basePodcastKey)
+            if (!baseObj) {
+              throw new Error('Base podcast object not found for fallback')
+            }
+            await this.env.PODCAST_R2.put(composeSnapshot.podcastKey, baseObj.body)
+            return composeSnapshot.podcastKey
+          })
+        }
+        consumeBudget(budget, BUDGET_COST.introMusic, 'add intro music', jobId)
+
+        await step.do('update content audio in kv', retryConfig, async () => {
+          const current = await this.env.PODCAST_KV.get(composeSnapshot.contentKey, 'json')
+          if (!current || typeof current !== 'object') {
+            throw new Error(`content not found for key: ${composeSnapshot.contentKey}`)
+          }
+          const existing = current as Record<string, unknown>
+          await this.env.PODCAST_KV.put(composeSnapshot.contentKey, JSON.stringify({
+            ...existing,
+            audio: composeSnapshot.podcastKey,
+            updatedAt: Date.now(),
+            updatedBy: 'workflow-inline-tts',
+          }))
+          return composeSnapshot.contentKey
+        })
+        consumeBudget(budget, BUDGET_COST.kvWrite, 'update content audio in kv', jobId)
+        const podcastUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${composeSnapshot.podcastKey}`
+        console.info('podcast audio ready', {
+          jobId,
+          podcastKey: composeSnapshot.podcastKey,
+          podcastUrl,
+        })
+
+        await step.do('clean up temporary data', retryConfig, async () => {
+          const deleting: Array<Promise<unknown>> = [
+            this.env.PODCAST_R2.delete(basePodcastKey).catch(() => {}),
+            this.env.PODCAST_R2.delete(geminiWavKey).catch(() => {}),
+          ]
+          for (let index = 0; index < composeSnapshot.parsedConversations.length; index += 1) {
+            deleting.push(this.env.PODCAST_R2.delete(`${tmpPrefix}/podcast-${index}.mp3`).catch(() => {}))
+          }
+          await Promise.all(deleting)
+          return true
+        })
+
+        workflowState.status = 'done'
+        workflowState.stage = 'done'
+        logWorkflowObservation({
+          jobId,
+          stage: workflowState.stage,
+          continuationSeq: workflowState.continuationSeq,
+          status: workflowState.status,
+          cursor: workflowState.cursor,
+          progress: workflowState.progress,
+          budget,
+          label: 'tts render complete',
+          extra: {
+            contentKey: composeSnapshot.contentKey,
+            podcastKey: composeSnapshot.podcastKey,
+            podcastUrl,
+          },
+        })
+        await saveWorkflowState('tts_render completed, mark done')
+        return
+      }
+    }
   }
 }
