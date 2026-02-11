@@ -1,5 +1,19 @@
 import type { Episode } from '@/types/podcast'
 
+function getEpisodeLabels(language?: string) {
+  const normalized = (language || '').toLowerCase()
+  if (normalized === 'zh' || normalized.startsWith('zh-')) {
+    return {
+      transcript: '播客全文',
+      references: '参考链接',
+    }
+  }
+  return {
+    transcript: 'Podcast Transcript',
+    references: 'References',
+  }
+}
+
 function buildAudioUrl(staticHost: string, audioPath: string, updatedAt?: number) {
   const normalizedHost = staticHost?.replace(/\/$/, '')
   if (/^https?:\/\//.test(audioPath)) {
@@ -24,7 +38,7 @@ function getAudioMimeType(audioPath: string): string {
   return 'audio/mpeg'
 }
 
-function buildReferencesSection(stories?: Story[]): string {
+function buildReferencesSection(stories: Story[] | undefined, referencesLabel: string): string {
   if (!stories || stories.length === 0) {
     return ''
   }
@@ -43,13 +57,15 @@ function buildReferencesSection(stories?: Story[]): string {
     return ''
   }
 
-  return ['## 参考链接', ...items].join('\n')
+  return [`## ${referencesLabel}`, ...items].join('\n')
 }
 
 export function buildEpisodeFromArticle(
   article: Article,
   staticHost: string,
+  language?: string,
 ): Episode {
+  const labels = getEpisodeLabels(language)
   const publishedIso = article.publishedAt
     || (typeof article.updatedAt === 'number' ? new Date(article.updatedAt).toISOString() : article.date)
 
@@ -68,10 +84,10 @@ export function buildEpisodeFromArticle(
   }
 
   if (article.podcastContent) {
-    sections.push(`## 播客全文\n\n${article.podcastContent}`)
+    sections.push(`## ${labels.transcript}\n\n${article.podcastContent}`)
   }
 
-  const references = buildReferencesSection(article.stories)
+  const references = buildReferencesSection(article.stories, labels.references)
   if (references) {
     sections.push(references)
   }
@@ -94,8 +110,9 @@ export function buildEpisodeFromArticle(
 export function buildEpisodesFromArticles(
   articles: Article[],
   staticHost: string,
+  language?: string,
 ): Episode[] {
   return articles
-    .map(article => buildEpisodeFromArticle(article, staticHost))
+    .map(article => buildEpisodeFromArticle(article, staticHost, language))
     .sort((a, b) => (a.published < b.published ? 1 : -1))
 }

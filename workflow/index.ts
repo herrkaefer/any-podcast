@@ -269,6 +269,41 @@ function parseStorySummary(text: string): StorySummaryResult | null {
   }
 }
 
+function trimWrappingQuotes(value: string) {
+  return value.replace(/^[\s"'“”‘’]+|[\s"'“”‘’]+$/g, '')
+}
+
+function extractEpisodeTitle(text: string): string | null {
+  const markers = new Set([
+    '推荐标题',
+    '推荐题目',
+    '最终标题',
+    'recommended title',
+    'final title',
+  ])
+
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine
+      .trim()
+      .replace(/^[-*]\s*/, '')
+      .replace(/\*\*/g, '')
+    const separatorIndex = line.search(/[：:]/)
+    if (separatorIndex < 0) {
+      continue
+    }
+    const label = line.slice(0, separatorIndex).trim().toLowerCase()
+    if (!markers.has(label)) {
+      continue
+    }
+    const title = trimWrappingQuotes(line.slice(separatorIndex + 1))
+    if (title) {
+      return title
+    }
+  }
+
+  return null
+}
+
 async function summarizeStoryWithRelevance(params: {
   env: AiEnv
   runtimeAi: RuntimeConfigBundle['ai']
@@ -1486,8 +1521,8 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
 
       console.info('title generation output:\n', text)
 
-      const match = text.match(/推荐标题[：:]\s*(.+)/)
-      return match?.[1]?.trim() || `${runtimeConfig.site.title} ${publishDateKey}`
+      const parsedTitle = extractEpisodeTitle(text)
+      return parsedTitle || `${runtimeConfig.site.title} ${publishDateKey}`
     })
 
     console.info('episode title:', episodeTitle)

@@ -150,8 +150,8 @@ export function Player() {
         `,
         'transition-opacity duration-300',
         shouldShowPlayer
-          ? 'pointer-events-auto opacity-100'
-          : 'pointer-events-none opacity-0',
+          ? 'pointer-events-auto visible opacity-100'
+          : 'pointer-events-none invisible opacity-0',
       )}
     >
       <MediaPlayer

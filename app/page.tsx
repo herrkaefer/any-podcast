@@ -42,7 +42,7 @@ export default async function Home({
     )
   ).filter(Boolean)
 
-  const episodes = buildEpisodesFromArticles(posts, env.NEXT_STATIC_HOST)
+  const episodes = buildEpisodesFromArticles(posts, env.NEXT_STATIC_HOST, runtimeConfig.config.locale.language)
 
   const podcastInfo: PodcastInfo = {
     title: runtimeSite.title,

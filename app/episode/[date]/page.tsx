@@ -30,7 +30,7 @@ export async function generateMetadata({
     return notFound()
   }
 
-  const episode = buildEpisodeFromArticle(post, env.NEXT_STATIC_HOST)
+  const episode = buildEpisodeFromArticle(post, env.NEXT_STATIC_HOST, runtimeConfig.config.locale.language)
   const title = episode.title || runtimeSite.title
   const description = episode.description || runtimeSite.description
   const url = `${podcast.base.link}/episode/${episode.id}`
@@ -82,7 +82,7 @@ export default async function PostPage({
     return notFound()
   }
 
-  const episode = buildEpisodeFromArticle(post, env.NEXT_STATIC_HOST)
+  const episode = buildEpisodeFromArticle(post, env.NEXT_STATIC_HOST, runtimeConfig.config.locale.language)
   const podcastInfo = {
     title: runtimeSite.title,
     description: runtimeSite.description,

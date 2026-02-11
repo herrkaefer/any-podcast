@@ -51,17 +51,30 @@ export function EpisodeManagement() {
   }, [loadEpisodes])
 
   async function openEpisodeEditor(date: string) {
+    console.info('[episode-edit] loading', date)
     setEpisodeBusy(true)
     setMessage('')
     try {
-      const response = await fetch(`/api/admin/episodes/${date}`)
-      const body = (await response.json()) as { item?: EpisodeDetail, error?: string }
+      const url = `/api/admin/episodes/${date}`
+      console.info('[episode-edit] GET', url)
+      const response = await fetch(url)
+      console.info('[episode-edit] response status:', response.status)
+      const text = await response.text()
+      console.info('[episode-edit] response body:', text.slice(0, 300))
+      let body: { item?: EpisodeDetail, error?: string }
+      try {
+        body = JSON.parse(text)
+      }
+      catch {
+        throw new Error(`Non-JSON response (${response.status}): ${text.slice(0, 100)}`)
+      }
       if (!response.ok || !body.item) {
-        throw new Error(body.error || 'Failed to load episode details')
+        throw new Error(body.error || `Failed to load episode details (${response.status})`)
       }
       setSelectedEpisode(body.item)
     }
     catch (error) {
+      console.error('[episode-edit] ERROR:', error)
       setMessage(error instanceof Error ? error.message : 'Failed to load episode details')
     }
     finally {

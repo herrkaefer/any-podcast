@@ -49,45 +49,53 @@ function resolveMetadataBase() {
 
 const metadataBase = resolveMetadataBase()
 
-export const metadata: Metadata = {
-  metadataBase,
-  title: {
-    default: site.seo.defaultTitle,
-    template: `%s · ${site.seo.siteName}`,
-  },
-  description: site.seo.defaultDescription,
-  alternates: {
-    types: {
-      'application/rss+xml': [
+export async function generateMetadata(): Promise<Metadata> {
+  const { env } = await getCloudflareContext({ async: true })
+  const layoutEnv = env as LayoutEnv
+  const runtimeConfig = await getActiveRuntimeConfig(layoutEnv)
+  const title = runtimeConfig.config.site.title || site.seo.defaultTitle
+  const description = runtimeConfig.config.site.description || site.seo.defaultDescription
+
+  return {
+    metadataBase,
+    title: {
+      default: title,
+      template: `%s · ${title}`,
+    },
+    description,
+    alternates: {
+      types: {
+        'application/rss+xml': [
+          {
+            url: '/rss.xml',
+            title,
+          },
+        ],
+      },
+    },
+    openGraph: {
+      title,
+      description,
+      url: podcast.base.link,
+      type: 'website',
+      images: [
         {
-          url: '/rss.xml',
-          title: site.seo.defaultTitle,
+          url: site.seo.defaultImage,
+          alt: title,
         },
       ],
     },
-  },
-  openGraph: {
-    title: site.seo.defaultTitle,
-    description: site.seo.defaultDescription,
-    url: podcast.base.link,
-    type: 'website',
-    images: [
-      {
-        url: site.seo.defaultImage,
-        alt: site.seo.defaultTitle,
-      },
-    ],
-  },
-  twitter: {
-    card: 'summary_large_image',
-    site: site.seo.twitterHandle,
-    title: site.seo.defaultTitle,
-    description: site.seo.defaultDescription,
-    images: [site.seo.defaultImage],
-  },
-  icons: {
-    icon: site.favicon,
-  },
+    twitter: {
+      card: 'summary_large_image',
+      site: site.seo.twitterHandle,
+      title,
+      description,
+      images: [site.seo.defaultImage],
+    },
+    icons: {
+      icon: site.favicon,
+    },
+  }
 }
 
 interface LayoutEnv extends CloudflareEnv {
