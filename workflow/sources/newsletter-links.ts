@@ -145,12 +145,11 @@ export async function resolveTrackingRedirect(href: string, cache: Map<string, s
     return href
   }
 
+  let response: Response | null = null
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 8000)
   try {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 8000)
-    const response = await fetch(href, { redirect: 'manual', signal: controller.signal })
-    clearTimeout(timeout)
-
+    response = await fetch(href, { redirect: 'manual', signal: controller.signal })
     const location = response.headers.get('location')
     if (location) {
       const resolved = location.startsWith('http')
@@ -162,6 +161,12 @@ export async function resolveTrackingRedirect(href: string, cache: Map<string, s
   }
   catch {
     // ignore and fall back to original
+  }
+  finally {
+    clearTimeout(timeout)
+    if (response?.body) {
+      await response.body.cancel().catch(() => {})
+    }
   }
 
   cache.set(href, href)
