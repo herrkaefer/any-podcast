@@ -21,12 +21,12 @@ export const podcast: Podcast = {
   },
   hosts: [
     {
-      name: 'Apple',
-      link: 'https://apple.com',
+      name: 'Gemini',
+      link: 'https://gemini.google.com',
     },
     {
-      name: 'Banana',
-      link: 'https://banana.com',
+      name: 'Minimax',
+      link: 'https://www.minimax.io',
     },
   ],
   platforms: [
