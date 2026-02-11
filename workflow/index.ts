@@ -486,7 +486,7 @@ const NON_GEMINI_TTS_LINE_SLEEP = '12 seconds'
 const NON_GEMINI_TTS_SUBREQUEST_BACKOFF_SLEEP = '20 seconds'
 const NON_GEMINI_TTS_RETRY_SLEEP = '5 seconds'
 const NON_GEMINI_TTS_MAX_ATTEMPTS = 2
-const SUBREQUEST_SOFT_LIMIT = 35
+const SUBREQUEST_SOFT_LIMIT = 45
 const SUBREQUEST_SOFT_RESERVE = 6
 
 const BUDGET_COST = {
@@ -1746,8 +1746,9 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
       nextCost: number,
       reason: string,
       cursorPatch?: Partial<WorkflowCursorState>,
+      options?: { force?: boolean },
     ) => {
-      if (!shouldHandoff(budget, nextCost)) {
+      if (!options?.force && !shouldHandoff(budget, nextCost)) {
         return false
       }
       logWorkflowObservation({
@@ -2055,14 +2056,21 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         })
 
         for (let storyIndex = workflowState.cursor.storyIndex; storyIndex < candidateStories.length; storyIndex += 1) {
-          if (await maybeHandoff(
-            'summarize_stories',
-            BUDGET_COST.storyContent + BUDGET_COST.storySummary + BUDGET_COST.r2Write + BUDGET_COST.workflowCreate,
-            `summarize story index ${storyIndex}`,
-            { storyIndex },
-          )) {
+          const summarizeNextCost = BUDGET_COST.storyContent
+            + BUDGET_COST.storySummary
+            + BUDGET_COST.r2Write
+            + BUDGET_COST.workflowCreate
+          if (shouldHandoff(budget, summarizeNextCost)) {
             await saveSummarySnapshot(summarySnapshot)
-            return
+            if (await maybeHandoff(
+              'summarize_stories',
+              BUDGET_COST.workflowCreate,
+              `summarize story index ${storyIndex}`,
+              { storyIndex },
+              { force: true },
+            )) {
+              return
+            }
           }
 
           const story = candidateStories[storyIndex]
