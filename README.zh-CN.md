@@ -18,6 +18,27 @@
 - **存储**: Cloudflare KV (元数据) + R2 (音频文件)
 - **UI**: Tailwind CSS + shadcn/ui
 
+## Workflow 续跑机制（Subrequest 预算保护）
+
+为了解决 Cloudflare Workflow 在单次运行中可能触发 `Too many subrequests` 的问题（尤其在内容源、文章数、TTS 行数增多时），当前实现采用了**单主 workflow + 多实例接力续跑**方案，而不是拆成多种不同 workflow。
+
+核心思路：
+
+- 主流程仍然是一个 `PodcastWorkflow`，按阶段执行：`collect_candidates -> expand_gmail -> summarize_stories -> compose_text -> tts_render -> done`
+- 在运行中维护 subrequest 预算（软上限 `45`，保留 `6`）
+- 每次进入高成本步骤前，先估算下一步成本；若预算即将超限，则先做 checkpoint，再创建下一个 continuation 实例继续
+- continuation 仍是同一个主流程，继承相同 `jobId`，并通过 `continuationSeq` 递增（实例 ID 形如 `<jobId>-c<seq>`）
+
+状态与快照存储：
+
+- **KV**：保存轻量工作状态（当前阶段、游标、进度、快照 key 等），key 形如 `workflow:job:<jobId>:state`
+- **R2**：保存较大的阶段快照数据，key 形如 `workflow/jobs/<jobId>/*.json`
+  - `candidates.json`：候选文章与 Gmail 待展开消息
+  - `summary.json`：摘要结果（相关/不相关）
+  - `compose.json`：播客/博客生成结果与 TTS 输入
+
+这样做的结果是：单次运行接近上限时会自动“换实例继续”，而不丢失进度，最终仍产出同一集 podcast/blog/audio。
+
 ## 快速开始
 
 ### 前置条件

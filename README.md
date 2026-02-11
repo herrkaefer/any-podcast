@@ -18,6 +18,27 @@ An AI-powered, configurable podcast platform that aggregates content sources, ge
 - **Storage**: Cloudflare KV (metadata) + R2 (audio files)
 - **UI**: Tailwind CSS + shadcn/ui
 
+## Workflow Continuation Strategy (Subrequest Budget Guard)
+
+To prevent `Too many subrequests` failures in long runs (many sources, many stories, many TTS lines), the project now uses a **single main workflow with continuation handoff**, instead of splitting logic into separate workflow types.
+
+Core approach:
+
+- Keep one `PodcastWorkflow` stage flow: `collect_candidates -> expand_gmail -> summarize_stories -> compose_text -> tts_render -> done`
+- Track a subrequest budget during execution (soft limit `45`, reserve `6`)
+- Before high-cost work, estimate the next cost; if budget is near the threshold, checkpoint first and spawn a continuation instance
+- The continuation is still the same main workflow, reusing the same `jobId` and incrementing `continuationSeq` (instance ID like `<jobId>-c<seq>`)
+
+State and snapshot storage:
+
+- **KV** stores lightweight workflow state (stage, cursor, progress, snapshot keys), under keys like `workflow:job:<jobId>:state`
+- **R2** stores larger stage snapshots under keys like `workflow/jobs/<jobId>/*.json`
+  - `candidates.json`: candidate stories and pending Gmail expansions
+  - `summary.json`: story summary/relevance results
+  - `compose.json`: composed podcast/blog text and TTS inputs
+
+This allows the run to automatically continue in a fresh workflow instance before hitting the hard limit, without losing progress, while still producing one logical episode output.
+
 ## Getting Started
 
 ### Prerequisites
