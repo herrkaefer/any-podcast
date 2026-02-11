@@ -461,7 +461,12 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         }
         nowIso = parsed.toISOString()
       }
-      const response = await fetch('/api/admin/workflow/trigger', {
+      const triggerUrl = '/api/admin/workflow/trigger'
+      const fullUrl = new URL(triggerUrl, window.location.origin).toString()
+      console.info('[trigger] ---- START ----')
+      console.info('[trigger] page origin:', window.location.origin)
+      console.info('[trigger] POST', fullUrl, { nowIso })
+      const response = await fetch(triggerUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -469,6 +474,9 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         }),
       })
       const responseText = await response.text()
+      console.info('[trigger] response status:', response.status, response.statusText)
+      console.info('[trigger] response headers:', Object.fromEntries(response.headers.entries()))
+      console.info('[trigger] response body:', responseText.slice(0, 500))
       let body: WorkflowTriggerResponse = {}
       if (responseText.trim()) {
         try {
@@ -480,17 +488,22 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
           }
         }
       }
+      console.info('[trigger] parsed body:', body)
       if (!response.ok || !body.ok) {
+        console.error('[trigger] FAILED -', 'status:', response.status, 'body.error:', body.error, 'body:', body)
         throw new Error(body.error || `Failed to trigger workflow (HTTP ${response.status})`)
       }
       const modeLabel = body.mode === 'local' ? 'local worker' : 'production worker'
       const nowLabel = body.nowIso ? `, now=${body.nowIso}` : ''
+      console.info('[trigger] SUCCESS -', modeLabel, body.endpoint)
       setTriggerMessage(`Triggered ${modeLabel} at ${body.endpoint}${nowLabel}`)
     }
     catch (error) {
+      console.error('[trigger] ERROR:', error)
       setTriggerMessage(error instanceof Error ? error.message : 'Failed to trigger workflow')
     }
     finally {
+      console.info('[trigger] ---- END ----')
       setTriggerBusy(false)
     }
   }

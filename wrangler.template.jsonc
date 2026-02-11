@@ -46,6 +46,10 @@
     {
       "binding": "WORKER_SELF_REFERENCE",
       "service": "any-podcast"
+    },
+    {
+      "binding": "PODCAST_WORKER_SERVICE",
+      "service": "any-podcast-worker"
     }
   ],
   "durable_objects": {
