@@ -51,6 +51,8 @@ workflow/sources/config.local.ts
 
 worker/node_modules/
 
+.env
+
 tmp/
 media/
 
