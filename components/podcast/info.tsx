@@ -14,7 +14,7 @@ import { Waveform } from '@/components/common/waveform'
 import { TinyWaveFormIcon } from '@/components/common/waveform-icon'
 import { SpotifyIcon } from '@/components/icons/spotify'
 import { XYZIcon } from '@/components/icons/xyz'
-import { podcast, site } from '@/config'
+import { site } from '@/config'
 import { cn } from '@/lib/utils'
 import { getPodcastStore } from '@/stores/podcast-store'
 
@@ -115,7 +115,7 @@ function PodcastInfoContent({ podcastInfo }: PodcastInfoContentProps) {
       itemScope
       itemType="https://schema.org/PodcastSeries"
     >
-      <meta itemProp="url" content={podcast.base.link} />
+      <meta itemProp="url" content={podcastInfo.link} />
       <Waveform
         className={`
           absolute inset-x-0 top-0 w-full
@@ -220,7 +220,7 @@ function PodcastInfoContent({ podcastInfo }: PodcastInfoContentProps) {
           </div>
         </section>
 
-        {podcast.platforms?.length
+        {podcastInfo.platforms?.length
           ? (
               <section className="flex flex-col gap-5" aria-labelledby={listenSectionId}>
                 <div
@@ -244,7 +244,7 @@ function PodcastInfoContent({ podcastInfo }: PodcastInfoContentProps) {
                   md:flex-col md:items-start md:justify-start
                 `}
                 >
-                  {podcast.platforms.map((platform) => {
+                  {podcastInfo.platforms.map((platform) => {
                     const config = platformIcons[platform.id]
                     if (!config)
                       return null

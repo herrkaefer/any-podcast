@@ -3,6 +3,7 @@
 import type { RuntimeConfigBundle } from '@/types/runtime-config'
 import { useMemo, useRef, useState } from 'react'
 
+import { CONFIGURABLE_PLATFORM_OPTIONS } from '@/lib/podcast-platforms'
 import { findUnknownTemplateVariables, getTemplateVariables, renderTemplate } from '@/lib/template'
 
 type EditableSection = 'site' | 'hosts' | 'ai' | 'tts' | 'introMusic' | 'locale' | 'sources' | 'prompts' | 'test'
@@ -92,6 +93,13 @@ const workflowTestStepOptions: Array<{ value: WorkflowTestStep, label: string }>
   { value: 'intro', label: 'intro' },
   { value: 'stories', label: 'stories' },
 ]
+const externalPlatformOptions: ReadonlyArray<{
+  value: RuntimeConfigBundle['site']['externalLinks'][number]['platform']
+  label: string
+}> = CONFIGURABLE_PLATFORM_OPTIONS.map(option => ({
+  value: option.id,
+  label: option.name,
+}))
 
 function confirmAction(message: string) {
   // eslint-disable-next-line no-alert -- admin confirmation dialog
@@ -522,6 +530,42 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
 
   function renderSiteSection() {
     const site = workingDraft.site
+    const externalPlatformOrder = new Map(externalPlatformOptions.map((option, index) => [option.value, index]))
+
+    function sortExternalLinks(
+      links: RuntimeConfigBundle['site']['externalLinks'],
+    ): RuntimeConfigBundle['site']['externalLinks'] {
+      return [...links].sort((a, b) => {
+        const left = externalPlatformOrder.get(a.platform) ?? Number.MAX_SAFE_INTEGER
+        const right = externalPlatformOrder.get(b.platform) ?? Number.MAX_SAFE_INTEGER
+        return left - right
+      })
+    }
+
+    function updateExternalLinkUrl(
+      platform: RuntimeConfigBundle['site']['externalLinks'][number]['platform'],
+      url: string,
+    ) {
+      setWorkingDraft((prev) => {
+        const normalizedUrl = url.trim()
+        const existing = prev.site.externalLinks.find(item => item.platform === platform)
+        const filtered = prev.site.externalLinks.filter(item => item.platform !== platform)
+        const nextLinks = normalizedUrl
+          ? sortExternalLinks([
+              ...filtered,
+              { platform, url: normalizedUrl, icon: existing?.icon },
+            ])
+          : filtered
+        return {
+          ...prev,
+          site: {
+            ...prev.site,
+            externalLinks: nextLinks,
+          },
+        }
+      })
+    }
+
     return (
       <div className="space-y-4">
         <div className={`
@@ -788,111 +832,42 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         </div>
 
         <div className="space-y-3 rounded border p-3">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold">External links</p>
-            <button
-              type="button"
-              className="rounded border px-2 py-1 text-xs"
-              onClick={() => setWorkingDraft(prev => ({
-                ...prev,
-                site: {
-                  ...prev.site,
-                  externalLinks: [...prev.site.externalLinks, { platform: '', url: '', icon: '' }],
-                },
-              }))}
-            >
-              Add link
-            </button>
-          </div>
+          <p className="text-sm font-semibold">External links</p>
 
-          {site.externalLinks.map((link, index) => (
-            <div
-              key={`${link.platform}-${link.url}-${link.icon || ''}`}
-              className={`
-                grid gap-2 rounded border p-2
-                md:grid-cols-4
-              `}
-            >
-              <label className="text-xs">
-                platform
-                <input
-                  className="mt-1 w-full rounded border px-2 py-1"
-                  value={link.platform}
-                  onChange={event => setWorkingDraft(prev => ({
-                    ...prev,
-                    site: {
-                      ...prev.site,
-                      externalLinks: prev.site.externalLinks.map((item, itemIndex) => {
-                        if (itemIndex !== index)
-                          return item
-                        return { ...item, platform: event.target.value }
-                      }),
-                    },
-                  }))}
-                />
-              </label>
-              <label className={`
-                text-xs
-                md:col-span-2
-              `}
+          {externalPlatformOptions.map((option) => {
+            const existing = site.externalLinks.find(item => item.platform === option.value)
+            return (
+              <div
+                key={option.value}
+                className={`
+                  grid gap-2 rounded border p-2
+                  md:grid-cols-3
+                `}
               >
-                url
-                <input
-                  className="mt-1 w-full rounded border px-2 py-1"
-                  value={link.url}
-                  onChange={event => setWorkingDraft(prev => ({
-                    ...prev,
-                    site: {
-                      ...prev.site,
-                      externalLinks: prev.site.externalLinks.map((item, itemIndex) => {
-                        if (itemIndex !== index)
-                          return item
-                        return { ...item, url: event.target.value }
-                      }),
-                    },
-                  }))}
-                />
-              </label>
-              <div className="flex items-end gap-2">
                 <label className="text-xs">
-                  icon
+                  platform
                   <input
                     className="mt-1 w-full rounded border px-2 py-1"
-                    value={link.icon || ''}
-                    onChange={event => setWorkingDraft(prev => ({
-                      ...prev,
-                      site: {
-                        ...prev.site,
-                        externalLinks: prev.site.externalLinks.map((item, itemIndex) => {
-                          if (itemIndex !== index)
-                            return item
-                          return { ...item, icon: event.target.value }
-                        }),
-                      },
-                    }))}
+                    value={option.label}
+                    disabled
                   />
                 </label>
-                <button
-                  type="button"
-                  className="rounded border px-2 py-1 text-xs text-red-700"
-                  onClick={() => {
-                    if (!confirmAction('Delete this external link?')) {
-                      return
-                    }
-                    setWorkingDraft(prev => ({
-                      ...prev,
-                      site: {
-                        ...prev.site,
-                        externalLinks: prev.site.externalLinks.filter((_, itemIndex) => itemIndex !== index),
-                      },
-                    }))
-                  }}
+                <label className={`
+                  text-xs
+                  md:col-span-2
+                `}
                 >
-                  Delete
-                </button>
+                  url
+                  <input
+                    className="mt-1 w-full rounded border px-2 py-1"
+                    value={existing?.url ?? ''}
+                    placeholder="https://..."
+                    onChange={event => updateExternalLinkUrl(option.value, event.target.value)}
+                  />
+                </label>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
 
         <div className="space-y-3 rounded border p-3">

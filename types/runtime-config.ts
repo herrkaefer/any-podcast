@@ -1,3 +1,4 @@
+import type { PodcastPlatformId } from './podcast'
 import type { SourceConfig } from '@/workflow/sources/types'
 
 export type RuntimeThemeColor
@@ -9,8 +10,10 @@ export type RuntimeThemeColor
     | 'orange'
     | 'red'
 
+export type RuntimeExternalPlatformId = Exclude<PodcastPlatformId, 'rss'>
+
 export interface RuntimeExternalLink {
-  platform: string
+  platform: RuntimeExternalPlatformId
   url: string
   icon?: string
 }

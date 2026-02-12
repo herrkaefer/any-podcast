@@ -3,6 +3,7 @@ import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { Podcast } from '@/components/podcast'
 import { buildContentPrefix, podcast } from '@/config'
 import { buildEpisodesFromArticles } from '@/lib/episodes'
+import { buildPodcastPlatforms } from '@/lib/podcast-platforms'
 import { getActiveRuntimeConfig } from '@/lib/runtime-config'
 import { getPastDays } from '@/lib/utils'
 
@@ -49,6 +50,10 @@ export default async function Home({
     description: runtimeSite.description,
     link: podcast.base.link,
     cover: runtimeSite.coverLogoUrl,
+    platforms: buildPodcastPlatforms(
+      runtimeSite.externalLinks,
+      podcast.base.link ? `${podcast.base.link.replace(/\/$/, '')}/rss.xml` : '/rss.xml',
+    ),
   }
 
   return (

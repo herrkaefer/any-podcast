@@ -4,6 +4,7 @@ import type {
 } from '@/types/runtime-config'
 
 import { externalLinks, keepDays, podcast, podcastContactEmail, podcastId, site } from '@/config'
+import { isConfigurablePlatformId, normalizeRuntimeExternalLinks } from '@/lib/podcast-platforms'
 import {
   extractNewsletterLinksPrompt,
   introPrompt,
@@ -110,7 +111,7 @@ function getDefaultHosts() {
 }
 
 function getDefaultExternalLinks() {
-  const list = [
+  const list: Array<{ platform: string, url: string }> = [
     ...podcast.platforms.map(platform => ({
       platform: platform.id,
       url: platform.link,
@@ -122,16 +123,20 @@ function getDefaultExternalLinks() {
   ]
   const dedupe = new Map<string, { platform: string, url: string }>()
   for (const item of list) {
+    const platform = item.platform.trim().toLowerCase()
+    if (!isConfigurablePlatformId(platform)) {
+      continue
+    }
     const url = item.url.trim()
     if (!url) {
       continue
     }
-    dedupe.set(item.platform, {
-      platform: item.platform,
+    dedupe.set(platform, {
+      platform,
       url,
     })
   }
-  return Array.from(dedupe.values())
+  return normalizeRuntimeExternalLinks(Array.from(dedupe.values()))
 }
 
 function normalizeTestConfig(value: unknown): RuntimeConfigBundle['test'] {
@@ -189,6 +194,10 @@ function normalizeTtsConfig(config: RuntimeConfigBundle): RuntimeConfigBundle {
 
   return {
     ...config,
+    site: {
+      ...config.site,
+      externalLinks: normalizeRuntimeExternalLinks(config.site.externalLinks),
+    },
     hosts,
     sources: {
       ...config.sources,
@@ -344,7 +353,11 @@ async function readBundle(env: RuntimeConfigEnv, key: string) {
   const sanitizedSite = rawSite
     ? (() => {
         const { theme: _theme, ...rest } = rawSite
-        return rest
+        const externalLinksValue = 'externalLinks' in rest ? rest.externalLinks : []
+        return {
+          ...rest,
+          externalLinks: normalizeRuntimeExternalLinks(externalLinksValue),
+        }
       })()
     : raw.site
   const parsed = runtimeConfigBundleSchema.safeParse({

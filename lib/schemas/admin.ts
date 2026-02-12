@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
 const themeColorSchema = z.enum(['blue', 'pink', 'purple', 'green', 'yellow', 'orange', 'red'])
+const externalPlatformSchema = z.enum(['apple', 'spotify', 'youtube', 'xiaoyuzhou'])
 
 const linkRulesSchema = z.object({
   excludeText: z.array(z.string()).optional(),
@@ -45,7 +46,7 @@ const siteSchema = z.object({
     defaultImage: z.string().min(1),
   }).strict(),
   externalLinks: z.array(z.object({
-    platform: z.string().min(1),
+    platform: externalPlatformSchema,
     url: z.string().min(1),
     icon: z.string().optional(),
   }).strict()),
@@ -72,7 +73,7 @@ const editableSitePatchSchema = z.object({
   keepDays: z.number().int().positive().optional(),
   favicon: z.string().min(1).optional(),
   externalLinks: z.array(z.object({
-    platform: z.string().min(1),
+    platform: externalPlatformSchema,
     url: z.string().min(1),
     icon: z.string().optional(),
   }).strict()).optional(),

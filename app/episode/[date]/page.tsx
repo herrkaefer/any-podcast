@@ -5,6 +5,7 @@ import { EpisodeDetail } from '@/components/episodes/detail'
 import { PodcastScaffold } from '@/components/podcast/scaffold'
 import { buildContentKey, podcast } from '@/config'
 import { buildEpisodeFromArticle } from '@/lib/episodes'
+import { buildPodcastPlatforms } from '@/lib/podcast-platforms'
 import { getActiveRuntimeConfig } from '@/lib/runtime-config'
 
 export const revalidate = 7200
@@ -88,6 +89,10 @@ export default async function PostPage({
     description: runtimeSite.description,
     link: podcast.base.link,
     cover: runtimeSite.coverLogoUrl,
+    platforms: buildPodcastPlatforms(
+      runtimeSite.externalLinks,
+      podcast.base.link ? `${podcast.base.link.replace(/\/$/, '')}/rss.xml` : '/rss.xml',
+    ),
   }
 
   const safePage = Number.isNaN(fallbackPage) ? 1 : Math.max(1, fallbackPage)
