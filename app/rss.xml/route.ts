@@ -39,20 +39,30 @@ function getAudioMimeType(audioPath: string): string {
 }
 
 export async function GET(request: Request) {
+  const requestUrl = new URL(request.url)
   const configuredBaseUrl = (podcast.base.link || '').replace(/\/$/, '')
-  const requestBaseUrl = new URL(request.url).origin
+  const requestBaseUrl = requestUrl.origin
   const baseUrl = /^https?:\/\//.test(configuredBaseUrl) ? configuredBaseUrl : requestBaseUrl
+  const selfFeedUrl = `${requestBaseUrl}${requestUrl.pathname}`
   const { env } = await getCloudflareContext({ async: true })
   const rssEnv = env as RssEnv
   const runtimeConfig = await getActiveRuntimeConfig(rssEnv)
   const runtimeSite = runtimeConfig.config.site
   const contactEmail = runtimeSite.contactEmail || podcastContactEmail
+  const editorContact = contactEmail
+    ? `${contactEmail} (${runtimeSite.title})`
+    : runtimeSite.title
 
   // 如果没有缓存，生成新的响应
   const feed = new Podcast({
+    namespaces: {
+      iTunes: true,
+      simpleChapters: false,
+      podcast: false,
+    },
     title: runtimeSite.title,
     description: runtimeSite.description,
-    feedUrl: `${baseUrl}/rss.xml`,
+    feedUrl: selfFeedUrl,
     siteUrl: baseUrl,
     imageUrl: runtimeSite.coverLogoUrl.startsWith('http')
       ? runtimeSite.coverLogoUrl
@@ -61,7 +71,6 @@ export async function GET(request: Request) {
     pubDate: new Date(),
     ttl: 60,
     generator: runtimeSite.title,
-    author: runtimeSite.title,
     categories: runtimeSite.rss.categories,
     itunesExplicit: false,
     itunesImage: runtimeSite.coverLogoUrl.startsWith('http')
@@ -74,8 +83,8 @@ export async function GET(request: Request) {
       name: runtimeSite.title,
       email: contactEmail,
     },
-    managingEditor: contactEmail,
-    webMaster: contactEmail,
+    managingEditor: editorContact,
+    webMaster: editorContact,
   })
 
   const runEnv = rssEnv.NODE_ENV || 'production'
