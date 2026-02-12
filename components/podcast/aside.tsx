@@ -1,14 +1,18 @@
 'use client'
 
+import { useStore } from '@tanstack/react-store'
 import { Settings } from 'lucide-react'
 import Link from 'next/link'
 import { Fragment } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ThemeToggle } from '@/components/theme/toggle'
-import { podcast } from '@/config'
+import { getPodcastStore } from '@/stores/podcast-store'
 
 export function PodcastAside() {
   const { t } = useTranslation()
+  const podcastStore = getPodcastStore()
+  const podcastInfo = useStore(podcastStore, state => state.podcastInfo)
+  const hosts = podcastInfo?.hosts || []
 
   return (
     <aside className={`
@@ -22,23 +26,14 @@ export function PodcastAside() {
       >
         <span className="font-mono text-muted-foreground">{t('aside.hostedBy')}</span>
         <span className="flex gap-6 font-bold">
-          {podcast.hosts.map((host, index) => (
+          {hosts.map((host, index) => (
             <Fragment key={host.name}>
               {index !== 0 && (
                 <span aria-hidden="true" className="text-muted-foreground">
                   /
                 </span>
               )}
-              <a
-                href={host.link}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="cursor-pointer"
-                title={t('aside.hostLinkTitle', { name: host.name })}
-                aria-label={t('aside.hostLinkTitle', { name: host.name })}
-              >
-                {host.name}
-              </a>
+              <span>{host.name}</span>
             </Fragment>
           ))}
         </span>

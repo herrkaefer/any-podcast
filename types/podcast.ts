@@ -54,6 +54,7 @@ export interface PodcastInfo {
   link: string
   cover: string
   platforms: PodcastPlatform[]
+  hosts: PodcastHost[]
 }
 
 export interface EpisodeAudio {

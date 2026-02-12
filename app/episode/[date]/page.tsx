@@ -93,6 +93,10 @@ export default async function PostPage({
       runtimeSite.externalLinks,
       podcast.base.link ? `${podcast.base.link.replace(/\/$/, '')}/rss.xml` : '/rss.xml',
     ),
+    hosts: runtimeConfig.config.hosts.slice(0, 2).map(host => ({
+      name: host.name,
+      link: host.link || '',
+    })),
   }
 
   const safePage = Number.isNaN(fallbackPage) ? 1 : Math.max(1, fallbackPage)

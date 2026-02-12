@@ -54,6 +54,10 @@ export default async function Home({
       runtimeSite.externalLinks,
       podcast.base.link ? `${podcast.base.link.replace(/\/$/, '')}/rss.xml` : '/rss.xml',
     ),
+    hosts: runtimeConfig.config.hosts.slice(0, 2).map(host => ({
+      name: host.name,
+      link: host.link || '',
+    })),
   }
 
   return (
