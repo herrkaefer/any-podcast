@@ -55,6 +55,7 @@ worker/node_modules/
 
 tmp/
 media/
+plans/
 
 # Generated wrangler configs (from template)
 wrangler.jsonc
