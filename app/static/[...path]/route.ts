@@ -62,7 +62,68 @@ function applyHttpMetadataHeaders(headers: Headers, metadata: R2HTTPMetadata | u
   }
 }
 
-function buildStaticHeaders(file: R2ObjectBody, objectPath: string) {
+function getRangeHeader(request: Request) {
+  return request.headers.get('range')
+}
+
+type ParsedRangeResult = { offset: number, length?: number } | 'unsatisfiable' | null
+
+function parseRangeHeader(rangeHeader: string, fileSize: number): ParsedRangeResult {
+  const normalized = rangeHeader.trim().toLowerCase()
+  if (!normalized.startsWith('bytes=')) {
+    return null
+  }
+  const spec = normalized.slice('bytes='.length).trim()
+  if (!spec || spec.includes(',')) {
+    return null
+  }
+
+  const normalMatch = /^(\d+)-(\d*)$/.exec(spec)
+  if (normalMatch) {
+    const start = Number.parseInt(normalMatch[1], 10)
+    if (!Number.isFinite(start) || start < 0) {
+      return null
+    }
+    if (start >= fileSize) {
+      return 'unsatisfiable'
+    }
+
+    const rawEnd = normalMatch[2]
+    if (!rawEnd) {
+      return { offset: start }
+    }
+
+    const end = Number.parseInt(rawEnd, 10)
+    if (!Number.isFinite(end) || end < start) {
+      return null
+    }
+    const boundedEnd = Math.min(end, fileSize - 1)
+    return {
+      offset: start,
+      length: boundedEnd - start + 1,
+    }
+  }
+
+  const suffixMatch = /^-(\d+)$/.exec(spec)
+  if (suffixMatch) {
+    const suffixLength = Number.parseInt(suffixMatch[1], 10)
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) {
+      return null
+    }
+    if (fileSize <= 0) {
+      return 'unsatisfiable'
+    }
+    const length = Math.min(suffixLength, fileSize)
+    return {
+      offset: Math.max(fileSize - length, 0),
+      length,
+    }
+  }
+
+  return null
+}
+
+function buildStaticHeaders(file: R2ObjectBody, objectPath: string, isRangeResponse: boolean) {
   const headers = new Headers()
   applyHttpMetadataHeaders(headers, file.httpMetadata)
   headers.set('Accept-Ranges', 'bytes')
@@ -70,7 +131,7 @@ function buildStaticHeaders(file: R2ObjectBody, objectPath: string) {
   headers.set('Content-Type', headers.get('Content-Type') || getMimeTypeFromPath(objectPath))
   headers.set('Cache-Control', `public, max-age=${CACHE_TTL}, immutable`)
 
-  if (file.range && 'offset' in file.range && typeof file.range.offset === 'number') {
+  if (isRangeResponse && file.range && 'offset' in file.range && typeof file.range.offset === 'number') {
     const start = file.range.offset
     const length = typeof file.range.length === 'number' ? file.range.length : file.size - start
     const end = start + Math.max(length - 1, 0)
@@ -89,35 +150,40 @@ function isDefaultThemeMusicPath(objectPath: string) {
 
 async function fetchFromR2(request: Request, objectPath: string) {
   const { env } = await getCloudflareContext({ async: true })
-  const rangeHeader = request.headers.get('range') || request.headers.get('Range')
+  const rangeHeader = getRangeHeader(request)
   let file: R2ObjectBody | null
+  let isRangeResponse = false
   if (!rangeHeader) {
     file = await env.PODCAST_R2.get(objectPath)
   }
   else {
-    const match = /^bytes=(\d+)-(\d+)?$/i.exec(rangeHeader.trim())
-    if (!match) {
+    const head = await env.PODCAST_R2.head(objectPath)
+    if (!head) {
+      if (isDefaultThemeMusicPath(objectPath)) {
+        const fallbackUrl = new URL(DEFAULT_THEME_PUBLIC_PATH, request.url)
+        return NextResponse.redirect(fallbackUrl, 307)
+      }
+      return new Response('Not Found', { status: 404 })
+    }
+
+    const parsedRange = parseRangeHeader(rangeHeader, head.size)
+    if (parsedRange === 'unsatisfiable') {
+      const headers = new Headers()
+      applyHttpMetadataHeaders(headers, head.httpMetadata)
+      headers.set('Content-Type', headers.get('Content-Type') || getMimeTypeFromPath(objectPath))
+      headers.set('Accept-Ranges', 'bytes')
+      headers.set('ETag', head.httpEtag)
+      headers.set('Cache-Control', `public, max-age=${CACHE_TTL}, immutable`)
+      headers.set('Content-Range', `bytes */${head.size}`)
+      return new Response(null, { status: 416, headers })
+    }
+
+    if (!parsedRange) {
       file = await env.PODCAST_R2.get(objectPath)
     }
     else {
-      const offset = Number.parseInt(match[1], 10)
-      const end = match[2] ? Number.parseInt(match[2], 10) : undefined
-      if (!Number.isFinite(offset) || offset < 0) {
-        file = await env.PODCAST_R2.get(objectPath)
-      }
-      else if (typeof end === 'number' && Number.isFinite(end) && end >= offset) {
-        file = await env.PODCAST_R2.get(objectPath, {
-          range: {
-            offset,
-            length: end - offset + 1,
-          },
-        })
-      }
-      else {
-        file = await env.PODCAST_R2.get(objectPath, {
-          range: { offset },
-        })
-      }
+      file = await env.PODCAST_R2.get(objectPath, { range: parsedRange })
+      isRangeResponse = true
     }
   }
   if (!file) {
@@ -128,7 +194,7 @@ async function fetchFromR2(request: Request, objectPath: string) {
     return new Response('Not Found', { status: 404 })
   }
 
-  const { headers, status } = buildStaticHeaders(file, objectPath)
+  const { headers, status } = buildStaticHeaders(file, objectPath, isRangeResponse)
   return new Response(file.body, { status, headers })
 }
 
@@ -142,9 +208,8 @@ function buildCacheKey(request: Request): Request {
 }
 
 async function handleWithCache(request: Request, objectPath: string) {
-  // Range requests bypass the cache — they are only triggered after
-  // the browser already has a full response cached locally
-  if (request.headers.has('Range')) {
+  // Range requests bypass the edge cache and are resolved directly from R2.
+  if (getRangeHeader(request)) {
     return fetchFromR2(request, objectPath)
   }
 

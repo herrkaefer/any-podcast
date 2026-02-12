@@ -38,6 +38,138 @@ function getAudioMimeType(audioPath: string): string {
   return 'audio/mpeg'
 }
 
+function parseDurationSeconds(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return Math.round(value)
+  }
+  if (typeof value !== 'string') {
+    return undefined
+  }
+
+  const normalized = value.trim()
+  if (!normalized) {
+    return undefined
+  }
+
+  const asNumber = Number.parseFloat(normalized)
+  if (Number.isFinite(asNumber) && asNumber > 0 && /^\d+(?:\.\d+)?$/.test(normalized)) {
+    return Math.round(asNumber)
+  }
+
+  const segments = normalized.split(':')
+  if (segments.length < 2 || segments.length > 3) {
+    return undefined
+  }
+
+  const numbers = segments.map(part => Number.parseInt(part, 10))
+  if (numbers.some(part => !Number.isFinite(part) || part < 0)) {
+    return undefined
+  }
+
+  if (segments.length === 2) {
+    const [minutes, seconds] = numbers
+    return minutes * 60 + seconds
+  }
+
+  const [hours, minutes, seconds] = numbers
+  return hours * 3600 + minutes * 60 + seconds
+}
+
+function getItunesDurationFromAudioInfo(audioInfo: R2Object | null): number | undefined {
+  if (!audioInfo?.customMetadata) {
+    return undefined
+  }
+
+  const customMetadata = audioInfo.customMetadata
+  const candidates: Array<unknown> = [
+    customMetadata.durationSeconds,
+    customMetadata.duration,
+    customMetadata['x-duration-seconds'],
+    customMetadata['x-duration'],
+  ]
+
+  for (const candidate of candidates) {
+    const parsed = parseDurationSeconds(candidate)
+    if (parsed) {
+      return parsed
+    }
+  }
+
+  return undefined
+}
+
+function parseDateMs(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value
+  }
+  if (typeof value !== 'string') {
+    return undefined
+  }
+
+  const normalized = value.trim()
+  if (!normalized) {
+    return undefined
+  }
+
+  if (/^\d+$/.test(normalized)) {
+    const numeric = Number.parseInt(normalized, 10)
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric
+    }
+  }
+
+  const parsed = Date.parse(normalized)
+  if (Number.isFinite(parsed)) {
+    return parsed
+  }
+  return undefined
+}
+
+function getFeedLastModified(posts: Article[]): Date {
+  let latest = Date.now()
+
+  for (const post of posts) {
+    const candidates: Array<unknown> = [post.updatedAt, post.publishedAt, post.date]
+    for (const candidate of candidates) {
+      const ms = parseDateMs(candidate)
+      if (typeof ms === 'number') {
+        latest = Math.max(latest, ms)
+      }
+    }
+  }
+
+  return new Date(Math.floor(latest / 1000) * 1000)
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(text)
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return Array.from(new Uint8Array(digest))
+    .map(part => part.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+function hasMatchingEtag(ifNoneMatch: string, etag: string): boolean {
+  const candidates = ifNoneMatch
+    .split(',')
+    .map(part => part.trim())
+    .filter(Boolean)
+
+  if (candidates.includes('*')) {
+    return true
+  }
+
+  for (const candidate of candidates) {
+    if (candidate === etag) {
+      return true
+    }
+    if (candidate.startsWith('W/') && candidate.slice(2) === etag) {
+      return true
+    }
+  }
+  return false
+}
+
 export async function GET(request: Request) {
   const requestUrl = new URL(request.url)
   const configuredBaseUrl = (podcast.base.link || '').replace(/\/$/, '')
@@ -58,7 +190,7 @@ export async function GET(request: Request) {
     namespaces: {
       iTunes: true,
       simpleChapters: false,
-      podcast: false,
+      podcast: true,
     },
     title: runtimeSite.title,
     description: runtimeSite.description,
@@ -71,6 +203,7 @@ export async function GET(request: Request) {
     pubDate: new Date(),
     ttl: 60,
     generator: runtimeSite.title,
+    copyright: `Copyright ${new Date().getUTCFullYear()} ${runtimeSite.title}`,
     categories: runtimeSite.rss.categories,
     itunesExplicit: false,
     itunesImage: runtimeSite.coverLogoUrl.startsWith('http')
@@ -78,7 +211,16 @@ export async function GET(request: Request) {
       : `${baseUrl}${runtimeSite.coverLogoUrl.startsWith('/') ? '' : '/'}${runtimeSite.coverLogoUrl}`,
     itunesType: 'episodic',
     itunesAuthor: runtimeSite.title,
-    itunesCategory: runtimeSite.rss.itunesCategories.map(category => ({ text: category.text })),
+    itunesCategory: runtimeSite.rss.itunesCategories.map((category) => {
+      const subcategory = category.subcategory?.trim()
+      if (!subcategory) {
+        return { text: category.text }
+      }
+      return {
+        text: category.text,
+        subcats: [{ text: subcategory }],
+      }
+    }),
     itunesOwner: {
       name: runtimeSite.title,
       email: contactEmail,
@@ -123,14 +265,18 @@ export async function GET(request: Request) {
     // Apple Podcasts limits itunes:summary to 4000 characters
     const summary = (post.introContent || post.podcastContent || '').slice(0, 3999)
 
+    const itunesDuration = getItunesDurationFromAudioInfo(audioInfo)
     feed.addItem({
       title: post.title || '',
+      author: runtimeSite.title,
       description: summary,
       content: finalContent,
       url: `${baseUrl}/episode/${post.date}`,
       guid: `${baseUrl}/episode/${post.date}`,
       date: new Date(post.publishedAt || post.date),
+      itunesAuthor: runtimeSite.title,
       itunesExplicit: false,
+      itunesDuration,
       enclosure: {
         url: `${rssEnv.NEXT_STATIC_HOST}/${post.audio}?t=${post.updatedAt}`,
         type: getAudioMimeType(post.audio),
@@ -139,10 +285,46 @@ export async function GET(request: Request) {
     })
   })
 
-  const response = new NextResponse(feed.buildXml(), {
+  const xml = feed.buildXml()
+  const xmlBytes = new TextEncoder().encode(xml)
+  const etag = `"${await sha256Hex(xml)}"`
+  const lastModified = getFeedLastModified(posts).toUTCString()
+
+  const ifNoneMatch = request.headers.get('if-none-match')
+  if (ifNoneMatch && hasMatchingEtag(ifNoneMatch, etag)) {
+    return new NextResponse(null, {
+      status: 304,
+      headers: {
+        'Cache-Control': `public, max-age=${revalidate}, s-maxage=${revalidate}`,
+        'ETag': etag,
+        'Last-Modified': lastModified,
+      },
+    })
+  }
+
+  const ifModifiedSince = request.headers.get('if-modified-since')
+  if (ifModifiedSince) {
+    const ifModifiedSinceMs = Date.parse(ifModifiedSince)
+    const lastModifiedMs = Date.parse(lastModified)
+    if (Number.isFinite(ifModifiedSinceMs) && Number.isFinite(lastModifiedMs) && ifModifiedSinceMs >= lastModifiedMs) {
+      return new NextResponse(null, {
+        status: 304,
+        headers: {
+          'Cache-Control': `public, max-age=${revalidate}, s-maxage=${revalidate}`,
+          'ETag': etag,
+          'Last-Modified': lastModified,
+        },
+      })
+    }
+  }
+
+  const response = new NextResponse(xml, {
     headers: {
-      'Content-Type': 'application/xml',
+      'Content-Type': 'application/xml; charset=utf-8',
       'Cache-Control': `public, max-age=${revalidate}, s-maxage=${revalidate}`,
+      'Content-Length': String(xmlBytes.byteLength),
+      'ETag': etag,
+      'Last-Modified': lastModified,
     },
   })
 
