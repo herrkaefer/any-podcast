@@ -13,7 +13,7 @@ import { getStoryCandidatesFromSources, processGmailMessage } from './sources'
 import { listGmailMessageRefs } from './sources/gmail'
 import { fetchRssItems } from './sources/rss'
 import { getDateKeyInTimeZone, zonedTimeToUtc } from './timezone'
-import synthesize, { buildGeminiTtsPrompt, synthesizeGeminiTTS } from './tts'
+import synthesize, { buildGeminiTtsPrompt, synthesizeGeminiTTSWithRetry } from './tts'
 import { addIntroMusic, concatAudioFiles, getStoryContent, isSubrequestLimitError } from './utils'
 
 interface Params {
@@ -882,46 +882,26 @@ export class TtsWorkflow extends WorkflowEntrypoint<Env, TtsWorkflowParams> {
         promptChars: geminiPrompt.length,
       })
 
-      const geminiAudioUrl = await step.do('create gemini podcast audio', { ...retryConfig, retries: withRetryLimit(2), timeout: '10 minutes' }, async () => {
+      const geminiAudioUrl = await step.do('create gemini podcast audio', { ...retryConfig, retries: withRetryLimit(0), timeout: '10 minutes' }, async () => {
         const startedAt = Date.now()
-        const retryLimit = 2
-        for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
-          try {
-            console.info('Gemini TTS attempt', {
-              attempt: attempt + 1,
-              promptChars: geminiPrompt.length,
-              lines: parsedConversations.length,
-            })
-            const result = await synthesizeGeminiTTS(geminiPrompt, this.env, {
-              model: ttsSettings.model,
-              apiUrl: ttsSettings.apiUrl,
-              geminiSpeakers: ttsSettings.geminiSpeakers,
-            })
-            if (!result.audio.size) {
-              throw new Error('podcast audio size is 0')
-            }
-
-            const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${geminiWavKey}?t=${Date.now()}`
-            await this.env.PODCAST_R2.put(geminiWavKey, result.audio)
-
-            console.info('Gemini TTS done', {
-              key: geminiWavKey,
-              size: result.audio.size,
-              ms: Date.now() - startedAt,
-            })
-            return audioUrl
-          }
-          catch (error) {
-            console.error('Gemini TTS attempt failed', {
-              attempt: attempt + 1,
-              error: formatError(error),
-            })
-            if (attempt >= retryLimit) {
-              throw error
-            }
-          }
+        const result = await synthesizeGeminiTTSWithRetry(geminiPrompt, this.env, {
+          model: ttsSettings.model,
+          apiUrl: ttsSettings.apiUrl,
+          geminiSpeakers: ttsSettings.geminiSpeakers,
+        })
+        if (!result.audio.size) {
+          throw new Error('podcast audio size is 0')
         }
-        throw new Error('Gemini TTS failed after retries')
+
+        const audioUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${geminiWavKey}?t=${Date.now()}`
+        await this.env.PODCAST_R2.put(geminiWavKey, result.audio)
+
+        console.info('Gemini TTS done', {
+          key: geminiWavKey,
+          size: result.audio.size,
+          ms: Date.now() - startedAt,
+        })
+        return audioUrl
       })
 
       await step.sleep('reset quota before convert', '5 seconds')
@@ -1258,7 +1238,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
               geminiPrompt: runtimeTtsSettings.geminiPrompt,
               geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
             })
-            const { audio, extension } = await synthesizeGeminiTTS(prompt, this.env, {
+            const { audio, extension } = await synthesizeGeminiTTSWithRetry(prompt, this.env, {
               model: runtimeTtsSettings.model,
               apiUrl: runtimeTtsSettings.apiUrl,
               geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
@@ -1359,7 +1339,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
                 chars: prompt.length,
                 preview: prompt.slice(0, 240),
               })
-              const { audio } = await synthesizeGeminiTTS(prompt, this.env, {
+              const { audio } = await synthesizeGeminiTTSWithRetry(prompt, this.env, {
                 model: runtimeTtsSettings.model,
                 apiUrl: runtimeTtsSettings.apiUrl,
                 geminiSpeakers: runtimeTtsSettings.geminiSpeakers,
@@ -2543,8 +2523,8 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             geminiSpeakers: composeSnapshot.ttsSettings.geminiSpeakers,
           })
 
-          const geminiAudioUrl = await step.do('create gemini podcast audio', { ...retryConfig, retries: withRetryLimit(2), timeout: '10 minutes' }, async () => {
-            const result = await synthesizeGeminiTTS(geminiPrompt, this.env, {
+          const geminiAudioUrl = await step.do('create gemini podcast audio', { ...retryConfig, retries: withRetryLimit(0), timeout: '10 minutes' }, async () => {
+            const result = await synthesizeGeminiTTSWithRetry(geminiPrompt, this.env, {
               model: composeSnapshot.ttsSettings.model,
               apiUrl: composeSnapshot.ttsSettings.apiUrl,
               geminiSpeakers: composeSnapshot.ttsSettings.geminiSpeakers,

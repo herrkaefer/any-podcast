@@ -32,10 +32,21 @@ interface GeminiAudioResult {
   mimeType: string
 }
 
+interface GeminiRetryOptions {
+  maxAttempts?: number
+  baseDelayMs?: number
+  maxDelayMs?: number
+  jitterRatio?: number
+}
+
 const MINIMAX_MAX_RPM = 60
 const MINIMAX_MIN_INTERVAL_MS = Math.ceil(60000 / MINIMAX_MAX_RPM) + 150
 const MINIMAX_MAX_RETRIES = 3
 const MINIMAX_RETRY_BASE_DELAY_MS = 1500
+const GEMINI_DEFAULT_MAX_ATTEMPTS = 5
+const GEMINI_DEFAULT_BASE_DELAY_MS = 8000
+const GEMINI_DEFAULT_MAX_DELAY_MS = 90000
+const GEMINI_DEFAULT_JITTER_RATIO = 0.25
 
 let minimaxLastRequestAt = 0
 
@@ -51,6 +62,116 @@ function sleepMs(ms: number) {
 function isMinimaxRpmLimitErrorMessage(message: string) {
   const normalized = message.toLowerCase()
   return normalized.includes('rate limit') && normalized.includes('rpm')
+}
+
+function toNumericCode(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value, 10)
+    if (Number.isFinite(parsed)) {
+      return parsed
+    }
+  }
+  return undefined
+}
+
+function extractGeminiErrorStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') {
+    return undefined
+  }
+
+  const record = error as Record<string, unknown>
+  const direct = toNumericCode(record.status) ?? toNumericCode(record.code)
+  if (direct !== undefined) {
+    return direct
+  }
+
+  const response = record.response
+  if (response && typeof response === 'object') {
+    const responseRecord = response as Record<string, unknown>
+    const responseStatus = toNumericCode(responseRecord.status)
+    if (responseStatus !== undefined) {
+      return responseStatus
+    }
+  }
+
+  const cause = record.cause
+  if (cause && typeof cause === 'object') {
+    const causeRecord = cause as Record<string, unknown>
+    const causeStatus = toNumericCode(causeRecord.status) ?? toNumericCode(causeRecord.code)
+    if (causeStatus !== undefined) {
+      return causeStatus
+    }
+  }
+
+  return undefined
+}
+
+function summarizeGeminiRetryError(error: unknown) {
+  if (!error || typeof error !== 'object') {
+    return {
+      message: String(error),
+      status: undefined,
+      code: undefined,
+    }
+  }
+
+  const record = error as Record<string, unknown>
+  const message = typeof record.message === 'string'
+    ? record.message
+    : String(error)
+  const code = toNumericCode(record.code) ?? record.code
+  const status = extractGeminiErrorStatus(error)
+  const name = typeof record.name === 'string'
+    ? record.name
+    : undefined
+
+  return {
+    name,
+    message,
+    status,
+    code,
+  }
+}
+
+function isRetryableGeminiError(error: unknown) {
+  const status = extractGeminiErrorStatus(error)
+  if (status !== undefined) {
+    const retryableStatus = new Set([408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 523, 524])
+    if (retryableStatus.has(status)) {
+      return true
+    }
+  }
+
+  const message = error instanceof Error
+    ? error.message.toLowerCase()
+    : String(error).toLowerCase()
+
+  return (
+    message.includes('error code: 524')
+    || message.includes('timeout')
+    || message.includes('timed out')
+    || message.includes('rate limit')
+    || message.includes('temporarily unavailable')
+    || message.includes('gateway')
+    || message.includes('upstream')
+    || message.includes('econnreset')
+    || message.includes('eai_again')
+    || message.includes('etimedout')
+  )
+}
+
+function computeRetryDelayMs(
+  attempt: number,
+  options: Required<GeminiRetryOptions>,
+) {
+  const expDelay = options.baseDelayMs * 2 ** Math.max(0, attempt - 1)
+  const cappedDelay = Math.min(expDelay, options.maxDelayMs)
+  const jitterRange = Math.max(0, options.jitterRatio)
+  const jitterFactor = 1 + (Math.random() * 2 - 1) * jitterRange
+  return Math.max(1000, Math.round(cappedDelay * jitterFactor))
 }
 
 async function waitForMinimaxRateLimitWindow() {
@@ -334,6 +455,59 @@ export async function synthesizeGeminiTTS(text: string, env: Env, options?: Runt
     totalMs,
   })
   return { audio, extension, mimeType: finalMimeType }
+}
+
+export async function synthesizeGeminiTTSWithRetry(
+  text: string,
+  env: Env,
+  options?: RuntimeTtsOptions,
+  retryOptions?: GeminiRetryOptions,
+): Promise<GeminiAudioResult> {
+  const resolvedOptions: Required<GeminiRetryOptions> = {
+    maxAttempts: Math.max(1, Math.floor(retryOptions?.maxAttempts ?? GEMINI_DEFAULT_MAX_ATTEMPTS)),
+    baseDelayMs: Math.max(1000, Math.floor(retryOptions?.baseDelayMs ?? GEMINI_DEFAULT_BASE_DELAY_MS)),
+    maxDelayMs: Math.max(1000, Math.floor(retryOptions?.maxDelayMs ?? GEMINI_DEFAULT_MAX_DELAY_MS)),
+    jitterRatio: Math.max(0, retryOptions?.jitterRatio ?? GEMINI_DEFAULT_JITTER_RATIO),
+  }
+
+  for (let attempt = 1; attempt <= resolvedOptions.maxAttempts; attempt += 1) {
+    try {
+      if (attempt > 1) {
+        console.info('Gemini TTS retry attempt started', {
+          attempt,
+          maxAttempts: resolvedOptions.maxAttempts,
+          promptChars: text.length,
+        })
+      }
+      return await synthesizeGeminiTTS(text, env, options)
+    }
+    catch (error) {
+      const retryable = isRetryableGeminiError(error)
+      const shouldRetry = retryable && attempt < resolvedOptions.maxAttempts
+      const errorSummary = summarizeGeminiRetryError(error)
+
+      if (!shouldRetry) {
+        console.error('Gemini TTS failed', {
+          attempt,
+          maxAttempts: resolvedOptions.maxAttempts,
+          retryable,
+          error: errorSummary,
+        })
+        throw error
+      }
+
+      const delayMs = computeRetryDelayMs(attempt, resolvedOptions)
+      console.warn('Gemini TTS attempt failed, will retry', {
+        attempt,
+        maxAttempts: resolvedOptions.maxAttempts,
+        retryInMs: delayMs,
+        error: errorSummary,
+      })
+      await sleepMs(delayMs)
+    }
+  }
+
+  throw new Error('Gemini TTS failed after retries')
 }
 
 export default function (text: string, speaker: string, env: Env, options?: RuntimeTtsOptions) {
