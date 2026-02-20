@@ -882,7 +882,7 @@ export class TtsWorkflow extends WorkflowEntrypoint<Env, TtsWorkflowParams> {
         promptChars: geminiPrompt.length,
       })
 
-      const geminiAudioUrl = await step.do('create gemini podcast audio', { ...retryConfig, retries: withRetryLimit(0), timeout: '10 minutes' }, async () => {
+      const geminiAudioUrl = await step.do('create gemini podcast audio', { ...retryConfig, retries: { limit: 2, delay: '30 seconds', backoff: 'exponential' }, timeout: '5 minutes' }, async () => {
         const startedAt = Date.now()
         const result = await synthesizeGeminiTTSWithRetry(geminiPrompt, this.env, {
           model: ttsSettings.model,
@@ -2523,7 +2523,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             geminiSpeakers: composeSnapshot.ttsSettings.geminiSpeakers,
           })
 
-          const geminiAudioUrl = await step.do('create gemini podcast audio', { ...retryConfig, retries: withRetryLimit(0), timeout: '10 minutes' }, async () => {
+          const geminiAudioUrl = await step.do('create gemini podcast audio', { ...retryConfig, retries: { limit: 2, delay: '30 seconds', backoff: 'exponential' }, timeout: '5 minutes' }, async () => {
             const result = await synthesizeGeminiTTSWithRetry(geminiPrompt, this.env, {
               model: composeSnapshot.ttsSettings.model,
               apiUrl: composeSnapshot.ttsSettings.apiUrl,
