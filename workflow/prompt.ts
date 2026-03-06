@@ -214,11 +214,6 @@ export const titlePrompt = `
 - 如果标题主要由抽象概念或总结性结构构成，即使评分最高，也不得作为推荐标题
 - 若某个标题的内容符合度低于 7 分，不得推荐
 
-【最终输出】
-- 先列出所有候选标题及评分
-- 最后一行输出格式：
-  推荐标题：<最适合作为播客入口的标题>
-
 【标题原则】
 - 总长度 15–25 字，简体中文
 - 播客 App 列表页约显示前 20 字，关键信息尽量靠前
@@ -229,15 +224,51 @@ export const titlePrompt = `
 - 禁止使用 Emoji
 - 不包含播客名称、期号或日期
 
+【输出要求】
+- 只输出一个合法 JSON 对象，不要 markdown，不要代码块，不要额外说明
+- JSON 必须包含以下字段：
+  - coreAngle: string
+  - candidates: 3-5 个候选项的数组
+  - recommendedIndex: number，从 0 开始
+  - recommendedTitle: string，必须与 candidates[recommendedIndex].title 完全一致
+- 每个 candidates 元素必须包含：
+  - title: string
+  - scores: { relevance: 1-10, search: 1-10, appeal: 1-10 }
+  - reason: string
+
 【输出格式示例】
-核心主题：某个新工具如何改变开发者的工作流程
-
-1. 这个新工具真的能让开发效率翻倍吗
-（内容符合度 9 / 搜索潜力 8 / 吸引力 9）—— 以常见疑问切入，准确代表讨论重点
-2. 当开发者第一次用上这个工具，发生了什么变化
-（内容符合度 8 / 搜索潜力 7 / 吸引力 8）—— 场景具体，但搜索指向略弱
-3. 一个工具如何让十人团队省下半天时间
-（内容符合度 7 / 搜索潜力 8 / 吸引力 9）—— 具体，但概括略偏宽
-
-推荐标题：这个新工具真的能让开发效率翻倍吗
+{
+  "coreAngle": "某个新工具如何改变开发者的工作流程",
+  "candidates": [
+    {
+      "title": "这个新工具真的能让开发效率翻倍吗",
+      "scores": {
+        "relevance": 9,
+        "search": 8,
+        "appeal": 9
+      },
+      "reason": "以常见疑问切入，准确代表讨论重点"
+    },
+    {
+      "title": "当开发者第一次用上这个工具，发生了什么变化",
+      "scores": {
+        "relevance": 8,
+        "search": 7,
+        "appeal": 8
+      },
+      "reason": "场景具体，但搜索指向略弱"
+    },
+    {
+      "title": "一个工具如何让十人团队省下半天时间",
+      "scores": {
+        "relevance": 7,
+        "search": 8,
+        "appeal": 9
+      },
+      "reason": "具体，但概括略偏宽"
+    }
+  ],
+  "recommendedIndex": 0,
+  "recommendedTitle": "这个新工具真的能让开发效率翻倍吗"
+}
 `.trim()

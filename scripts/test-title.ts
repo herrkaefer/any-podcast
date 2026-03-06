@@ -4,6 +4,7 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { GoogleGenAI } from '@google/genai'
 import { titlePrompt } from '../workflow/prompt'
+import { getRecommendedTitle, parseTitleGenerationResult, titleGenerationSchema } from '../workflow/title'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -83,6 +84,8 @@ async function main() {
     contents: dialogueContent,
     config: {
       systemInstruction: titlePrompt,
+      responseMimeType: 'application/json',
+      responseSchema: titleGenerationSchema,
     },
   })
 
@@ -92,14 +95,13 @@ async function main() {
   console.info(text)
   console.info('')
 
-  // Extract recommended title
-  const match = text.match(/推荐标题[：:]\s*(.+)/)
-  if (match?.[1]) {
-    console.info(`✅ 推荐标题: ${match[1].trim()}`)
+  const parsed = parseTitleGenerationResult(text)
+  if (!parsed) {
+    console.info('⚠️ 未能解析结构化标题结果，请检查 AI 输出格式')
+    process.exit(1)
   }
-  else {
-    console.info('⚠️ 未能提取推荐标题，请检查 AI 输出格式')
-  }
+
+  console.info(`✅ 推荐标题: ${getRecommendedTitle(parsed)}`)
 }
 
 main()

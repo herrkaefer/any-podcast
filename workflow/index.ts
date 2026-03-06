@@ -1,6 +1,7 @@
 import type { WorkflowEvent, WorkflowStep, WorkflowStepConfig } from 'cloudflare:workers'
 import type { AiEnv } from './ai'
 import type { SourceConfig } from './sources/types'
+import type { TitleGenerationResult } from './title'
 
 import type { RuntimeConfigBundle, RuntimeTtsIntroMusicConfig } from '@/types/runtime-config'
 
@@ -13,6 +14,7 @@ import { getStoryCandidatesFromSources, processGmailMessage } from './sources'
 import { listGmailMessageRefs } from './sources/gmail'
 import { fetchRssItems } from './sources/rss'
 import { getDateKeyInTimeZone, zonedTimeToUtc } from './timezone'
+import { getRecommendedTitle, InvalidEpisodeTitleOutputError, parseTitleGenerationResult, titleGenerationSchema } from './title'
 import synthesize, { buildGeminiTtsPrompt, synthesizeGeminiTTSWithRetry } from './tts'
 import { addIntroMusic, concatAudioFiles, getStoryContent, isSubrequestLimitError } from './utils'
 
@@ -361,41 +363,6 @@ function parseStorySummary(text: string): StorySummaryResult | null {
   }
 }
 
-function trimWrappingQuotes(value: string) {
-  return value.replace(/^[\s"'“”‘’]+|[\s"'“”‘’]+$/g, '')
-}
-
-function extractEpisodeTitle(text: string): string | null {
-  const markers = new Set([
-    '推荐标题',
-    '推荐题目',
-    '最终标题',
-    'recommended title',
-    'final title',
-  ])
-
-  for (const rawLine of text.split('\n')) {
-    const line = rawLine
-      .trim()
-      .replace(/^[-*]\s*/, '')
-      .replace(/\*\*/g, '')
-    const separatorIndex = line.search(/[：:]/)
-    if (separatorIndex < 0) {
-      continue
-    }
-    const label = line.slice(0, separatorIndex).trim().toLowerCase()
-    if (!markers.has(label)) {
-      continue
-    }
-    const title = trimWrappingQuotes(line.slice(separatorIndex + 1))
-    if (title) {
-      return title
-    }
-  }
-
-  return null
-}
-
 async function summarizeStoryWithRelevance(params: {
   env: AiEnv
   runtimeAi: RuntimeConfigBundle['ai']
@@ -439,6 +406,58 @@ async function summarizeStoryWithRelevance(params: {
     throw lastError
   }
   throw new Error('story summary failed after 2 attempts')
+}
+
+function toLogPreview(value: string, maxLength = 280) {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxLength) {
+    return normalized
+  }
+  return `${normalized.slice(0, maxLength)}...`
+}
+
+async function generateEpisodeTitleWithCandidates(params: {
+  env: AiEnv
+  runtimeAi: RuntimeConfigBundle['ai']
+  model: string
+  instructions: string
+  input: string
+}): Promise<{ result: TitleGenerationResult, usage?: unknown, finishReason?: string }> {
+  const { env, runtimeAi, model, instructions, input } = params
+  const maxAttempts = 2
+  let lastError: unknown = null
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await createResponseText({
+        env,
+        runtimeAi,
+        model,
+        instructions: attempt === 1
+          ? instructions
+          : `${instructions}\n\n【重要】上一次输出不是有效 JSON。请只输出一个完整 JSON 对象，字段必须匹配 schema，不要代码块或多余文字。`,
+        input,
+        responseMimeType: 'application/json',
+        responseSchema: titleGenerationSchema,
+      })
+      const parsed = parseTitleGenerationResult(response.text)
+      if (!parsed) {
+        lastError = new InvalidEpisodeTitleOutputError('episode title output is not valid structured JSON', response.text)
+        continue
+      }
+      return { result: parsed, usage: response.usage, finishReason: response.finishReason }
+    }
+    catch (error) {
+      if (isSubrequestLimitError(error))
+        throw error
+      lastError = error
+    }
+  }
+
+  if (lastError instanceof Error) {
+    throw lastError
+  }
+  throw new Error('episode title generation failed after 2 attempts')
 }
 
 function buildTimeWindow(
@@ -2379,20 +2398,36 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         })
 
         logComposeStep(4, 'episode title', 'start')
-        const episodeTitle = await step.do('generate episode title', retryConfig, async () => {
-          const { text } = await createResponseText({
-            env: this.env,
-            runtimeAi,
-            model: primaryModel,
-            instructions: runtimePrompts.title,
-            input: podcastContent,
+        const fallbackTitle = `${runtimeConfig.site.title} ${workflowState.publishDateKey}`
+        let episodeTitle = fallbackTitle
+        let episodeTitleUsedFallback = false
+        try {
+          episodeTitle = await step.do('generate episode title', retryConfig, async () => {
+            const { result } = await generateEpisodeTitleWithCandidates({
+              env: this.env,
+              runtimeAi,
+              model: primaryModel,
+              instructions: runtimePrompts.title,
+              input: podcastContent,
+            })
+            return getRecommendedTitle(result)
           })
-          const parsedTitle = extractEpisodeTitle(text)
-          return parsedTitle || `${runtimeConfig.site.title} ${workflowState.publishDateKey}`
-        })
+        }
+        catch (error) {
+          episodeTitleUsedFallback = true
+          console.warn('generate episode title failed after retries, using fallback title', {
+            jobId,
+            fallbackTitle,
+            error: formatError(error),
+            rawOutputPreview: error instanceof InvalidEpisodeTitleOutputError && error.rawOutput
+              ? toLogPreview(error.rawOutput)
+              : undefined,
+          })
+        }
         consumeBudget(budget, BUDGET_COST.llmCompose, 'generate episode title', jobId)
         logComposeStep(4, 'episode title', 'done', {
           title: episodeTitle,
+          fallback: episodeTitleUsedFallback,
         })
 
         const contentKey = buildContentKey(runEnv, workflowState.publishDateKey)

@@ -33,6 +33,10 @@ interface ResponseTextResult {
   finishReason?: string
 }
 
+interface JsonSchemaObject {
+  [key: string]: unknown
+}
+
 const defaultOpenAIBaseUrl = 'https://api.openai.com/v1'
 
 export type RuntimeAiOptions = RuntimeAiConfig
@@ -113,6 +117,69 @@ function extractOutputText(body: ResponsesBody): string {
   return texts.join('')
 }
 
+function toJsonSchema(schema: unknown): JsonSchemaObject {
+  if (!schema || typeof schema !== 'object') {
+    throw new Error('responseSchema must be an object')
+  }
+
+  const record = schema as Record<string, unknown>
+  const rawType = typeof record.type === 'string' ? record.type.toUpperCase() : ''
+  const nullable = record.nullable === true
+
+  let jsonSchema: JsonSchemaObject
+  switch (rawType) {
+    case 'OBJECT': {
+      const rawProperties = record.properties && typeof record.properties === 'object'
+        ? record.properties as Record<string, unknown>
+        : {}
+      const properties = Object.fromEntries(
+        Object.entries(rawProperties).map(([key, value]) => [key, toJsonSchema(value)]),
+      )
+      jsonSchema = {
+        type: 'object',
+        properties,
+        additionalProperties: false,
+      }
+      if (Array.isArray(record.required) && record.required.every(item => typeof item === 'string')) {
+        jsonSchema.required = record.required
+      }
+      break
+    }
+    case 'ARRAY': {
+      jsonSchema = {
+        type: 'array',
+        items: toJsonSchema(record.items),
+      }
+      break
+    }
+    case 'STRING':
+      jsonSchema = { type: 'string' }
+      break
+    case 'INTEGER':
+      jsonSchema = { type: 'integer' }
+      break
+    case 'NUMBER':
+      jsonSchema = { type: 'number' }
+      break
+    case 'BOOLEAN':
+      jsonSchema = { type: 'boolean' }
+      break
+    default:
+      throw new Error(`Unsupported responseSchema type: ${rawType || 'unknown'}`)
+  }
+
+  if (!nullable) {
+    return jsonSchema
+  }
+
+  return {
+    anyOf: [
+      jsonSchema,
+      { type: 'null' },
+    ],
+  }
+}
+
 export async function createResponseText(params: {
   env: AiEnv
   runtimeAi?: RuntimeAiOptions
@@ -180,6 +247,16 @@ export async function createResponseText(params: {
   }
   if (typeof maxOutputTokens === 'number' && Number.isFinite(maxOutputTokens)) {
     body.max_output_tokens = maxOutputTokens
+  }
+  if (responseMimeType === 'application/json' && responseSchema) {
+    body.text = {
+      format: {
+        type: 'json_schema',
+        name: 'structured_output',
+        strict: true,
+        schema: toJsonSchema(responseSchema),
+      },
+    }
   }
 
   const response = await fetch(url, {
