@@ -195,7 +195,7 @@ wrangler secret put ADMIN_TOKEN --cwd worker
 # 根据需要添加其他密钥（OPENAI_API_KEY、TTS_API_KEY 等）
 
 # 部署 Next.js 应用
-pnpm deploy
+pnpm run deploy
 # 命令行会输出应用 URL，如 https://my-podcast.<your-subdomain>.workers.dev
 ```
 

@@ -274,7 +274,7 @@ Switch to the target podcast before deploying:
 ```bash
 pnpm use:second      # Switch config
 pnpm deploy:worker   # Deploy this podcast's Worker
-pnpm deploy          # Deploy this podcast's Next.js app
+pnpm run deploy          # Deploy this podcast's Next.js app
 ```
 
 Each deployment has its own independent Admin page, prompts, TTS settings, content sources, and data. Configure each podcast via its own Admin console after deployment.

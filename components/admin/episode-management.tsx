@@ -1,11 +1,12 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 
 interface EpisodeListItem {
   date: string
   title: string
   publishedAt?: string
+  updatedAt?: number
   audio?: string
 }
 
@@ -15,9 +16,40 @@ interface EpisodeDetail extends EpisodeListItem {
   introContent?: string
 }
 
+interface EpisodeListResponse {
+  items?: EpisodeListItem[]
+  page?: number
+  pageSize?: number
+  total?: number
+  totalPages?: number
+  error?: string
+}
+
+const PAGE_SIZE = 10
+
 function confirmAction(message: string) {
   // eslint-disable-next-line no-alert -- admin confirmation dialog
   return globalThis.confirm(message)
+}
+
+function getEpisodeSortTime(item: EpisodeListItem): number {
+  if (item.publishedAt) {
+    const publishedAt = Date.parse(item.publishedAt)
+    if (!Number.isNaN(publishedAt)) {
+      return publishedAt
+    }
+  }
+
+  const dateValue = Date.parse(`${item.date}T00:00:00Z`)
+  if (!Number.isNaN(dateValue)) {
+    return dateValue
+  }
+
+  return item.updatedAt ?? 0
+}
+
+function sortEpisodes(items: EpisodeListItem[]): EpisodeListItem[] {
+  return [...items].sort((left, right) => getEpisodeSortTime(right) - getEpisodeSortTime(left))
 }
 
 export function EpisodeManagement() {
@@ -26,17 +58,24 @@ export function EpisodeManagement() {
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeDetail | null>(null)
   const [episodeBusy, setEpisodeBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalEpisodes, setTotalEpisodes] = useState(0)
+  const [totalPages, setTotalPages] = useState(1)
 
-  const loadEpisodes = useCallback(async () => {
+  const loadEpisodes = useCallback(async (page = 1) => {
     setLoadingEpisodes(true)
     setMessage('')
     try {
-      const response = await fetch('/api/admin/episodes?limit=30')
-      const body = (await response.json()) as { items?: EpisodeListItem[], error?: string }
+      const response = await fetch(`/api/admin/episodes?page=${page}&pageSize=${PAGE_SIZE}`)
+      const body = (await response.json()) as EpisodeListResponse
       if (!response.ok || !body.items) {
         throw new Error(body.error || 'Failed to load episodes')
       }
-      setEpisodes(body.items)
+      setEpisodes(sortEpisodes(body.items))
+      setCurrentPage(body.page || page)
+      setTotalEpisodes(body.total || 0)
+      setTotalPages(body.totalPages || 1)
+      setSelectedEpisode(prev => (prev && !body.items.some(item => item.date === prev.date) ? null : prev))
     }
     catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to load episodes')
@@ -47,7 +86,7 @@ export function EpisodeManagement() {
   }, [])
 
   useEffect(() => {
-    void loadEpisodes()
+    void loadEpisodes(1)
   }, [loadEpisodes])
 
   async function openEpisodeEditor(date: string) {
@@ -111,14 +150,15 @@ export function EpisodeManagement() {
       const nextItem = body.item
 
       setSelectedEpisode(nextItem)
-      setEpisodes(prev => prev.map(item => item.date === nextItem.date
+      setEpisodes(prev => sortEpisodes(prev.map(item => item.date === nextItem.date
         ? {
             date: nextItem.date,
             title: nextItem.title,
             publishedAt: nextItem.publishedAt,
+            updatedAt: nextItem.updatedAt,
             audio: nextItem.audio,
           }
-        : item))
+        : item)))
       setMessage(`Updated ${nextItem.date}`)
     }
     catch (error) {
@@ -143,10 +183,11 @@ export function EpisodeManagement() {
       if (!response.ok || !body.ok) {
         throw new Error(body.error || 'Delete failed')
       }
-      setEpisodes(prev => prev.filter(item => item.date !== date))
       if (selectedEpisode?.date === date) {
         setSelectedEpisode(null)
       }
+      const nextPage = episodes.length === 1 && currentPage > 1 ? currentPage - 1 : currentPage
+      await loadEpisodes(nextPage)
       setMessage(`Deleted ${date}`)
     }
     catch (error) {
@@ -160,11 +201,28 @@ export function EpisodeManagement() {
   return (
     <section className="space-y-4 rounded-lg border p-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Episode Management</h2>
+        <div>
+          <h2 className="text-lg font-semibold">Episode Management</h2>
+          <p className="text-sm text-gray-500">
+            Page
+            {' '}
+            {currentPage}
+            {' '}
+            of
+            {' '}
+            {totalPages}
+            {' '}
+            ·
+            {' '}
+            {totalEpisodes}
+            {' '}
+            episodes total
+          </p>
+        </div>
         <button
           type="button"
           className="rounded border px-3 py-1.5 text-sm"
-          onClick={loadEpisodes}
+          onClick={() => void loadEpisodes(currentPage)}
           disabled={loadingEpisodes || episodeBusy}
         >
           {loadingEpisodes ? 'Loading...' : 'Refresh episode list'}
@@ -173,102 +231,139 @@ export function EpisodeManagement() {
 
       <ul className="space-y-2">
         {episodes.map(item => (
-          <li
-            key={item.date}
-            className={`
-              flex items-center justify-between gap-2 rounded border px-3 py-2
-              text-sm
-            `}
-          >
-            <div className="min-w-0">
-              <p className="truncate font-medium">{item.title}</p>
-              <p className="text-xs text-gray-500">{item.date}</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                className="rounded border px-2 py-1 text-xs"
-                onClick={() => openEpisodeEditor(item.date)}
-                disabled={episodeBusy}
-              >
-                Edit
-              </button>
-              <button
-                type="button"
-                className="rounded border px-2 py-1 text-xs text-red-700"
-                onClick={() => deleteEpisode(item.date)}
-                disabled={episodeBusy}
-              >
-                Delete
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
-
-      {selectedEpisode
-        ? (
-            <div className="space-y-3 border-t pt-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold">
-                  Edit episode
-                  {' '}
-                  {selectedEpisode.date}
-                </h3>
+          <Fragment key={item.date}>
+            <li
+              className={`
+                flex items-center justify-between gap-2 rounded border px-3 py-2
+                text-sm
+              `}
+            >
+              <div className="min-w-0">
+                <p className="truncate font-medium">{item.title}</p>
+                <p className="text-xs text-gray-500">{item.date}</p>
+              </div>
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
                   className="rounded border px-2 py-1 text-xs"
-                  onClick={() => setSelectedEpisode(null)}
+                  onClick={() => openEpisodeEditor(item.date)}
                   disabled={episodeBusy}
                 >
-                  Close
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 text-xs text-red-700"
+                  onClick={() => deleteEpisode(item.date)}
+                  disabled={episodeBusy}
+                >
+                  Delete
                 </button>
               </div>
+            </li>
 
-              <label className="block text-sm">
-                Title
-                <input
-                  className="mt-1 w-full rounded border px-3 py-2"
-                  value={selectedEpisode.title}
-                  onChange={event => setSelectedEpisode(prev => (prev
-                    ? { ...prev, title: event.target.value }
-                    : prev))}
-                />
-              </label>
+            {selectedEpisode?.date === item.date
+              ? (
+                  <li className="rounded border border-t-0 p-4">
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm font-semibold">
+                          Edit episode
+                          {' '}
+                          {selectedEpisode.date}
+                        </h3>
+                        <button
+                          type="button"
+                          className="rounded border px-2 py-1 text-xs"
+                          onClick={() => setSelectedEpisode(null)}
+                          disabled={episodeBusy}
+                        >
+                          Close
+                        </button>
+                      </div>
 
-              <label className="block text-sm">
-                Publish time (ISO)
-                <input
-                  className="mt-1 w-full rounded border px-3 py-2"
-                  value={selectedEpisode.publishedAt || ''}
-                  onChange={event => setSelectedEpisode(prev => (prev
-                    ? { ...prev, publishedAt: event.target.value }
-                    : prev))}
-                />
-              </label>
+                      <label className="block text-sm">
+                        Title
+                        <input
+                          className="mt-1 w-full rounded border px-3 py-2"
+                          value={selectedEpisode.title}
+                          onChange={event => setSelectedEpisode(prev => (prev
+                            ? { ...prev, title: event.target.value }
+                            : prev))}
+                        />
+                      </label>
 
-              <label className="block text-sm">
-                Audio key
-                <input
-                  className="mt-1 w-full rounded border px-3 py-2"
-                  value={selectedEpisode.audio || ''}
-                  onChange={event => setSelectedEpisode(prev => (prev
-                    ? { ...prev, audio: event.target.value }
-                    : prev))}
-                />
-              </label>
+                      <label className="block text-sm">
+                        Publish time (ISO)
+                        <input
+                          className="mt-1 w-full rounded border px-3 py-2"
+                          value={selectedEpisode.publishedAt || ''}
+                          onChange={event => setSelectedEpisode(prev => (prev
+                            ? { ...prev, publishedAt: event.target.value }
+                            : prev))}
+                        />
+                      </label>
 
-              <button
-                type="button"
-                className="rounded bg-black px-3 py-1.5 text-sm text-white"
-                onClick={saveEpisode}
-                disabled={episodeBusy}
-              >
-                {episodeBusy ? 'Saving...' : 'Save episode changes'}
-              </button>
-            </div>
-          )
-        : null}
+                      <label className="block text-sm">
+                        Audio key
+                        <input
+                          className="mt-1 w-full rounded border px-3 py-2"
+                          value={selectedEpisode.audio || ''}
+                          onChange={event => setSelectedEpisode(prev => (prev
+                            ? { ...prev, audio: event.target.value }
+                            : prev))}
+                        />
+                      </label>
+
+                      <button
+                        type="button"
+                        className={`
+                          rounded bg-black px-3 py-1.5 text-sm text-white
+                        `}
+                        onClick={saveEpisode}
+                        disabled={episodeBusy}
+                      >
+                        {episodeBusy ? 'Saving...' : 'Save episode changes'}
+                      </button>
+                    </div>
+                  </li>
+                )
+              : null}
+          </Fragment>
+        ))}
+      </ul>
+
+      <div
+        className={`
+          flex items-center justify-between gap-3 border-t pt-4 text-sm
+        `}
+      >
+        <button
+          type="button"
+          className="rounded border px-3 py-1.5"
+          onClick={() => void loadEpisodes(currentPage - 1)}
+          disabled={loadingEpisodes || episodeBusy || currentPage <= 1}
+        >
+          Previous
+        </button>
+
+        <p className="text-gray-500">
+          Showing
+          {' '}
+          {episodes.length}
+          {' '}
+          items per page
+        </p>
+
+        <button
+          type="button"
+          className="rounded border px-3 py-1.5"
+          onClick={() => void loadEpisodes(currentPage + 1)}
+          disabled={loadingEpisodes || episodeBusy || currentPage >= totalPages}
+        >
+          Next
+        </button>
+      </div>
 
       {message ? <p className="text-sm">{message}</p> : null}
     </section>
