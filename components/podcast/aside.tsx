@@ -13,6 +13,10 @@ export function PodcastAside() {
   const podcastStore = getPodcastStore()
   const podcastInfo = useStore(podcastStore, state => state.podcastInfo)
   const hosts = podcastInfo?.hosts || []
+  const publisher = podcastInfo?.publisher
+  const publisherName = publisher?.name.trim() || ''
+  const publisherUrl = publisher?.url.trim() || ''
+  const showPublisher = Boolean(publisherName && publisherUrl)
 
   return (
     <aside className={`
@@ -39,6 +43,25 @@ export function PodcastAside() {
         </span>
       </section>
       <section className="flex flex-col items-center gap-5">
+        {showPublisher && (
+          <a
+            href={publisherUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`
+              flex items-center gap-4 whitespace-nowrap text-muted-foreground
+              transition-colors
+              [writing-mode:vertical-rl]
+              hover:text-foreground
+            `}
+            title={t('aside.publisherLinkTitle', { name: publisherName })}
+            aria-label={t('aside.publisherLinkTitle', { name: publisherName })}
+          >
+            <span className="text-sm font-medium">
+              {t('aside.publisherBadge', { name: publisherName })}
+            </span>
+          </a>
+        )}
         <Link
           href="/admin"
           className={`

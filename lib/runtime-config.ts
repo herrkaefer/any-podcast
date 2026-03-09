@@ -262,6 +262,8 @@ export async function buildDefaultRuntimeConfig(): Promise<RuntimeConfigBundle> 
       title: podcast.base.title,
       description: podcast.base.description,
       coverLogoUrl: podcast.base.cover,
+      publisherName: '',
+      publisherUrl: '',
       contactEmail: podcastContactEmail,
       themeColor: site.themeColor,
       pageSize: site.pageSize,

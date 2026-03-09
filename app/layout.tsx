@@ -112,7 +112,7 @@ export default async function RootLayout({
       <head>
         <script id="theme-initializer">{themeInitializer}</script>
       </head>
-      <body>
+      <body suppressHydrationWarning>
         <Providers detectedLocale={locale}>{children}</Providers>
       </body>
     </html>

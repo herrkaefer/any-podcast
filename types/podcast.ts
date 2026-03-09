@@ -27,6 +27,11 @@ export interface PodcastHost {
   link: string
 }
 
+export interface PodcastPublisher {
+  name: string
+  url: string
+}
+
 export type PodcastPlatformId = 'apple' | 'spotify' | 'youtube' | 'xiaoyuzhou' | 'rss'
 
 export interface PodcastPlatform {
@@ -53,6 +58,7 @@ export interface PodcastInfo {
   description: string
   link: string
   cover: string
+  publisher?: PodcastPublisher
   platforms: PodcastPlatform[]
   hosts: PodcastHost[]
 }

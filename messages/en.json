@@ -9,6 +9,8 @@
   "aside": {
     "hostedBy": "Hosts",
     "hostLinkTitle": "Visit {{name}}'s homepage",
+    "publisherBadge": "By {{name}}",
+    "publisherLinkTitle": "Visit {{name}}",
     "adminLinkTitle": "Open settings",
     "githubLinkTitle": "Open GitHub repository"
   },

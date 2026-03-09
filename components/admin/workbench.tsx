@@ -594,6 +594,38 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
             />
           </label>
 
+          <label className="text-sm">
+            Publisher name
+            <input
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={site.publisherName}
+              placeholder="OddChips"
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                site: {
+                  ...prev.site,
+                  publisherName: event.target.value,
+                },
+              }))}
+            />
+          </label>
+
+          <label className="text-sm">
+            Publisher URL
+            <input
+              className="mt-1 w-full rounded border px-3 py-2"
+              value={site.publisherUrl}
+              placeholder="https://oddchips.com/"
+              onChange={event => setWorkingDraft(prev => ({
+                ...prev,
+                site: {
+                  ...prev.site,
+                  publisherUrl: event.target.value,
+                },
+              }))}
+            />
+          </label>
+
           <label className={`
             text-sm
             md:col-span-2

@@ -18,6 +18,7 @@ function isSamePodcastInfo(left: PodcastInfo | null, right: PodcastInfo) {
     && left.description === right.description
     && left.link === right.link
     && left.cover === right.cover
+    && JSON.stringify(left.publisher) === JSON.stringify(right.publisher)
     && JSON.stringify(left.platforms) === JSON.stringify(right.platforms)
     && JSON.stringify(left.hosts) === JSON.stringify(right.hosts)
 }

@@ -95,6 +95,12 @@ export default async function PostPage({
     description: runtimeSite.description,
     link: baseUrl,
     cover: runtimeSite.coverLogoUrl,
+    publisher: runtimeSite.publisherName && runtimeSite.publisherUrl
+      ? {
+          name: runtimeSite.publisherName,
+          url: runtimeSite.publisherUrl,
+        }
+      : undefined,
     platforms: buildPodcastPlatforms(
       runtimeSite.externalLinks,
       `${baseUrl}/rss.xml`,

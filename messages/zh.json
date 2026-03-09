@@ -9,6 +9,8 @@
   "aside": {
     "hostedBy": "主 播",
     "hostLinkTitle": "访问 {{name}} 的主页",
+    "publisherBadge": "{{name}} 出品",
+    "publisherLinkTitle": "访问 {{name}} 官网",
     "adminLinkTitle": "进入设置页面",
     "githubLinkTitle": "打开 GitHub 仓库"
   },

@@ -40,6 +40,8 @@ export interface RuntimeSiteConfig {
   title: string
   description: string
   coverLogoUrl: string
+  publisherName: string
+  publisherUrl: string
   contactEmail: string
   themeColor: RuntimeThemeColor
   pageSize: number
