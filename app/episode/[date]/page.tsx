@@ -3,10 +3,11 @@ import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { notFound } from 'next/navigation'
 import { EpisodeDetail } from '@/components/episodes/detail'
 import { PodcastScaffold } from '@/components/podcast/scaffold'
-import { buildContentKey, podcast } from '@/config'
+import { buildContentKey } from '@/config'
 import { buildEpisodeFromArticle } from '@/lib/episodes'
 import { buildPodcastPlatforms } from '@/lib/podcast-platforms'
 import { getActiveRuntimeConfig } from '@/lib/runtime-config'
+import { resolveBaseUrlFromHeaders } from '@/lib/site-url'
 
 export const revalidate = 7200
 
@@ -24,6 +25,7 @@ export async function generateMetadata({
   const runEnv = env.NODE_ENV || 'production'
   const runtimeConfig = await getActiveRuntimeConfig(episodeEnv)
   const runtimeSite = runtimeConfig.config.site
+  const baseUrl = await resolveBaseUrlFromHeaders()
   const { date } = await params
   const post = (await env.PODCAST_KV.get(buildContentKey(runEnv, date), 'json')) as unknown as Article | null
 
@@ -34,11 +36,14 @@ export async function generateMetadata({
   const episode = buildEpisodeFromArticle(post, env.NEXT_STATIC_HOST, runtimeConfig.config.locale.language)
   const title = episode.title || runtimeSite.title
   const description = episode.description || runtimeSite.description
-  const url = `${podcast.base.link}/episode/${episode.id}`
+  const url = `${baseUrl}/episode/${episode.id}`
 
   return {
     title,
     description,
+    alternates: {
+      canonical: `/episode/${episode.id}`,
+    },
     openGraph: {
       title,
       description,
@@ -73,6 +78,7 @@ export default async function PostPage({
   const runEnv = env.NODE_ENV || 'production'
   const runtimeConfig = await getActiveRuntimeConfig(episodeEnv)
   const runtimeSite = runtimeConfig.config.site
+  const baseUrl = await resolveBaseUrlFromHeaders()
   const { date } = await params
   const pageQuery = await searchParams
   const fallbackPage = Number.parseInt(pageQuery.page ?? '1', 10)
@@ -87,11 +93,11 @@ export default async function PostPage({
   const podcastInfo = {
     title: runtimeSite.title,
     description: runtimeSite.description,
-    link: podcast.base.link,
+    link: baseUrl,
     cover: runtimeSite.coverLogoUrl,
     platforms: buildPodcastPlatforms(
       runtimeSite.externalLinks,
-      podcast.base.link ? `${podcast.base.link.replace(/\/$/, '')}/rss.xml` : '/rss.xml',
+      `${baseUrl}/rss.xml`,
     ),
     hosts: runtimeConfig.config.hosts.slice(0, 2).map(host => ({
       name: host.name,

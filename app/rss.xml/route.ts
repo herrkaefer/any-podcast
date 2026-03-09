@@ -2,8 +2,9 @@ import { getCloudflareContext } from '@opennextjs/cloudflare'
 import markdownit from 'markdown-it'
 import { NextResponse } from 'next/server'
 import { Podcast } from 'podcast'
-import { buildContentKey, podcast, podcastContactEmail } from '@/config'
+import { buildContentKey, podcastContactEmail } from '@/config'
 import { getActiveRuntimeConfig } from '@/lib/runtime-config'
+import { resolveBaseUrlFromRequest } from '@/lib/site-url'
 import { getPastDays } from '@/lib/utils'
 
 const md = markdownit()
@@ -172,9 +173,8 @@ function hasMatchingEtag(ifNoneMatch: string, etag: string): boolean {
 
 export async function GET(request: Request) {
   const requestUrl = new URL(request.url)
-  const configuredBaseUrl = (podcast.base.link || '').replace(/\/$/, '')
   const requestBaseUrl = requestUrl.origin
-  const baseUrl = /^https?:\/\//.test(configuredBaseUrl) ? configuredBaseUrl : requestBaseUrl
+  const baseUrl = resolveBaseUrlFromRequest(request)
   const selfFeedUrl = `${requestBaseUrl}${requestUrl.pathname}`
   const { env } = await getCloudflareContext({ async: true })
   const rssEnv = env as RssEnv

@@ -1,10 +1,10 @@
 import type { Metadata } from 'next'
-import process from 'node:process'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { Providers } from '@/components/providers'
-import { podcast, site } from '@/config'
+import { site } from '@/config'
 import { toLocale } from '@/i18n/config'
 import { getActiveRuntimeConfig } from '@/lib/runtime-config'
+import { resolveBaseUrlFromHeaders } from '@/lib/site-url'
 import './globals.css'
 import '@vidstack/react/player/styles/base.css'
 import '@vidstack/react/player/styles/default/theme.css'
@@ -31,39 +31,23 @@ const themeInitializer = `
   })()
 `
 
-function resolveMetadataBase() {
-  const candidates = [process.env.NEXT_PUBLIC_BASE_URL, podcast.base.link, 'http://localhost:3000']
-  for (const candidate of candidates) {
-    if (!candidate) {
-      continue
-    }
-    try {
-      return new URL(candidate)
-    }
-    catch {
-      continue
-    }
-  }
-  return new URL('http://localhost:3000')
-}
-
-const metadataBase = resolveMetadataBase()
-
 export async function generateMetadata(): Promise<Metadata> {
   const { env } = await getCloudflareContext({ async: true })
   const layoutEnv = env as LayoutEnv
   const runtimeConfig = await getActiveRuntimeConfig(layoutEnv)
   const title = runtimeConfig.config.site.title || site.seo.defaultTitle
   const description = runtimeConfig.config.site.description || site.seo.defaultDescription
+  const baseUrl = await resolveBaseUrlFromHeaders()
 
   return {
-    metadataBase,
+    metadataBase: new URL(baseUrl),
     title: {
       default: title,
       template: `%s · ${title}`,
     },
     description,
     alternates: {
+      canonical: '/',
       types: {
         'application/rss+xml': [
           {
@@ -76,7 +60,7 @@ export async function generateMetadata(): Promise<Metadata> {
     openGraph: {
       title,
       description,
-      url: podcast.base.link,
+      url: baseUrl,
       type: 'website',
       images: [
         {
@@ -91,6 +75,10 @@ export async function generateMetadata(): Promise<Metadata> {
       title,
       description,
       images: [site.seo.defaultImage],
+    },
+    robots: {
+      index: true,
+      follow: true,
     },
     icons: {
       icon: site.favicon,

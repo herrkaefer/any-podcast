@@ -1,10 +1,11 @@
 import type { PodcastInfo } from '@/types/podcast'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { Podcast } from '@/components/podcast'
-import { buildContentPrefix, podcast } from '@/config'
+import { buildContentPrefix } from '@/config'
 import { buildEpisodesFromArticles } from '@/lib/episodes'
 import { buildPodcastPlatforms } from '@/lib/podcast-platforms'
 import { getActiveRuntimeConfig } from '@/lib/runtime-config'
+import { resolveBaseUrlFromHeaders } from '@/lib/site-url'
 import { getPastDays } from '@/lib/utils'
 
 export const revalidate = 600
@@ -23,6 +24,7 @@ export default async function Home({
   const runEnv = env.NODE_ENV || 'production'
   const runtimeConfig = await getActiveRuntimeConfig(homeEnv)
   const runtimeSite = runtimeConfig.config.site
+  const baseUrl = await resolveBaseUrlFromHeaders()
   const query = await searchParams
   const requestedPage = Number.parseInt(query.page ?? '1', 10)
   const currentPage = Number.isNaN(requestedPage) ? 1 : Math.max(1, requestedPage)
@@ -48,11 +50,11 @@ export default async function Home({
   const podcastInfo: PodcastInfo = {
     title: runtimeSite.title,
     description: runtimeSite.description,
-    link: podcast.base.link,
+    link: baseUrl,
     cover: runtimeSite.coverLogoUrl,
     platforms: buildPodcastPlatforms(
       runtimeSite.externalLinks,
-      podcast.base.link ? `${podcast.base.link.replace(/\/$/, '')}/rss.xml` : '/rss.xml',
+      `${baseUrl}/rss.xml`,
     ),
     hosts: runtimeConfig.config.hosts.slice(0, 2).map(host => ({
       name: host.name,
