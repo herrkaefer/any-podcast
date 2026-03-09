@@ -13,7 +13,7 @@ An AI-powered, configurable podcast platform that aggregates content sources, ge
 ## Tech Stack
 
 - **Runtime**: Next.js 15 (App Router) + Cloudflare Workers (via OpenNext)
-- **AI**: OpenAI / Gemini for content generation
+- **AI**: OpenAI / Gemini / MiniMax for content generation
 - **TTS**: Edge TTS / MiniMax / Murf / Gemini TTS
 - **Storage**: Cloudflare KV (metadata) + R2 (audio files)
 - **UI**: Tailwind CSS + shadcn/ui
@@ -124,6 +124,7 @@ Edit `worker/.env.local` (Worker):
 | ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
 | `PODCAST_ID`            | Yes      | Same as above                                                                                                    |
 | `GEMINI_API_KEY`        | Yes      | Google Gemini API key                                                                                            |
+| `MINIMAX_API_KEY`       | No       | MiniMax API key (if using MiniMax for text generation)                                                          |
 | `ADMIN_TOKEN`           | Yes      | Same as above                                                                                                    |
 | `PODCAST_WORKER_URL`    | Yes      | Worker URL. Local dev: `http://localhost:8787`. Production: set in wrangler `vars` after deployment (see Step 7) |
 | `PODCAST_R2_BUCKET_URL` | Yes      | R2 bucket public URL. Local dev: `http://localhost:8787/static`. Production: your R2 custom domain or public URL |
@@ -147,7 +148,7 @@ The web-based Admin console lets you configure everything at runtime without tou
 3. Configure all settings in the UI:
    - **Site**: title, description, logo, theme color, contact email
    - **Hosts**: name, gender, persona, speaker marker for each host
-   - **AI**: provider (Gemini/OpenAI), model, API base URL
+   - **AI**: provider (Gemini/OpenAI/MiniMax), model, API base URL
    - **TTS**: provider (Gemini/Edge/MiniMax/Murf), language, voice for each host, audio quality, intro music
    - **Sources**: add RSS feeds, URLs, or Gmail labels
    - **Prompts**: customize all AI prompts (story summary, podcast dialogue, blog post, intro, title)

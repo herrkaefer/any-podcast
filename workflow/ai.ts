@@ -1,11 +1,12 @@
 import type { RuntimeAiConfig } from '@/types/runtime-config'
 import { GoogleGenAI } from '@google/genai'
 
-export type AiProvider = 'openai' | 'gemini'
+export type AiProvider = 'openai' | 'gemini' | 'minimax'
 
 export interface AiEnv {
   OPENAI_API_KEY?: string
   GEMINI_API_KEY?: string
+  MINIMAX_API_KEY?: string
 }
 
 interface ResponsesMessageContent {
@@ -27,6 +28,17 @@ interface ResponsesBody {
   error?: { message?: string }
 }
 
+interface ChatCompletionsBody {
+  choices?: {
+    message?: {
+      content?: string | Array<{ type?: string, text?: string }>
+    }
+    finish_reason?: string
+  }[]
+  usage?: unknown
+  error?: { message?: string }
+}
+
 interface ResponseTextResult {
   text: string
   usage?: unknown
@@ -38,6 +50,7 @@ interface JsonSchemaObject {
 }
 
 const defaultOpenAIBaseUrl = 'https://api.openai.com/v1'
+const defaultMiniMaxBaseUrl = 'https://api.minimaxi.com/v1'
 
 export type RuntimeAiOptions = RuntimeAiConfig
 
@@ -51,6 +64,13 @@ export function getAiProvider(env: AiEnv, options?: RuntimeAiOptions): AiProvide
     return provider
   }
 
+  if (provider === 'minimax') {
+    if (!env.MINIMAX_API_KEY?.trim()) {
+      throw new Error('MINIMAX_API_KEY is required when ai.provider=minimax')
+    }
+    return provider
+  }
+
   if (!env.OPENAI_API_KEY?.trim()) {
     throw new Error('OPENAI_API_KEY is required when ai.provider=openai')
   }
@@ -60,6 +80,9 @@ export function getAiProvider(env: AiEnv, options?: RuntimeAiOptions): AiProvide
 export function getPrimaryModel(env: AiEnv, provider: AiProvider, options?: RuntimeAiOptions): string {
   if (provider === 'gemini' && !env.GEMINI_API_KEY?.trim()) {
     throw new Error('GEMINI_API_KEY is required when ai.provider=gemini')
+  }
+  if (provider === 'minimax' && !env.MINIMAX_API_KEY?.trim()) {
+    throw new Error('MINIMAX_API_KEY is required when ai.provider=minimax')
   }
   if (provider === 'openai' && !env.OPENAI_API_KEY?.trim()) {
     throw new Error('OPENAI_API_KEY is required when ai.provider=openai')
@@ -93,6 +116,11 @@ function buildResponsesUrl(baseUrl?: string): string {
   return `${normalized}/responses`
 }
 
+function buildChatCompletionsUrl(baseUrl: string): string {
+  const normalized = baseUrl.replace(/\/$/, '')
+  return `${normalized}/chat/completions`
+}
+
 function extractOutputText(body: ResponsesBody): string {
   if (typeof body.output_text === 'string') {
     return body.output_text
@@ -115,6 +143,20 @@ function extractOutputText(body: ResponsesBody): string {
     }
   }
   return texts.join('')
+}
+
+function extractChatCompletionText(body: ChatCompletionsBody): string {
+  const content = body.choices?.[0]?.message?.content
+  const stripThinking = (value: string) => value.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim()
+  if (typeof content === 'string') {
+    return stripThinking(content)
+  }
+  if (!Array.isArray(content)) {
+    return ''
+  }
+  return stripThinking(content
+    .map(item => typeof item?.text === 'string' ? item.text : '')
+    .join(''))
 }
 
 function toJsonSchema(schema: unknown): JsonSchemaObject {
@@ -180,6 +222,21 @@ function toJsonSchema(schema: unknown): JsonSchemaObject {
   }
 }
 
+function buildMiniMaxInstructions(
+  instructions: string,
+  responseMimeType?: string,
+  responseSchema?: unknown,
+): string {
+  if (responseMimeType !== 'application/json') {
+    return instructions
+  }
+
+  const schemaNote = responseSchema
+    ? `\n\nReturn valid JSON matching this JSON Schema:\n${JSON.stringify(toJsonSchema(responseSchema))}`
+    : ''
+  return `${instructions}\n\nReturn only valid JSON. Do not wrap it in markdown fences or add extra text.${schemaNote}`
+}
+
 export async function createResponseText(params: {
   env: AiEnv
   runtimeAi?: RuntimeAiOptions
@@ -233,6 +290,61 @@ export async function createResponseText(params: {
       text,
       usage: (response as { usageMetadata?: unknown }).usageMetadata,
       finishReason: candidate?.finishReason || candidate?.finishMessage,
+    }
+  }
+
+  if (provider === 'minimax') {
+    if (!env.MINIMAX_API_KEY) {
+      throw new Error('MINIMAX_API_KEY is required when using MiniMax API')
+    }
+
+    const url = buildChatCompletionsUrl(runtimeAi?.baseUrl || defaultMiniMaxBaseUrl)
+    const body: Record<string, unknown> = {
+      model,
+      reasoning_split: true,
+      messages: [
+        {
+          role: 'system',
+          content: buildMiniMaxInstructions(instructions, responseMimeType, responseSchema),
+        },
+        {
+          role: 'user',
+          content: input,
+        },
+      ],
+    }
+    if (typeof maxOutputTokens === 'number' && Number.isFinite(maxOutputTokens)) {
+      body.max_tokens = maxOutputTokens
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.MINIMAX_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`MiniMax Chat Completions API error: ${response.status} ${response.statusText} ${errorText}`)
+    }
+
+    const data = (await response.json()) as ChatCompletionsBody
+    if (data.error?.message) {
+      throw new Error(`MiniMax Chat Completions API error: ${data.error.message}`)
+    }
+
+    const text = extractChatCompletionText(data)
+    if (!text) {
+      throw new Error('MiniMax Chat Completions API returned empty output')
+    }
+
+    return {
+      text,
+      usage: data.usage,
+      finishReason: data.choices?.[0]?.finish_reason,
     }
   }
 

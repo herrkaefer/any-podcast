@@ -103,7 +103,7 @@ const hostSchema = z.object({
 }).strict()
 
 const aiSchema = z.object({
-  provider: z.enum(['openai', 'gemini']),
+  provider: z.enum(['openai', 'gemini', 'minimax']),
   model: z.string().min(1),
   thinkingModel: z.string().optional(),
   maxTokens: z.number().int().positive().optional(),
@@ -111,7 +111,7 @@ const aiSchema = z.object({
 }).strict()
 
 const editableAiPatchSchema = z.object({
-  provider: z.enum(['openai', 'gemini']).optional(),
+  provider: z.enum(['openai', 'gemini', 'minimax']).optional(),
   model: z.string().min(1).optional(),
   thinkingModel: z.string().optional(),
   maxTokens: z.number().int().positive().optional(),

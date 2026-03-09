@@ -77,7 +77,7 @@ const promptMetaMap: Record<PromptKey, PromptMeta> = {
 }
 
 const themeColorOptions: RuntimeConfigBundle['site']['themeColor'][] = ['blue', 'pink', 'purple', 'green', 'yellow', 'orange', 'red']
-const aiProviderOptions: RuntimeConfigBundle['ai']['provider'][] = ['gemini', 'openai']
+const aiProviderOptions: RuntimeConfigBundle['ai']['provider'][] = ['gemini', 'openai', 'minimax']
 const ttsProviderOptions: RuntimeConfigBundle['tts']['provider'][] = ['edge', 'minimax', 'murf', 'gemini']
 const minimaxLanguageBoostOptions: NonNullable<RuntimeConfigBundle['tts']['languageBoost']>[] = ['auto', 'Chinese', 'English']
 const sourceTypeOptions: SourceItem['type'][] = ['rss', 'url', 'gmail']

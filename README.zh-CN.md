@@ -13,7 +13,7 @@
 ## 技术栈
 
 - **运行时**: Next.js 15 (App Router) + Cloudflare Workers (通过 OpenNext 适配)
-- **AI**: OpenAI / Gemini 内容生成
+- **AI**: OpenAI / Gemini / MiniMax 内容生成
 - **TTS**: Edge TTS / MiniMax / Murf / Gemini TTS
 - **存储**: Cloudflare KV (元数据) + R2 (音频文件)
 - **UI**: Tailwind CSS + shadcn/ui
@@ -124,6 +124,7 @@ cp worker/.env.local.example worker/.env.local
 | ----------------------- | ---- | ----------------------------------------------------------------------------------------------------- |
 | `PODCAST_ID`            | 是   | 与上面一致                                                                                            |
 | `GEMINI_API_KEY`        | 是   | Google Gemini API 密钥                                                                                |
+| `MINIMAX_API_KEY`       | 否   | MiniMax API 密钥（如使用 MiniMax 进行文本生成）                                                         |
 | `ADMIN_TOKEN`           | 是   | 与上面一致                                                                                            |
 | `PODCAST_WORKER_URL`    | 是   | Worker URL。本地开发：`http://localhost:8787`。生产环境：部署后在 wrangler `vars` 中设置（见第 7 步） |
 | `PODCAST_R2_BUCKET_URL` | 是   | R2 存储桶公开 URL。本地开发：`http://localhost:8787/static`。生产环境：你的 R2 自定义域名或公开 URL   |
@@ -147,7 +148,7 @@ Web 管理后台可以在运行时配置所有选项，无需修改代码：
 3. 在管理界面中配置所有设置：
    - **站点信息**: 标题、描述、Logo、主题色、联系邮箱
    - **主播设置**: 每位主播的名称、性别、人设、说话人标记
-   - **AI 配置**: 服务商（Gemini/OpenAI）、模型、API 地址
+   - **AI 配置**: 服务商（Gemini/OpenAI/MiniMax）、模型、API 地址
    - **TTS 配置**: 服务商（Gemini/Edge/MiniMax/Murf）、语言、每位主播的语音、音频质量、片头音乐
    - **内容源**: 添加 RSS 订阅、网页 URL 或 Gmail 标签
    - **Prompt**: 自定义所有 AI 提示词（文章摘要、播客对话、博客文章、简介、标题）
