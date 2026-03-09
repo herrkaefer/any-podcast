@@ -227,10 +227,10 @@ function buildSegments(lines) {
 }
 
 function getMinimaxConfigFromEnv() {
-  const groupId = process.env.TTS_API_ID || ''
-  const apiKey = process.env.TTS_API_KEY || ''
+  const groupId = process.env.MINIMAX_TTS_GROUP_ID || process.env.TTS_API_ID || ''
+  const apiKey = process.env.MINIMAX_TTS_API_KEY || process.env.TTS_API_KEY || ''
   if (!groupId || !apiKey) {
-    throw new Error('Missing TTS_API_ID or TTS_API_KEY in env')
+    throw new Error('Missing MINIMAX_TTS_GROUP_ID or MINIMAX_TTS_API_KEY in env')
   }
   const maxRpmRaw = Number.parseInt(process.env.MINIMAX_MAX_RPM || `${DEFAULT_MAX_RPM}`, 10)
   const maxRpm = Number.isFinite(maxRpmRaw) && maxRpmRaw > 0 ? maxRpmRaw : DEFAULT_MAX_RPM

@@ -117,6 +117,8 @@ Edit `.env.local` (Next.js app):
 | `ADMIN_TOKEN`      | Yes      | Password for the Admin console (choose a strong value)                                                                                |
 | `NEXT_STATIC_HOST` | Yes      | Base URL for audio files. Local dev: `http://localhost:3000/static`. Production: set in wrangler `vars` after deployment (see Step 7) |
 | `NODE_ENV`         | No       | Defaults to `development` locally. Set to `production` in wrangler `vars`                                                             |
+| `PODCAST_WORKER_URL` | No     | Worker URL used by the Admin trigger route in production when service binding is unavailable                                           |
+| `TRIGGER_TOKEN`    | No       | Token used by the Admin trigger route when calling the Worker over HTTP in production                                                 |
 
 Edit `worker/.env.local` (Worker):
 
@@ -130,10 +132,15 @@ Edit `worker/.env.local` (Worker):
 | `PODCAST_R2_BUCKET_URL` | Yes      | R2 bucket public URL. Local dev: `http://localhost:8787/static`. Production: your R2 custom domain or public URL |
 | `OPENAI_API_KEY`        | No       | OpenAI API key (if using OpenAI)                                                                                 |
 | `JINA_KEY`              | No       | Jina API key (for web content extraction)                                                                        |
-| `TTS_API_ID`            | No       | TTS provider ID (MiniMax/Murf)                                                                                   |
-| `TTS_API_KEY`           | No       | TTS provider API key                                                                                             |
+| `MINIMAX_TTS_GROUP_ID`  | No       | MiniMax TTS Group ID (required when `tts.provider=minimax`)                                                     |
+| `MINIMAX_TTS_API_KEY`   | No       | MiniMax TTS API key (required when `tts.provider=minimax`)                                                      |
+| `MURF_API_KEY`          | No       | Murf API key (required when `tts.provider=murf`)                                                                 |
 | `TRIGGER_TOKEN`         | No       | Token for manually triggering the workflow via curl                                                              |
 | `GMAIL_*`               | No       | Gmail OAuth credentials (for newsletter sources)                                                                 |
+
+Business runtime settings such as AI provider/model/base URL, workflow test settings, sources, prompts, and TTS options are configured in Admin and stored in runtime config, not in Worker env variables.
+
+For backward compatibility, the Worker still accepts legacy `TTS_API_ID` / `TTS_API_KEY`, but new deployments should use the provider-specific names above.
 
 ### Step 5: Configure Your Podcast
 
@@ -193,7 +200,7 @@ pnpm deploy:worker
 # Set production secrets for the Worker
 wrangler secret put GEMINI_API_KEY --cwd worker
 wrangler secret put ADMIN_TOKEN --cwd worker
-# Add other secrets as needed (OPENAI_API_KEY, TTS_API_KEY, etc.)
+# Add other secrets as needed (OPENAI_API_KEY, MINIMAX_TTS_API_KEY, MURF_API_KEY, etc.)
 
 # Deploy the Next.js app
 pnpm deploy

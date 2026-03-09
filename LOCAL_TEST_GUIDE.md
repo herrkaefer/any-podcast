@@ -4,28 +4,28 @@
 
 ### 编辑 `worker/.env.local`
 
-**必需配置（二选一）：**
+**必需配置：**
 
 ```bash
-# 填入你的 OpenAI API Key
-OPENAI_API_KEY=sk-your-actual-api-key-here
-
-# 或者填入你的 Gemini API Key（未配置 OPENAI_API_KEY 时会使用 Gemini）
+# 至少配置你要测试的 provider 对应的 API Key
 GEMINI_API_KEY=your-gemini-api-key
+# OPENAI_API_KEY=sk-your-actual-api-key-here
+# MINIMAX_API_KEY=your-minimax-api-key
 ```
 
-**可选配置：**
+**其他常用环境变量：**
 
-- `OPENAI_MODEL`: 默认使用 gpt-4o，可以改为 gpt-4o-mini 以降低成本
-- `GEMINI_MODEL`: Gemini 模型名称，例如 gemini-2.0-flash
-- `GEMINI_THINKING_MODEL`: Gemini 思考模型（可选，不填则使用 `GEMINI_MODEL`）
 - `JINA_KEY`: 用于网页抓取，如果没有会使用备用方案
-- `OPENAI_MAX_TOKENS`: 默认 4096，可根据需要调整
-- `GEMINI_MAX_TOKENS`: 默认 4096，可根据需要调整
 - `GMAIL_CLIENT_ID`: Gmail OAuth 客户端 ID（使用 Gmail newsletter 来源时需要）
 - `GMAIL_CLIENT_SECRET`: Gmail OAuth 客户端密钥（使用 Gmail newsletter 来源时需要）
 - `GMAIL_REFRESH_TOKEN`: Gmail OAuth refresh token（使用 Gmail newsletter 来源时需要）
 - `GMAIL_USER_EMAIL`: Gmail 账号（可选，默认使用 `me`）
+
+**注意：以下业务配置不再通过 env 控制，而是通过 Admin 保存到 runtime config：**
+
+- AI provider / model / thinking model / maxTokens / baseUrl
+- Workflow test step / input / instructions / TTS input
+- Sources / prompts / TTS runtime settings
 
 ### 编辑 `.env.local`
 
@@ -79,7 +79,7 @@ cd /Users/herrk/dev-local/any-podcast
 pnpm dev:worker
 ```
 
-**终端 2 - 启动 Web：**
+**终端 2 - 启动 Web（用于通过 Admin 配置 runtime config）：**
 
 ```bash
 cd /Users/herrk/dev-local/any-podcast
@@ -90,6 +90,9 @@ pnpm dev
 
 - Web 界面：http://localhost:3000
 - Worker API：http://localhost:8787
+- Admin 界面：http://localhost:3000/admin
+
+在 Admin 的 Test 区块里配置 workflow 测试选项，在 AI/TTS/Sources 区块里配置 provider、model 和其他运行参数。
 
 ## 3. 重要注意事项
 

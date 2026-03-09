@@ -4,6 +4,9 @@ import { GoogleGenAI } from '@google/genai'
 import { $fetch } from 'ofetch'
 
 interface Env extends CloudflareEnv {
+  MINIMAX_TTS_GROUP_ID?: string
+  MINIMAX_TTS_API_KEY?: string
+  MURF_API_KEY?: string
   TTS_API_ID?: string
   TTS_API_KEY?: string
   GEMINI_API_KEY?: string
@@ -223,16 +226,30 @@ async function edgeTTS(text: string, speaker: string, env: Env, options?: Runtim
   return audio
 }
 
+export function resolveMinimaxTtsGroupId(env: Env) {
+  return env.MINIMAX_TTS_GROUP_ID?.trim() || env.TTS_API_ID?.trim() || ''
+}
+
+export function resolveMinimaxTtsApiKey(env: Env) {
+  return env.MINIMAX_TTS_API_KEY?.trim() || env.TTS_API_KEY?.trim() || ''
+}
+
+export function resolveMurfApiKey(env: Env) {
+  return env.MURF_API_KEY?.trim() || env.TTS_API_KEY?.trim() || ''
+}
+
 async function minimaxTTS(text: string, speaker: string, env: Env, options?: RuntimeTtsOptions) {
   const apiUrl = options?.apiUrl || 'https://api.minimaxi.com/v1/t2a_v2'
+  const groupId = resolveMinimaxTtsGroupId(env)
+  const apiKey = resolveMinimaxTtsApiKey(env)
   for (let attempt = 0; attempt <= MINIMAX_MAX_RETRIES; attempt += 1) {
     await waitForMinimaxRateLimitWindow()
     try {
-      const result = await $fetch<{ data: { audio: string }, base_resp: { status_msg: string } }>(`${apiUrl}?GroupId=${env.TTS_API_ID}`, {
+      const result = await $fetch<{ data: { audio: string }, base_resp: { status_msg: string } }>(`${apiUrl}?GroupId=${groupId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${env.TTS_API_KEY}`,
+          'Authorization': `Bearer ${apiKey}`,
         },
         timeout: 30000,
         body: JSON.stringify({
@@ -308,7 +325,7 @@ async function minimaxTTS(text: string, speaker: string, env: Env, options?: Run
  *
  * @param text 要合成的文本内容
  * @param speaker 说话人标识：优先按 `voicesBySpeaker` 匹配，否则回退默认音色
- * @param env 运行环境配置，包含 `TTS_API_KEY` 等凭证
+ * @param env 运行环境配置，包含 `MURF_API_KEY`/`TTS_API_KEY` 等凭证
  * @param options 运行时 TTS 参数（语言、模型、语速、speaker->voice 映射等）
  * @returns 返回包含 MP3 数据的 `Blob`
  * @throws 当请求失败或服务返回非 2xx 状态码时抛出错误
@@ -317,11 +334,12 @@ async function minimaxTTS(text: string, speaker: string, env: Env, options?: Run
  */
 async function murfTTS(text: string, speaker: string, env: Env, options?: RuntimeTtsOptions) {
   const apiUrl = options?.apiUrl || 'https://api.murf.ai/v1/speech/stream'
+  const apiKey = resolveMurfApiKey(env)
   const result = await $fetch(`${apiUrl}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'api-key': `${env.TTS_API_KEY}`,
+      'api-key': `${apiKey}`,
     },
     timeout: 30000,
     // en-UK-ruby 女声1

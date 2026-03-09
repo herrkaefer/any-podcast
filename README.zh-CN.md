@@ -117,6 +117,8 @@ cp worker/.env.local.example worker/.env.local
 | `ADMIN_TOKEN`      | 是   | Admin 管理后台的登录密码（设置一个强密码）                                                                           |
 | `NEXT_STATIC_HOST` | 是   | 音频文件的基础 URL。本地开发：`http://localhost:3000/static`。生产环境：部署后在 wrangler `vars` 中设置（见第 7 步） |
 | `NODE_ENV`         | 否   | 本地默认为 `development`。生产环境在 wrangler `vars` 中设置为 `production`                                           |
+| `PODCAST_WORKER_URL` | 否 | 生产环境中，当 Admin 通过 HTTP 调用 Worker 触发 workflow 且未使用 service binding 时使用的 Worker URL                 |
+| `TRIGGER_TOKEN`    | 否   | 生产环境中，Admin 通过 HTTP 调用 Worker 触发 workflow 时使用的令牌                                                  |
 
 编辑 `worker/.env.local`（Worker）：
 
@@ -130,10 +132,15 @@ cp worker/.env.local.example worker/.env.local
 | `PODCAST_R2_BUCKET_URL` | 是   | R2 存储桶公开 URL。本地开发：`http://localhost:8787/static`。生产环境：你的 R2 自定义域名或公开 URL   |
 | `OPENAI_API_KEY`        | 否   | OpenAI API 密钥（如使用 OpenAI）                                                                      |
 | `JINA_KEY`              | 否   | Jina API 密钥（用于网页内容提取）                                                                     |
-| `TTS_API_ID`            | 否   | TTS 服务 ID（MiniMax/Murf）                                                                           |
-| `TTS_API_KEY`           | 否   | TTS 服务 API 密钥                                                                                     |
+| `MINIMAX_TTS_GROUP_ID`  | 否   | MiniMax TTS 的 Group ID（`tts.provider=minimax` 时必需）                                         |
+| `MINIMAX_TTS_API_KEY`   | 否   | MiniMax TTS 的 API 密钥（`tts.provider=minimax` 时必需）                                        |
+| `MURF_API_KEY`          | 否   | Murf 的 API 密钥（`tts.provider=murf` 时必需）                                                   |
 | `TRIGGER_TOKEN`         | 否   | 通过 curl 手动触发工作流的令牌                                                                        |
 | `GMAIL_*`               | 否   | Gmail OAuth 凭据（用于 Newsletter 内容源）                                                            |
+
+AI provider/model/base URL、workflow 测试项、sources、prompts、TTS 运行参数等业务配置通过 Admin 保存到 runtime config，不通过 Worker 环境变量配置。
+
+为了兼容现有部署，Worker 仍接受旧的 `TTS_API_ID` / `TTS_API_KEY`，但新配置建议改用上面的 provider-specific 命名。
 
 ### 第 5 步：配置你的播客
 
@@ -193,7 +200,7 @@ pnpm deploy:worker
 # 为 Worker 设置生产环境密钥
 wrangler secret put GEMINI_API_KEY --cwd worker
 wrangler secret put ADMIN_TOKEN --cwd worker
-# 根据需要添加其他密钥（OPENAI_API_KEY、TTS_API_KEY 等）
+# 根据需要添加其他密钥（OPENAI_API_KEY、MINIMAX_TTS_API_KEY、MURF_API_KEY 等）
 
 # 部署 Next.js 应用
 pnpm run deploy

@@ -15,7 +15,13 @@ import { listGmailMessageRefs } from './sources/gmail'
 import { fetchRssItems } from './sources/rss'
 import { getDateKeyInTimeZone, zonedTimeToUtc } from './timezone'
 import { getRecommendedTitle, InvalidEpisodeTitleOutputError, parseTitleGenerationResult, titleGenerationSchema } from './title'
-import synthesize, { buildGeminiTtsPrompt, synthesizeGeminiTTSWithRetry } from './tts'
+import synthesize, {
+  buildGeminiTtsPrompt,
+  resolveMinimaxTtsApiKey,
+  resolveMinimaxTtsGroupId,
+  resolveMurfApiKey,
+  synthesizeGeminiTTSWithRetry,
+} from './tts'
 import { addIntroMusic, concatAudioFiles, getStoryContent, isSubrequestLimitError } from './utils'
 
 interface Params {
@@ -38,12 +44,11 @@ interface Env extends CloudflareEnv, AiEnv {
   PODCAST_R2_BUCKET_URL: string
   PODCAST_WORKFLOW: Workflow
   BROWSER: Fetcher
+  MINIMAX_TTS_GROUP_ID?: string
+  MINIMAX_TTS_API_KEY?: string
+  MURF_API_KEY?: string
   TTS_API_ID?: string
   TTS_API_KEY?: string
-  WORKFLOW_TEST_STEP?: string
-  WORKFLOW_TEST_INPUT?: string
-  WORKFLOW_TEST_INSTRUCTIONS?: string
-  WORKFLOW_TTS_INPUT?: string
 }
 
 interface StorySummaryResult {
@@ -215,12 +220,16 @@ function validateTtsConfig(env: Env, providerInput?: string): RuntimeTtsSettings
   }
 
   if (provider === 'minimax') {
-    if (!env.TTS_API_KEY?.trim()) {
-      throw new Error('TTS_API_KEY is required when tts.provider=minimax')
+    if (!resolveMinimaxTtsApiKey(env)) {
+      throw new Error('MINIMAX_TTS_API_KEY is required when tts.provider=minimax')
     }
-    if (!env.TTS_API_ID?.trim()) {
-      throw new Error('TTS_API_ID is required when tts.provider=minimax')
+    if (!resolveMinimaxTtsGroupId(env)) {
+      throw new Error('MINIMAX_TTS_GROUP_ID is required when tts.provider=minimax')
     }
+  }
+
+  if (provider === 'murf' && !resolveMurfApiKey(env)) {
+    throw new Error('MURF_API_KEY is required when tts.provider=murf')
   }
 
   return provider as RuntimeTtsSettings['provider']
@@ -870,10 +879,10 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
     const primaryModel = getPrimaryModel(this.env, aiProvider, runtimeAi)
     const thinkingModel = getThinkingModel(this.env, aiProvider, runtimeAi)
     const testConfig = runtimeConfig.test
-    const testStep = (testConfig.workflowTestStep || this.env.WORKFLOW_TEST_STEP || '').trim().toLowerCase()
-    const testInputOverride = testConfig.workflowTestInput || this.env.WORKFLOW_TEST_INPUT || ''
-    const testInstructionsOverride = testConfig.workflowTestInstructions || this.env.WORKFLOW_TEST_INSTRUCTIONS || ''
-    const ttsTestInputOverride = testConfig.workflowTtsInput || this.env.WORKFLOW_TTS_INPUT || ''
+    const testStep = testConfig.workflowTestStep.trim().toLowerCase()
+    const testInputOverride = testConfig.workflowTestInput
+    const testInstructionsOverride = testConfig.workflowTestInstructions
+    const ttsTestInputOverride = testConfig.workflowTtsInput
 
     console.info('AI runtime config', {
       provider: aiProvider,

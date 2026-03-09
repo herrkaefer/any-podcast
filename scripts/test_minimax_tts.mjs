@@ -47,11 +47,11 @@ function loadEnv() {
 
 async function minimaxTTS(text, gender, env) {
   const apiUrl = env.TTS_API_URL || 'https://api.minimaxi.com/v1/t2a_v2'
-  const groupId = env.TTS_API_ID
-  const apiKey = env.TTS_API_KEY
+  const groupId = env.MINIMAX_TTS_GROUP_ID || env.TTS_API_ID
+  const apiKey = env.MINIMAX_TTS_API_KEY || env.TTS_API_KEY
 
   if (!groupId || !apiKey) {
-    throw new Error('Missing TTS_API_ID or TTS_API_KEY in .env.local')
+    throw new Error('Missing MINIMAX_TTS_GROUP_ID or MINIMAX_TTS_API_KEY in .env.local')
   }
 
   const response = await fetch(`${apiUrl}?GroupId=${groupId}`, {

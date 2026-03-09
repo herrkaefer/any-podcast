@@ -1828,7 +1828,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         `}
         >
           <label className="text-sm">
-            Fetch frequency (days)
+            Lookback window (days)
             <input
               type="number"
               min={1}
@@ -1843,7 +1843,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
               }))}
             />
             <p className="mt-1 text-xs text-gray-500">
-              Timezone-aware full-day window. `1` = previous local day (00:00-23:59:59), `2` = previous 2 full local days.
+              Timezone-aware full-day window. `1` = previous local day (00:00-23:59:59), `2` = previous 2 full local days. This controls the source lookback window, not the cron schedule.
             </p>
           </label>
 
@@ -2477,7 +2477,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         </div>
 
         <p className="text-sm text-gray-600">
-          Configure workflow test variables without editing worker env. Empty step means normal full workflow.
+          Configure workflow test settings here. Empty step means normal full workflow. Local and production both use this saved runtime config.
         </p>
 
         <label className="flex items-center gap-2 text-sm">
