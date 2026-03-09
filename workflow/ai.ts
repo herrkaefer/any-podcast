@@ -96,23 +96,16 @@ export function getPrimaryModel(env: AiEnv, provider: AiProvider, options?: Runt
 }
 
 export function getThinkingModel(env: AiEnv, provider: AiProvider, options?: RuntimeAiOptions): string {
-  const thinkingModel = options?.thinkingModel?.trim()
-  if (thinkingModel) {
-    return thinkingModel
-  }
   return getPrimaryModel(env, provider, options)
 }
 
 export function getMaxTokens(_: AiEnv, _provider: AiProvider, options?: RuntimeAiOptions): number {
-  const parsed = Number(options?.maxTokens)
-  if (Number.isFinite(parsed) && parsed > 0) {
-    return parsed
-  }
+  void options
   return 8192
 }
 
-function buildResponsesUrl(baseUrl?: string): string {
-  const normalized = (baseUrl || defaultOpenAIBaseUrl).replace(/\/$/, '')
+function buildResponsesUrl(): string {
+  const normalized = defaultOpenAIBaseUrl.replace(/\/$/, '')
   return `${normalized}/responses`
 }
 
@@ -298,7 +291,7 @@ export async function createResponseText(params: {
       throw new Error('MINIMAX_API_KEY is required when using MiniMax API')
     }
 
-    const url = buildChatCompletionsUrl(runtimeAi?.baseUrl || defaultMiniMaxBaseUrl)
+    const url = buildChatCompletionsUrl(defaultMiniMaxBaseUrl)
     const body: Record<string, unknown> = {
       model,
       reasoning_split: true,
@@ -351,7 +344,7 @@ export async function createResponseText(params: {
   if (!env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY is required when using OpenAI API')
   }
-  const url = buildResponsesUrl(runtimeAi?.baseUrl)
+  const url = buildResponsesUrl()
   const body: Record<string, unknown> = {
     model,
     instructions,

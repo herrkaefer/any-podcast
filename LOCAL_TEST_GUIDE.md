@@ -23,7 +23,7 @@ GEMINI_API_KEY=your-gemini-api-key
 
 **注意：以下业务配置不再通过 env 控制，而是通过 Admin 保存到 runtime config：**
 
-- AI provider / model / thinking model / maxTokens / baseUrl
+- AI provider / model
 - Workflow test step / input / instructions / TTS input
 - Sources / prompts / TTS runtime settings
 

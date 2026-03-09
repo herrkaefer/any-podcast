@@ -70,9 +70,6 @@ export interface RuntimeTtsIntroMusicConfig {
 export interface RuntimeAiConfig {
   provider: 'openai' | 'gemini' | 'minimax'
   model: string
-  thinkingModel?: string
-  maxTokens?: number
-  baseUrl?: string
 }
 
 export interface RuntimeTtsConfig {

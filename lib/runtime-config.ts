@@ -347,9 +347,23 @@ async function readBundle(env: RuntimeConfigEnv, key: string) {
     return null
   }
   const raw = json as Record<string, unknown>
+  const rawAi = raw.ai && typeof raw.ai === 'object'
+    ? (raw.ai as Record<string, unknown>)
+    : null
   const rawSite = raw.site && typeof raw.site === 'object'
     ? (raw.site as Record<string, unknown>)
     : null
+  const sanitizedAi = rawAi
+    ? (() => {
+        const {
+          thinkingModel: _thinkingModel,
+          maxTokens: _maxTokens,
+          baseUrl: _baseUrl,
+          ...rest
+        } = rawAi
+        return rest
+      })()
+    : raw.ai
   const sanitizedSite = rawSite
     ? (() => {
         const { theme: _theme, ...rest } = rawSite
@@ -362,6 +376,7 @@ async function readBundle(env: RuntimeConfigEnv, key: string) {
     : raw.site
   const parsed = runtimeConfigBundleSchema.safeParse({
     ...raw,
+    ai: sanitizedAi,
     site: sanitizedSite,
     test: normalizeTestConfig(raw.test),
   })

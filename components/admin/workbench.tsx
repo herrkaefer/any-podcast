@@ -126,15 +126,6 @@ function parseOptionalInt(value: string) {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
-function parseOptionalNumber(value: string) {
-  const normalized = value.trim()
-  if (!normalized) {
-    return undefined
-  }
-  const parsed = Number(normalized)
-  return Number.isFinite(parsed) ? parsed : undefined
-}
-
 function buildLocalId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
 }
@@ -1302,57 +1293,6 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
             }))}
           />
         </label>
-
-        <label className="text-sm">
-          thinkingModel
-          <input
-            className="mt-1 w-full rounded border px-3 py-2"
-            value={ai.thinkingModel || ''}
-            onChange={event => setWorkingDraft(prev => ({
-              ...prev,
-              ai: {
-                ...prev.ai,
-                thinkingModel: event.target.value,
-              },
-            }))}
-          />
-        </label>
-
-        <label className="text-sm">
-          maxTokens
-          <input
-            type="number"
-            min={1}
-            className="mt-1 w-full rounded border px-3 py-2"
-            value={ai.maxTokens ?? ''}
-            onChange={event => setWorkingDraft(prev => ({
-              ...prev,
-              ai: {
-                ...prev.ai,
-                maxTokens: parseOptionalInt(event.target.value),
-              },
-            }))}
-          />
-        </label>
-
-        <label className={`
-          text-sm
-          md:col-span-2
-        `}
-        >
-          baseUrl
-          <input
-            className="mt-1 w-full rounded border px-3 py-2"
-            value={ai.baseUrl || ''}
-            onChange={event => setWorkingDraft(prev => ({
-              ...prev,
-              ai: {
-                ...prev.ai,
-                baseUrl: event.target.value,
-              },
-            }))}
-          />
-        </label>
       </div>
     )
   }
@@ -1828,7 +1768,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         `}
         >
           <label className="text-sm">
-            Lookback window (days)
+            Source coverage window (days)
             <input
               type="number"
               min={1}
@@ -1843,12 +1783,15 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
               }))}
             />
             <p className="mt-1 text-xs text-gray-500">
-              Timezone-aware full-day window. `1` = previous local day (00:00-23:59:59), `2` = previous 2 full local days. This controls the source lookback window, not the cron schedule.
+              Timezone-aware full-day source window. `1` = previous local day (00:00-23:59:59), `2` = previous 2 full local days. This controls how many days of source content each run covers, not the cron schedule.
             </p>
           </label>
 
           <label className="text-sm">
-            newsletterHosts (one per line)
+            RSS newsletter hosts (one per line)
+            <p className="mt-1 text-xs text-neutral-500">
+              Only used for RSS sources. RSS items whose links point to these hosts are treated as newsletter landing pages, then expanded into article links with Jina + AI.
+            </p>
             <textarea
               className="mt-1 min-h-24 w-full rounded border px-3 py-2"
               value={toMultiline(sources.newsletterHosts)}
@@ -1867,7 +1810,10 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
             md:col-span-2
           `}
           >
-            archiveLinkKeywords (one per line)
+            Gmail newsletter archive link keywords (one per line)
+            <p className="mt-1 text-xs text-neutral-500">
+              Only used for Gmail newsletter sources. Matches link text such as &quot;view in browser&quot; before falling back to cleaned email HTML.
+            </p>
             <textarea
               className="mt-1 min-h-20 w-full rounded border px-3 py-2"
               value={toMultiline(sources.archiveLinkKeywords)}
@@ -1913,6 +1859,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
             const panelKey = sourcePanelKeysRef.current[index] || `source-panel-fallback-${index}`
             const isCollapsed = collapsedSourcePanels[panelKey] ?? true
             const sourceName = item.name.trim() || `Source ${index + 1}`
+            const isEnabled = item.enabled !== false
 
             return (
               <div key={panelKey} className="rounded border">
@@ -1926,7 +1873,20 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                     [panelKey]: !isCollapsed,
                   }))}
                 >
-                  <span className="truncate text-sm font-medium">{sourceName}</span>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-sm font-medium">{sourceName}</span>
+                    <span
+                      className={`
+                        rounded border px-1.5 py-0.5 text-[10px] tracking-wide
+                        uppercase
+                        ${isEnabled
+                ? `border-green-300 text-green-700`
+                : `border-gray-300 text-gray-500`}
+                      `}
+                    >
+                      {isEnabled ? 'On' : 'Off'}
+                    </span>
+                  </div>
                   <span aria-hidden className="ml-2 text-xs text-gray-500">{isCollapsed ? '▸' : '▾'}</span>
                 </button>
 
@@ -2040,7 +2000,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                           <label className="flex items-center gap-2 text-sm">
                             <input
                               type="checkbox"
-                              checked={item.enabled !== false}
+                              checked={isEnabled}
                               onChange={event => updateSourceItem(index, current => ({
                                 ...current,
                                 enabled: event.target.checked,
