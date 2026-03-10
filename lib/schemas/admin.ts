@@ -131,7 +131,6 @@ const ttsSchema = z.object({
     podcastDelay: z.number().nonnegative(),
   }).strict(),
   audioQuality: z.number().optional(),
-  skipTts: z.boolean().optional(),
   apiUrl: z.string().optional(),
 }).strict()
 
@@ -150,7 +149,6 @@ const editableTtsPatchSchema = z.object({
     podcastDelay: z.number().nonnegative().optional(),
   }).strict().optional(),
   audioQuality: z.number().optional(),
-  skipTts: z.boolean().optional(),
   apiUrl: z.string().optional(),
 }).strict()
 

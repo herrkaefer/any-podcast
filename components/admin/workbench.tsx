@@ -179,14 +179,8 @@ function getSectionPatchPayload(config: RuntimeConfigBundle, section: EditableSe
     return { locale: config.locale }
   if (section === 'sources')
     return { sources: config.sources }
-  if (section === 'test') {
-    return {
-      test: config.test,
-      tts: {
-        skipTts: config.tts.skipTts,
-      },
-    }
-  }
+  if (section === 'test')
+    return { test: config.test }
   return { prompts: config.prompts }
 }
 
@@ -357,16 +351,8 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
       if (section === 'sources') {
         return { ...prev, sources: serverDraft.sources }
       }
-      if (section === 'test') {
-        return {
-          ...prev,
-          test: serverDraft.test,
-          tts: {
-            ...prev.tts,
-            skipTts: serverDraft.tts.skipTts,
-          },
-        }
-      }
+      if (section === 'test')
+        return { ...prev, test: serverDraft.test }
       return { ...prev, prompts: serverDraft.prompts }
     })
   }
@@ -2425,7 +2411,6 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
 
   function renderTestSection() {
     const test = workingDraft.test
-    const skipTts = workingDraft.tts.skipTts === true
     return (
       <div className="space-y-4">
         <div className="space-y-3 rounded border bg-gray-50 p-3">
@@ -2471,21 +2456,6 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
         <p className="text-sm text-gray-600">
           Configure workflow test settings here. Empty step means normal full workflow. Local and production both use this saved runtime config.
         </p>
-
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={skipTts}
-            onChange={event => setWorkingDraft(prev => ({
-              ...prev,
-              tts: {
-                ...prev.tts,
-                skipTts: event.target.checked,
-              },
-            }))}
-          />
-          <span>skipTts</span>
-        </label>
 
         <div className={`
           grid gap-4

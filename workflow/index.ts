@@ -206,7 +206,7 @@ function formatError(error: unknown) {
 function validateTtsConfig(env: Env, providerInput?: string): RuntimeTtsSettings['provider'] {
   const provider = (providerInput || '').trim().toLowerCase()
   if (!provider) {
-    throw new Error('runtime config tts.provider is required when skipTts is false')
+    throw new Error('runtime config tts.provider is required')
   }
 
   const isProduction = (env.NODE_ENV || 'production') === 'production'
@@ -872,7 +872,6 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
     const today = event.payload?.today || windowDateKey
     const publishedAt = now.toISOString()
     const publishDateKey = getDateKeyInTimeZone(now, timeZone)
-    const skipTTS = runtimeConfig.tts.skipTts === true
     const runtimeAi = runtimeConfig.ai
     const aiProvider = getAiProvider(this.env, runtimeAi)
     const maxTokens = getMaxTokens(this.env, aiProvider, runtimeAi)
@@ -936,10 +935,6 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             chars: sampleInput.length,
             preview: sampleInput.slice(0, 200),
           })
-
-          if (skipTTS) {
-            return 'skip TTS enabled, skip audio generation'
-          }
 
           const ttsProvider = validateTtsConfig(this.env, runtimeTtsSettings.provider)
 
@@ -1028,10 +1023,6 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             chars: sampleInput.length,
             preview: sampleInput.slice(0, 200),
           })
-
-          if (skipTTS) {
-            return 'skip TTS enabled, skip audio generation'
-          }
 
           if (!this.env.BROWSER) {
             throw new Error('BROWSER binding is required for tts-intro test')
@@ -2135,7 +2126,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           .map(line => line.trim())
           .filter(Boolean)
         const parsedConversations = parseConversationLines(conversations, speakerMarkers)
-        if (!skipTTS && parsedConversations.length === 0) {
+        if (parsedConversations.length === 0) {
           throw new Error('No valid TTS dialog lines found. Please ensure each line starts with configured speaker markers.')
         }
 
@@ -2199,23 +2190,6 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             },
           },
         })
-
-        if (skipTTS) {
-          workflowState.status = 'done'
-          workflowState.stage = 'done'
-          logWorkflowObservation({
-            jobId,
-            stage: workflowState.stage,
-            continuationSeq: workflowState.continuationSeq,
-            status: workflowState.status,
-            cursor: workflowState.cursor,
-            progress: workflowState.progress,
-            budget,
-            label: 'skip TTS complete',
-          })
-          await saveWorkflowState('skip TTS, mark done')
-          return
-        }
 
         workflowState.stage = 'tts_render'
         workflowState.cursor.ttsLineIndex = 0

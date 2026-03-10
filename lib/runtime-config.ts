@@ -355,6 +355,9 @@ async function readBundle(env: RuntimeConfigEnv, key: string) {
   const rawSite = raw.site && typeof raw.site === 'object'
     ? (raw.site as Record<string, unknown>)
     : null
+  const rawTts = raw.tts && typeof raw.tts === 'object'
+    ? (raw.tts as Record<string, unknown>)
+    : null
   const sanitizedAi = rawAi
     ? (() => {
         const {
@@ -376,10 +379,17 @@ async function readBundle(env: RuntimeConfigEnv, key: string) {
         }
       })()
     : raw.site
+  const sanitizedTts = rawTts
+    ? (() => {
+        const { skipTts: _skipTts, ...rest } = rawTts
+        return rest
+      })()
+    : raw.tts
   const parsed = runtimeConfigBundleSchema.safeParse({
     ...raw,
     ai: sanitizedAi,
     site: sanitizedSite,
+    tts: sanitizedTts,
     test: normalizeTestConfig(raw.test),
   })
   if (!parsed.success) {

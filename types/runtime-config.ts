@@ -84,7 +84,6 @@ export interface RuntimeTtsConfig {
   geminiPrompt?: string
   introMusic: RuntimeTtsIntroMusicConfig
   audioQuality?: number
-  skipTts?: boolean
   apiUrl?: string
 }
 
