@@ -223,7 +223,7 @@ pnpm run deploy
 "PODCAST_R2_BUCKET_URL": "https://<your-r2-public-url>"
 ```
 
-然后重新部署：`pnpm deploy:worker && pnpm deploy`
+然后重新部署：`pnpm deploy:worker && pnpm run deploy`
 
 > 你也可以在 Cloudflare 控制面板中为应用和 Worker 设置自定义域名，然后在上述 vars 中使用自定义域名。
 
@@ -282,7 +282,7 @@ pnpm dev             # 启动 Next.js 开发服务器
 ```bash
 pnpm use:second      # 切换配置
 pnpm deploy:worker   # 部署该播客的 Worker
-pnpm deploy          # 部署该播客的 Next.js 应用
+pnpm run deploy      # 部署该播客的 Next.js 应用
 ```
 
 每个部署拥有独立的管理页面、Prompt、TTS 设置、内容源和数据。部署后通过各自的 Admin 后台进行配置。
@@ -296,7 +296,7 @@ pnpm deploy          # 部署该播客的 Next.js 应用
 | `pnpm dev`           | 启动 Next.js 开发服务器（端口 3000）                      |
 | `pnpm dev:worker`    | 启动 Worker 开发服务器（端口 8787）                       |
 | `pnpm build`         | 构建 Next.js 应用                                         |
-| `pnpm deploy`        | 构建并部署 Next.js 应用                                   |
+| `pnpm run deploy`    | 构建并部署 Next.js 应用                                   |
 | `pnpm deploy:worker` | 部署 Worker                                               |
 | `pnpm logs:worker`   | 查看 Worker 日志                                          |
 | `pnpm use:<name>`    | 切换当前激活的播客配置（见[运行多个播客](#运行多个播客)） |

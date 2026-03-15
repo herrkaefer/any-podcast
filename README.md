@@ -2,6 +2,8 @@
 
 <img src="public/logo.png" alt="Any Podcast" height="240" />
 
+[中文](./README.zh-CN.md)
+
 An AI-powered, configurable podcast platform that aggregates content sources, generates summaries, and produces podcast audio. You can define different sources per topic and build your own podcast flow.
 
 ## Philosophy
@@ -203,7 +205,7 @@ wrangler secret put ADMIN_TOKEN --cwd worker
 # Add other secrets as needed (OPENAI_API_KEY, MINIMAX_TTS_API_KEY, MURF_API_KEY, etc.)
 
 # Deploy the Next.js app
-pnpm deploy
+pnpm run deploy
 # The CLI will print the app URL, e.g. https://my-podcast.<your-subdomain>.workers.dev
 ```
 
@@ -223,7 +225,7 @@ In `worker/wrangler.jsonc` (Worker), add to `vars`:
 "PODCAST_R2_BUCKET_URL": "https://<your-r2-public-url>"
 ```
 
-Then redeploy both: `pnpm deploy:worker && pnpm deploy`
+Then redeploy both: `pnpm deploy:worker && pnpm run deploy`
 
 > You can also set custom domains for your app and Worker in the Cloudflare dashboard, then use those domains in the vars above.
 
@@ -282,7 +284,7 @@ Switch to the target podcast before deploying:
 ```bash
 pnpm use:second      # Switch config
 pnpm deploy:worker   # Deploy this podcast's Worker
-pnpm run deploy          # Deploy this podcast's Next.js app
+pnpm run deploy      # Deploy this podcast's Next.js app
 ```
 
 Each deployment has its own independent Admin page, prompts, TTS settings, content sources, and data. Configure each podcast via its own Admin console after deployment.
@@ -296,7 +298,7 @@ Each deployment has its own independent Admin page, prompts, TTS settings, conte
 | `pnpm dev`           | Start Next.js dev server (port 3000)                                                       |
 | `pnpm dev:worker`    | Start Worker dev server (port 8787)                                                        |
 | `pnpm build`         | Build the Next.js app                                                                      |
-| `pnpm deploy`        | Build and deploy the Next.js app                                                           |
+| `pnpm run deploy`    | Build and deploy the Next.js app                                                           |
 | `pnpm deploy:worker` | Deploy the Worker                                                                          |
 | `pnpm logs:worker`   | Tail Worker logs                                                                           |
 | `pnpm use:<name>`    | Switch active podcast config (see [Running Multiple Podcasts](#running-multiple-podcasts)) |
