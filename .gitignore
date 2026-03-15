@@ -46,6 +46,10 @@ next-env.d.ts
 # dev.vars
 .dev.vars
 .claude/
+AGENTS.md
+CLAUDE.md
+LOCAL_TEST_GUIDE.md
+.vscode/
 # Source config overrides
 workflow/sources/config.local.ts
 
