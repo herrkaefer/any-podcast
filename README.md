@@ -133,6 +133,8 @@ Edit `worker/.env.local` (Worker):
 | `PODCAST_WORKER_URL`    | Yes      | Worker URL. Local dev: `http://localhost:8787`. Production: set in wrangler `vars` after deployment (see Step 7) |
 | `PODCAST_R2_BUCKET_URL` | Yes      | R2 bucket public URL. Local dev: `http://localhost:8787/static`. Production: your R2 custom domain or public URL |
 | `OPENAI_API_KEY`        | No       | OpenAI API key (if using OpenAI)                                                                                 |
+| `CLOUDFLARE_ACCOUNT_ID` | No       | Cloudflare account ID for markdown extraction. When configured, Cloudflare Markdown APIs are tried before Jina  |
+| `CLOUDFLARE_API_TOKEN`  | No       | Cloudflare API token for markdown extraction. Requires `Workers AI: Read` and `Browser Rendering: Edit` scopes |
 | `JINA_KEY`              | No       | Jina API key (for web content extraction)                                                                        |
 | `MINIMAX_TTS_GROUP_ID`  | No       | MiniMax TTS Group ID (required when `tts.provider=minimax`)                                                     |
 | `MINIMAX_TTS_API_KEY`   | No       | MiniMax TTS API key (required when `tts.provider=minimax`)                                                      |

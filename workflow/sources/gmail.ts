@@ -7,7 +7,7 @@ import * as cheerio from 'cheerio'
 import { $fetch } from 'ofetch'
 
 import { getDateKeyInTimeZone, zonedTimeToUtc } from '../timezone'
-import { getContentFromJinaWithRetry, isSubrequestLimitError } from '../utils'
+import { getContentFromCloudflareWithJinaFallback, isSubrequestLimitError } from '../utils'
 import { extractNewsletterLinksWithAi, normalizeText, unwrapTrackingUrl } from './newsletter-links'
 
 interface GmailAccessTokenResponse {
@@ -45,6 +45,8 @@ interface GmailMessage {
 }
 
 interface GmailEnv extends AiEnv {
+  CLOUDFLARE_ACCOUNT_ID?: string
+  CLOUDFLARE_API_TOKEN?: string
   GMAIL_CLIENT_ID?: string
   GMAIL_CLIENT_SECRET?: string
   GMAIL_REFRESH_TOKEN?: string
@@ -355,12 +357,12 @@ export async function processGmailMessage(params: {
   if (archiveLink) {
     console.info('newsletter archive link found', { id: message.id, subject, receivedAt: receivedAtIso, archiveLink })
     try {
-      newsletterContent = await getContentFromJinaWithRetry(archiveLink, 'markdown', {}, env.JINA_KEY)
+      newsletterContent = await getContentFromCloudflareWithJinaFallback(archiveLink, 'markdown', {}, env)
     }
     catch (error) {
       if (isSubrequestLimitError(error))
         throw error
-      console.warn('newsletter archive jina failed', { error, id: message.id, subject, receivedAt: receivedAtIso, archiveLink })
+      console.warn('newsletter archive extraction failed', { error, id: message.id, subject, receivedAt: receivedAtIso, archiveLink })
     }
 
     if (!newsletterContent) {

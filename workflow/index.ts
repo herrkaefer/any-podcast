@@ -34,6 +34,8 @@ interface Params {
 }
 
 interface Env extends CloudflareEnv, AiEnv {
+  CLOUDFLARE_ACCOUNT_ID?: string
+  CLOUDFLARE_API_TOKEN?: string
   JINA_KEY?: string
   GMAIL_CLIENT_ID?: string
   GMAIL_CLIENT_SECRET?: string

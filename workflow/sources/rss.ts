@@ -6,12 +6,14 @@ import * as cheerio from 'cheerio'
 import { $fetch } from 'ofetch'
 
 import { getDateKeyInTimeZone } from '../timezone'
-import { getContentFromJinaWithRetry, isSubrequestLimitError } from '../utils'
+import { getContentFromCloudflareWithJinaFallback, isSubrequestLimitError } from '../utils'
 import { extractNewsletterLinksWithAi } from './newsletter-links'
 
 const DEFAULT_NEWSLETTER_HOSTS = ['kill-the-newsletter.com']
 
 interface RssEnv extends AiEnv {
+  CLOUDFLARE_ACCOUNT_ID?: string
+  CLOUDFLARE_API_TOKEN?: string
   JINA_KEY?: string
   NODE_ENV?: string
 }
@@ -138,7 +140,7 @@ export async function fetchRssItems(
     for (const item of filteredItems) {
       if (isNewsletterLink(item.link, newsletterHosts) && env) {
         try {
-          const content = await getContentFromJinaWithRetry(item.link, 'markdown', {}, env.JINA_KEY)
+          const content = await getContentFromCloudflareWithJinaFallback(item.link, 'markdown', {}, env)
           if (!content) {
             console.warn('rss newsletter content empty', { source: source.name, title: item.title, link: item.link })
             continue
