@@ -131,8 +131,8 @@ cp worker/.env.local.example worker/.env.local
 | `PODCAST_WORKER_URL`    | 是   | Worker URL。本地开发：`http://localhost:8787`。生产环境：部署后在 wrangler `vars` 中设置（见第 7 步） |
 | `PODCAST_R2_BUCKET_URL` | 是   | R2 存储桶公开 URL。本地开发：`http://localhost:8787/static`。生产环境：你的 R2 自定义域名或公开 URL   |
 | `OPENAI_API_KEY`        | 否   | OpenAI API 密钥（如使用 OpenAI）                                                                      |
-| `CLOUDFLARE_ACCOUNT_ID` | 否   | 用于 Markdown 抽取的 Cloudflare Account ID。配置后会优先使用 Cloudflare，再回退到 Jina               |
-| `CLOUDFLARE_API_TOKEN`  | 否   | 用于 Markdown 抽取的 Cloudflare API Token。需要 `Workers AI: Read` 和 `Browser Rendering: Edit` 权限 |
+| `CLOUDFLARE_ANYPODCAST_ACCOUNT_ID` | 否 | 用于 Markdown 抽取的 Cloudflare Account ID。配置后会优先使用 Cloudflare，再回退到 Jina |
+| `CLOUDFLARE_ANYPODCAST_API_TOKEN`  | 否 | 用于 Markdown 抽取的 Cloudflare API Token。需要 `Workers AI: Read` 和 `Browser Rendering: Edit` 权限 |
 | `JINA_KEY`              | 否   | Jina API 密钥（用于网页内容提取）                                                                     |
 | `MINIMAX_TTS_GROUP_ID`  | 否   | MiniMax TTS 的 Group ID（`tts.provider=minimax` 时必需）                                         |
 | `MINIMAX_TTS_API_KEY`   | 否   | MiniMax TTS 的 API 密钥（`tts.provider=minimax` 时必需）                                        |

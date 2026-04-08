@@ -12,8 +12,8 @@ import { extractNewsletterLinksWithAi } from './newsletter-links'
 const DEFAULT_NEWSLETTER_HOSTS = ['kill-the-newsletter.com']
 
 interface RssEnv extends AiEnv {
-  CLOUDFLARE_ACCOUNT_ID?: string
-  CLOUDFLARE_API_TOKEN?: string
+  CLOUDFLARE_ANYPODCAST_ACCOUNT_ID?: string
+  CLOUDFLARE_ANYPODCAST_API_TOKEN?: string
   JINA_KEY?: string
   NODE_ENV?: string
 }

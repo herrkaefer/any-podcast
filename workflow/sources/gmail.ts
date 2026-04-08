@@ -45,8 +45,8 @@ interface GmailMessage {
 }
 
 interface GmailEnv extends AiEnv {
-  CLOUDFLARE_ACCOUNT_ID?: string
-  CLOUDFLARE_API_TOKEN?: string
+  CLOUDFLARE_ANYPODCAST_ACCOUNT_ID?: string
+  CLOUDFLARE_ANYPODCAST_API_TOKEN?: string
   GMAIL_CLIENT_ID?: string
   GMAIL_CLIENT_SECRET?: string
   GMAIL_REFRESH_TOKEN?: string

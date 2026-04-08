@@ -7,8 +7,8 @@ interface SelectorOptions {
 }
 
 interface CloudflareMarkdownEnv {
-  CLOUDFLARE_ACCOUNT_ID?: string
-  CLOUDFLARE_API_TOKEN?: string
+  CLOUDFLARE_ANYPODCAST_ACCOUNT_ID?: string
+  CLOUDFLARE_ANYPODCAST_API_TOKEN?: string
 }
 
 interface JinaEnv {
@@ -315,10 +315,10 @@ export async function getContentFromCloudflare(
   url: string,
   format: 'html' | 'markdown',
   selector?: SelectorOptions,
-  CLOUDFLARE_ACCOUNT_ID?: string,
-  CLOUDFLARE_API_TOKEN?: string,
+  CLOUDFLARE_ANYPODCAST_ACCOUNT_ID?: string,
+  CLOUDFLARE_ANYPODCAST_API_TOKEN?: string,
 ) {
-  const credentials = normalizeCloudflareCredentials(CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN)
+  const credentials = normalizeCloudflareCredentials(CLOUDFLARE_ANYPODCAST_ACCOUNT_ID, CLOUDFLARE_ANYPODCAST_API_TOKEN)
   if (!credentials) {
     console.warn('cloudflare markdown credentials are not configured, skip cloudflare extraction', { url })
     return ''
@@ -345,8 +345,8 @@ export async function getContentFromCloudflareWithRetry(
   url: string,
   format: 'html' | 'markdown',
   selector?: SelectorOptions,
-  CLOUDFLARE_ACCOUNT_ID?: string,
-  CLOUDFLARE_API_TOKEN?: string,
+  CLOUDFLARE_ANYPODCAST_ACCOUNT_ID?: string,
+  CLOUDFLARE_ANYPODCAST_API_TOKEN?: string,
   options?: { retryLimit?: number, retryDelayMs?: number },
 ) {
   const retryLimit = options?.retryLimit ?? 2
@@ -354,7 +354,7 @@ export async function getContentFromCloudflareWithRetry(
 
   for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
     try {
-      return await getContentFromCloudflare(url, format, selector, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN)
+      return await getContentFromCloudflare(url, format, selector, CLOUDFLARE_ANYPODCAST_ACCOUNT_ID, CLOUDFLARE_ANYPODCAST_API_TOKEN)
     }
     catch (error) {
       if (isSubrequestLimitError(error)) {
@@ -458,8 +458,8 @@ export async function getContentFromCloudflareWithJinaFallback(
       url,
       format,
       selector,
-      env.CLOUDFLARE_ACCOUNT_ID,
-      env.CLOUDFLARE_API_TOKEN,
+      env.CLOUDFLARE_ANYPODCAST_ACCOUNT_ID,
+      env.CLOUDFLARE_ANYPODCAST_API_TOKEN,
       options?.cloudflare,
     )
     if (content) {
