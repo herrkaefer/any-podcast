@@ -279,7 +279,7 @@ export async function buildDefaultRuntimeConfig(): Promise<RuntimeConfigBundle> 
         language: 'en',
         categories: DEFAULT_RSS_CATEGORIES,
         itunesCategories: DEFAULT_RSS_CATEGORIES.map(text => ({ text })),
-        feedDays: 30,
+        feedDays: 0,
         relatedLinksLabel: 'Related links:',
       },
     },

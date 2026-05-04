@@ -779,17 +779,17 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
           </label>
 
           <label className="text-sm">
-            Retention days
+            Retention days (0 = all)
             <input
               type="number"
-              min={1}
+              min={0}
               className="mt-1 w-full rounded border px-3 py-2"
               value={site.keepDays}
               onChange={event => setWorkingDraft(prev => ({
                 ...prev,
                 site: {
                   ...prev.site,
-                  keepDays: Math.max(1, Number(event.target.value || 1)),
+                  keepDays: Math.max(0, Number(event.target.value || 0)),
                 },
               }))}
             />
@@ -904,10 +904,10 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
               />
             </label>
             <label className="text-sm">
-              feedDays
+              feedDays (0 = all)
               <input
                 type="number"
-                min={1}
+                min={0}
                 className="mt-1 w-full rounded border px-3 py-2"
                 value={site.rss.feedDays}
                 onChange={event => setWorkingDraft(prev => ({
@@ -916,7 +916,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                     ...prev.site,
                     rss: {
                       ...prev.site.rss,
-                      feedDays: Math.max(1, Number(event.target.value || 1)),
+                      feedDays: Math.max(0, Number(event.target.value || 0)),
                     },
                   },
                 }))}

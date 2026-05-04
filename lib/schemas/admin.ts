@@ -41,7 +41,7 @@ const siteSchema = z.object({
   themeColor: themeColorSchema,
   pageSize: z.number().int().positive(),
   defaultDescriptionLength: z.number().int().positive(),
-  keepDays: z.number().int().positive(),
+  keepDays: z.number().int().nonnegative(),
   favicon: z.string().min(1),
   seo: z.object({
     locale: z.string().min(1),
@@ -59,7 +59,7 @@ const siteSchema = z.object({
       text: z.string().min(1),
       subcategory: z.string().optional(),
     }).strict()),
-    feedDays: z.number().int().positive(),
+    feedDays: z.number().int().nonnegative(),
     relatedLinksLabel: z.string().min(1),
   }).strict(),
 }).strict()
@@ -74,7 +74,7 @@ const editableSitePatchSchema = z.object({
   themeColor: themeColorSchema.optional(),
   pageSize: z.number().int().positive().optional(),
   defaultDescriptionLength: z.number().int().positive().optional(),
-  keepDays: z.number().int().positive().optional(),
+  keepDays: z.number().int().nonnegative().optional(),
   favicon: z.string().min(1).optional(),
   externalLinks: z.array(z.object({
     platform: externalPlatformSchema,
@@ -92,7 +92,7 @@ const editableSitePatchSchema = z.object({
       text: z.string().min(1),
       subcategory: z.string().optional(),
     }).strict()).optional(),
-    feedDays: z.number().int().positive().optional(),
+    feedDays: z.number().int().nonnegative().optional(),
     relatedLinksLabel: z.string().min(1).optional(),
   }).strict().optional(),
 }).strict()

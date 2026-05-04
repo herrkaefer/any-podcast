@@ -1,13 +1,18 @@
 import type { MetadataRoute } from 'next'
-import { keepDays } from '@/config'
+import { getCloudflareContext } from '@opennextjs/cloudflare'
+import { buildContentPrefix } from '@/config'
 import { resolveBaseUrlFromHeaders } from '@/lib/site-url'
-import { getPastDays } from '@/lib/utils'
+import { listContentDays } from '@/lib/utils'
 
 export const revalidate = 86400
+export const dynamic = 'force-dynamic'
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+  const { env } = await getCloudflareContext({ async: true })
+  const sitemapEnv = env as CloudflareEnv & { PODCAST_KV: KVNamespace }
+  const runEnv = env.NODE_ENV || 'production'
   const baseUrl = await resolveBaseUrlFromHeaders()
-  const posts = getPastDays(keepDays).map((day) => {
+  const posts = (await listContentDays(sitemapEnv.PODCAST_KV, buildContentPrefix(runEnv))).map((day) => {
     return {
       date: day,
     }

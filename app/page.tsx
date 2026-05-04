@@ -6,9 +6,10 @@ import { buildEpisodesFromArticles } from '@/lib/episodes'
 import { buildPodcastPlatforms } from '@/lib/podcast-platforms'
 import { getActiveRuntimeConfig } from '@/lib/runtime-config'
 import { resolveBaseUrlFromHeaders } from '@/lib/site-url'
-import { getPastDays } from '@/lib/utils'
+import { getContentDays } from '@/lib/utils'
 
 export const revalidate = 600
+export const dynamic = 'force-dynamic'
 
 interface HomeEnv extends CloudflareEnv {
   PODCAST_KV: KVNamespace
@@ -28,13 +29,13 @@ export default async function Home({
   const query = await searchParams
   const requestedPage = Number.parseInt(query.page ?? '1', 10)
   const currentPage = Number.isNaN(requestedPage) ? 1 : Math.max(1, requestedPage)
-  const pastDays = getPastDays(runtimeSite.keepDays)
   const kvPrefix = buildContentPrefix(runEnv)
-  const totalEpisodes = pastDays.length
+  const contentDays = await getContentDays(homeEnv.PODCAST_KV, kvPrefix, runtimeSite.keepDays)
+  const totalEpisodes = contentDays.length
   const totalPages = Math.max(1, Math.ceil(totalEpisodes / runtimeSite.pageSize))
   const safePage = Math.min(currentPage, totalPages)
   const startIndex = (safePage - 1) * runtimeSite.pageSize
-  const pageDays = pastDays.slice(startIndex, startIndex + runtimeSite.pageSize)
+  const pageDays = contentDays.slice(startIndex, startIndex + runtimeSite.pageSize)
 
   const posts = (
     await Promise.all(

@@ -2,10 +2,10 @@ import { getCloudflareContext } from '@opennextjs/cloudflare'
 import markdownit from 'markdown-it'
 import { NextResponse } from 'next/server'
 import { Podcast } from 'podcast'
-import { buildContentKey, podcastContactEmail } from '@/config'
+import { buildContentKey, buildContentPrefix, podcastContactEmail } from '@/config'
 import { getActiveRuntimeConfig } from '@/lib/runtime-config'
 import { resolveBaseUrlFromRequest } from '@/lib/site-url'
-import { getPastDays } from '@/lib/utils'
+import { getContentDays } from '@/lib/utils'
 
 const md = markdownit()
 
@@ -230,7 +230,7 @@ export async function GET(request: Request) {
   })
 
   const runEnv = rssEnv.NODE_ENV || 'production'
-  const pastDays = getPastDays(runtimeSite.rss.feedDays)
+  const pastDays = await getContentDays(rssEnv.PODCAST_KV, buildContentPrefix(runEnv), runtimeSite.rss.feedDays)
   const posts = (await Promise.all(
     pastDays.map(async (day) => {
       const post = await rssEnv.PODCAST_KV.get(buildContentKey(runEnv, day), 'json')

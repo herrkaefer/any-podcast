@@ -10,7 +10,7 @@ const defaultBaseUrl = process.env.NEXT_PUBLIC_BASE_URL
 export const podcastId = process.env.PODCAST_ID ?? 'any-podcast'
 export const podcastContactEmail = defaultContactEmail
 
-export const keepDays = 30
+export const keepDays = 0
 
 export const podcast: Podcast = {
   base: {
