@@ -1,15 +1,15 @@
-import type { EdgeCacheStore } from '@/lib/edge-cache'
 import type { FeedSnapshot } from '@/lib/rss-cache'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import markdownit from 'markdown-it'
 import { NextResponse } from 'next/server'
 import { Podcast } from 'podcast'
 import { buildContentKey, buildContentPrefix, podcastContactEmail } from '@/config'
-import { matchesConditionalRequest, readEdgeCache, writeEdgeCache } from '@/lib/edge-cache'
 import {
-  getRssCacheTag,
   isFeedSnapshotFresh,
+  matchesConditionalRequest,
+  normalizeHostKey,
   readFeedSnapshot,
+  RSS_CDN_CACHE_TTL_SECONDS,
   RSS_CLIENT_CACHE_TTL_SECONDS,
   writeFeedSnapshot,
 } from '@/lib/rss-cache'
@@ -29,12 +29,11 @@ function escapeHtml(text: string): string {
 
 export const revalidate = 3600
 
-// Feed serving has two cache layers:
-//   1. A prebuilt XML snapshot in the site's R2 bucket, shared globally. It is
-//      the KV-heavy build (one KV list + a KV get and R2 head per episode) and
-//      only runs when the snapshot is missing or older than its TTL.
-//   2. The per-data-center Cache API, which avoids even the R2 read on hot
-//      repeat requests. It is short-lived because it is colo-local.
+// The feed is served from a globally shared R2 snapshot (see lib/rss-cache.ts).
+// A request rebuilds the KV-heavy document only when that snapshot is missing
+// or stale; otherwise it returns the snapshot. The CDN is allowed to cache the
+// response briefly so repeated polls skip even the R2 read, but is told not to
+// cache via s-maxage beyond that short window so edits surface quickly.
 
 interface RssEnv extends CloudflareEnv {
   PODCAST_KV: KVNamespace
@@ -179,7 +178,11 @@ function normalizeLastBuildDate(xml: string, lastModified: Date): string {
 function buildFeedHeaders(etag: string, lastModified: string, xmlBytesLength?: number): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/xml; charset=utf-8',
-    'Cache-Control': `public, max-age=${RSS_CLIENT_CACHE_TTL_SECONDS}, s-maxage=${RSS_CLIENT_CACHE_TTL_SECONDS}, stale-while-revalidate=${RSS_CLIENT_CACHE_TTL_SECONDS}`,
+    // Clients may cache the document for a while. The CDN may cache it only
+    // briefly: Cloudflare keys /rss.xml without the query string, so a long
+    // edge lifetime would both hide cache-busting variants and delay content
+    // edits at every data center. Rebuilds are governed by the R2 snapshot TTL.
+    'Cache-Control': `public, max-age=${RSS_CLIENT_CACHE_TTL_SECONDS}, s-maxage=${RSS_CDN_CACHE_TTL_SECONDS}, stale-while-revalidate=${RSS_CLIENT_CACHE_TTL_SECONDS}`,
     'ETag': etag,
     'Last-Modified': lastModified,
   }
@@ -202,42 +205,30 @@ export async function GET(request: Request) {
   const requestBaseUrl = requestUrl.origin
   const baseUrl = resolveBaseUrlFromRequest(request)
   const selfFeedUrl = `${requestBaseUrl}${requestUrl.pathname}`
-  const { env, ctx } = await getCloudflareContext({ async: true })
+  const { env } = await getCloudflareContext({ async: true })
   const rssEnv = env as RssEnv
   const runEnv = rssEnv.NODE_ENV || 'production'
-  const cacheTag = getRssCacheTag(runEnv)
+  const hostKey = normalizeHostKey(new URL(baseUrl).host)
 
-  // Layer 1: colo-local response cache. A hit costs no R2 and no KV.
-  const cached = await readEdgeCache(request, cacheTag)
-  if (cached.response) {
-    return respondWithFeed(request, cached.response)
-  }
-
-  // Layer 2: globally shared, prebuilt XML snapshot in R2.
-  const snapshotResult = await readFeedSnapshot(rssEnv.PODCAST_R2, runEnv)
+  const snapshotResult = await readFeedSnapshot(rssEnv.PODCAST_R2, runEnv, hostKey)
   if (snapshotResult && isFeedSnapshotFresh(snapshotResult.ageSeconds)) {
-    const response = buildXmlResponse(snapshotResult.snapshot)
-    queueEdgeCacheWrite(ctx, cached, response)
-    return respondWithFeed(request, response)
+    return respondWithFeed(request, buildXmlResponse(snapshotResult.snapshot))
   }
 
-  // Cache miss / stale snapshot: the expensive KV + R2 rebuild.
+  // Snapshot missing or stale: the expensive KV + R2 rebuild.
   try {
     const snapshot = await buildFeedSnapshot(rssEnv, runEnv, baseUrl, selfFeedUrl)
-    const response = buildXmlResponse(snapshot)
-    const write = writeFeedSnapshot(rssEnv.PODCAST_R2, runEnv, snapshot)
-    queueWaitUntil(ctx, write)
-    queueEdgeCacheWrite(ctx, cached, response)
-    return respondWithFeed(request, response)
+    // Await the write so it survives the response; a rebuild is rare.
+    await writeFeedSnapshot(rssEnv.PODCAST_R2, runEnv, hostKey, snapshot)
+    return respondWithFeed(request, buildXmlResponse(snapshot))
   }
   catch (error) {
     console.error('failed to build rss feed', {
       error: error instanceof Error ? error.message : String(error),
     })
-    // Serve a stale snapshot rather than failing the podcast client.
+    // Serve the stale snapshot rather than failing the podcast client.
     if (snapshotResult) {
-      const response = buildXmlResponse(snapshotResult.snapshot)
-      return respondWithFeed(request, response)
+      return respondWithFeed(request, buildXmlResponse(snapshotResult.snapshot))
     }
     return new NextResponse('Feed temporarily unavailable', {
       status: 503,
@@ -256,7 +247,7 @@ function respondWithFeed(request: Request, response: Response): Response {
     return new NextResponse(null, {
       status: 304,
       headers: {
-        'Cache-Control': response.headers.get('cache-control') ?? `public, max-age=${RSS_CLIENT_CACHE_TTL_SECONDS}`,
+        'Cache-Control': response.headers.get('cache-control') ?? 'public, max-age=0',
         'ETag': etag,
         'Last-Modified': lastModified,
       },
@@ -271,20 +262,6 @@ function buildXmlResponse(snapshot: FeedSnapshot): Response {
     status: 200,
     headers: buildFeedHeaders(snapshot.etag, snapshot.lastModified, xmlBytes.byteLength),
   })
-}
-
-function queueWaitUntil(ctx: { waitUntil?: (promise: Promise<unknown>) => void }, promise: Promise<unknown> | undefined) {
-  if (promise && ctx.waitUntil) {
-    ctx.waitUntil(promise.catch(() => {}))
-  }
-}
-
-function queueEdgeCacheWrite(
-  ctx: { waitUntil?: (promise: Promise<unknown>) => void },
-  cached: { cache: EdgeCacheStore | undefined, cacheKey: Request | null },
-  response: Response,
-) {
-  queueWaitUntil(ctx, writeEdgeCache(cached.cache, cached.cacheKey, response))
 }
 
 async function buildFeedSnapshot(
@@ -330,7 +307,7 @@ async function buildFeedSnapshot(
       : `${baseUrl}${runtimeSite.coverLogoUrl.startsWith('/') ? '' : '/'}${runtimeSite.coverLogoUrl}`,
     language: runtimeSite.rss.language,
     // Derive the channel timestamp from the content so the feed body is stable
-    // across requests (a changing body would invalidate the ETag every time).
+    // across rebuilds (a changing body would invalidate the ETag every time).
     pubDate: lastModified,
     ttl: 60,
     generator: runtimeSite.title,

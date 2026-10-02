@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { buildContentKey } from '@/config'
 import { jsonError, parseJsonWithSchema } from '@/lib/admin-api'
 import { requireAdminSession } from '@/lib/admin-auth'
-import { invalidateRssFeed } from '@/lib/rss-cache'
+import { invalidateFeedSnapshot, normalizeHostKey } from '@/lib/rss-cache'
 import { episodePatchSchema } from '@/lib/schemas/admin'
 import { resolveBaseUrlFromHeaders } from '@/lib/site-url'
 
@@ -19,6 +19,15 @@ function isValidDateParam(date: string): boolean {
 
 function getRunEnv(env: AdminEnv) {
   return env.NODE_ENV || 'production'
+}
+
+async function getHostKey() {
+  try {
+    return normalizeHostKey(new URL(await resolveBaseUrlFromHeaders()).host)
+  }
+  catch {
+    return 'unknown-host'
+  }
 }
 
 export async function GET(
@@ -76,7 +85,7 @@ export async function PATCH(
     }
 
     await adminEnv.PODCAST_KV.put(key, JSON.stringify(next))
-    await invalidateRssFeed(await resolveBaseUrlFromHeaders(), getRunEnv(adminEnv), adminEnv.PODCAST_R2)
+    await invalidateFeedSnapshot(adminEnv.PODCAST_R2, getRunEnv(adminEnv), await getHostKey())
     return NextResponse.json({ ok: true, item: next })
   }
   catch (error) {
@@ -119,7 +128,7 @@ export async function DELETE(
     })
   }
 
-  await invalidateRssFeed(await resolveBaseUrlFromHeaders(), getRunEnv(adminEnv), adminEnv.PODCAST_R2)
+  await invalidateFeedSnapshot(adminEnv.PODCAST_R2, getRunEnv(adminEnv), await getHostKey())
 
   return NextResponse.json({
     ok: true,

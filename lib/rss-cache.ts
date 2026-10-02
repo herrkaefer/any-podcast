@@ -1,33 +1,37 @@
-import { purgeEdgeCache } from '@/lib/edge-cache'
-
 /**
- * How long a finished RSS response may live in Cloudflare's edge cache.
+ * The RSS feed is expensive to build: one KV list plus a KV get and an R2 head
+ * per episode (roughly 120 of each for a 120-episode show). Podcast platforms
+ * poll feeds constantly, so building per request burns the Workers KV quota.
  *
- * This is the per-data-center cache, so it is deliberately short: each colo
- * re-reads the (global) R2 snapshot every few minutes, but that is a cheap R2
- * read rather than the expensive KV fan-out used to build the feed.
+ * Instead the finished XML is stored as a small object in the site's R2 bucket
+ * and shared globally. A request rebuilds only when that snapshot is missing or
+ * older than RSS_SNAPSHOT_TTL_SECONDS; every other request pays a single R2 read
+ * (or a CDN hit) instead of the KV fan-out.
+ *
+ * Snapshots are keyed by host because feed links and episode guids embed the
+ * serving origin. Sharing one document across hosts would rewrite every guid
+ * whenever a different host happened to trigger the build.
  */
-export const RSS_EDGE_CACHE_TTL_SECONDS = 300
 
-/**
- * How long the globally shared, prebuilt feed snapshot stays fresh. Past this
- * the next cache miss rebuilds from KV. Because the snapshot lives in R2 (one
- * bucket per podcast), a rebuild happens at most once per TTL for the whole
- * site instead of once per data center.
- */
+/** How long the globally shared snapshot stays fresh. */
 export const RSS_SNAPSHOT_TTL_SECONDS = 1800
 
-/** Client-facing freshness for the feed document itself. */
+/** How long the CDN may cache the feed. Kept short so edits show up quickly. */
+export const RSS_CDN_CACHE_TTL_SECONDS = 300
+
+/** How long podcast clients may cache the feed document themselves. */
 export const RSS_CLIENT_CACHE_TTL_SECONDS = 3600
 
-const RSS_EDGE_CACHE_TAG = 'rss-feed'
-
-export function getRssCacheTag(runEnv: string) {
-  return `${RSS_EDGE_CACHE_TAG}:${runEnv}`
+/**
+ * Normalizes a host into a safe object-key segment. Keeping this deterministic
+ * matters: a changed key would silently orphan the previous snapshot.
+ */
+export function normalizeHostKey(host: string): string {
+  return host.trim().toLowerCase().replace(/[^a-z0-9.-]/g, '_') || 'unknown-host'
 }
 
-export function buildFeedSnapshotKey(runEnv: string) {
-  return `feeds/${runEnv}/rss.xml`
+export function buildFeedSnapshotKey(runEnv: string, hostKey: string) {
+  return `feeds/${runEnv}/${normalizeHostKey(hostKey)}/rss.xml`
 }
 
 export interface FeedSnapshot {
@@ -36,24 +40,17 @@ export interface FeedSnapshot {
   lastModified: string
 }
 
-function parseLastModified(value: unknown): number {
-  if (typeof value !== 'string') {
-    return 0
-  }
-  const parsed = Date.parse(value)
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
 /**
- * Reads the prebuilt feed XML from the site's R2 bucket. Returns the document
- * plus how old it is so callers can decide whether to serve it or rebuild.
+ * Reads the prebuilt feed XML and reports its age so callers can decide whether
+ * to serve it or rebuild.
  */
 export async function readFeedSnapshot(
   bucket: R2Bucket,
   runEnv: string,
+  hostKey: string,
 ): Promise<{ snapshot: FeedSnapshot, ageSeconds: number } | null> {
   try {
-    const object = await bucket.get(buildFeedSnapshotKey(runEnv))
+    const object = await bucket.get(buildFeedSnapshotKey(runEnv, hostKey))
     if (!object) {
       return null
     }
@@ -85,10 +82,11 @@ export async function readFeedSnapshot(
 export async function writeFeedSnapshot(
   bucket: R2Bucket,
   runEnv: string,
+  hostKey: string,
   snapshot: FeedSnapshot,
 ): Promise<void> {
   try {
-    await bucket.put(buildFeedSnapshotKey(runEnv), snapshot.xml, {
+    await bucket.put(buildFeedSnapshotKey(runEnv, hostKey), snapshot.xml, {
       customMetadata: {
         builtAt: String(Date.now()),
         etag: snapshot.etag,
@@ -107,31 +105,17 @@ export async function writeFeedSnapshot(
 }
 
 /**
- * Drops the per-colo cache entry and the global R2 snapshot so the next request
- * rebuilds the feed from current content. Used by admin writes.
+ * Deletes the snapshot so the next request rebuilds the feed from current
+ * content. Called after admin writes and after the workflow publishes episodes.
  */
-export async function invalidateRssFeed(baseUrl: string, runEnv: string, bucket?: R2Bucket): Promise<void> {
-  const normalized = baseUrl.replace(/\/$/, '')
-  if (normalized) {
-    try {
-      await purgeEdgeCache(new Request(`${normalized}/rss.xml`), getRssCacheTag(runEnv))
-    }
-    catch (error) {
-      console.warn('invalidate rss edge cache failed', {
-        error: error instanceof Error ? error.message : String(error),
-      })
-    }
+export async function invalidateFeedSnapshot(bucket: R2Bucket, runEnv: string, hostKey: string): Promise<void> {
+  try {
+    await bucket.delete(buildFeedSnapshotKey(runEnv, hostKey))
   }
-
-  if (bucket) {
-    try {
-      await bucket.delete(buildFeedSnapshotKey(runEnv))
-    }
-    catch (error) {
-      console.warn('invalidate rss snapshot failed', {
-        error: error instanceof Error ? error.message : String(error),
-      })
-    }
+  catch (error) {
+    console.warn('invalidate feed snapshot failed', {
+      error: error instanceof Error ? error.message : String(error),
+    })
   }
 }
 
@@ -139,6 +123,37 @@ export function isFeedSnapshotFresh(ageSeconds: number): boolean {
   return Number.isFinite(ageSeconds) && ageSeconds < RSS_SNAPSHOT_TTL_SECONDS
 }
 
-export function getFeedLastModifiedMs(lastModified: string): number {
-  return parseLastModified(lastModified)
+function matchesEtag(ifNoneMatch: string, etag: string): boolean {
+  for (const candidate of ifNoneMatch.split(',').map(part => part.trim()).filter(Boolean)) {
+    if (candidate === '*' || candidate === etag) {
+      return true
+    }
+    if (candidate.startsWith('W/') && candidate.slice(2) === etag) {
+      return true
+    }
+  }
+  return false
+}
+
+/** True when the client's conditional headers allow a 304 Not Modified. */
+export function matchesConditionalRequest(
+  request: Request,
+  etag: string | null | undefined,
+  lastModified: string | null | undefined,
+): boolean {
+  const ifNoneMatch = request.headers.get('if-none-match')
+  if (ifNoneMatch && etag && matchesEtag(ifNoneMatch, etag)) {
+    return true
+  }
+
+  const ifModifiedSince = request.headers.get('if-modified-since')
+  if (ifModifiedSince && lastModified) {
+    const requestedMs = Date.parse(ifModifiedSince)
+    const lastModifiedMs = Date.parse(lastModified)
+    if (Number.isFinite(requestedMs) && Number.isFinite(lastModifiedMs) && requestedMs >= lastModifiedMs) {
+      return true
+    }
+  }
+
+  return false
 }

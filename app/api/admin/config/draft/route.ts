@@ -2,7 +2,7 @@ import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { NextResponse } from 'next/server'
 import { jsonError, parseJsonWithSchema } from '@/lib/admin-api'
 import { requireAdminSession } from '@/lib/admin-auth'
-import { invalidateRssFeed } from '@/lib/rss-cache'
+import { invalidateFeedSnapshot, normalizeHostKey } from '@/lib/rss-cache'
 import {
   getDraftRuntimeConfig,
   mergeRuntimeConfig,
@@ -43,7 +43,7 @@ export async function PUT(request: Request) {
       updatedBy: session.user,
       note,
     })
-    await invalidateRssFeed(await resolveBaseUrlFromHeaders(), adminEnv.NODE_ENV || 'production', adminEnv.PODCAST_R2)
+    await invalidateFeedSnapshot(adminEnv.PODCAST_R2, adminEnv.NODE_ENV || 'production', normalizeHostKey(new URL(await resolveBaseUrlFromHeaders()).host))
     return NextResponse.json({ ok: true, draft: saved })
   }
   catch (error) {
