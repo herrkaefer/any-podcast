@@ -2,12 +2,14 @@ import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { NextResponse } from 'next/server'
 import { jsonError, parseJsonWithSchema } from '@/lib/admin-api'
 import { requireAdminSession } from '@/lib/admin-auth'
+import { invalidateRssEdgeCache } from '@/lib/rss-cache'
 import {
   getDraftRuntimeConfig,
   mergeRuntimeConfig,
   saveDraftRuntimeConfig,
 } from '@/lib/runtime-config'
 import { runtimeConfigPatchSchema } from '@/lib/schemas/admin'
+import { resolveBaseUrlFromHeaders } from '@/lib/site-url'
 
 export async function GET(request: Request) {
   const { env } = await getCloudflareContext({ async: true })
@@ -41,6 +43,7 @@ export async function PUT(request: Request) {
       updatedBy: session.user,
       note,
     })
+    await invalidateRssEdgeCache(await resolveBaseUrlFromHeaders(), adminEnv.NODE_ENV || 'production')
     return NextResponse.json({ ok: true, draft: saved })
   }
   catch (error) {

@@ -3,6 +3,8 @@ import markdownit from 'markdown-it'
 import { NextResponse } from 'next/server'
 import { Podcast } from 'podcast'
 import { buildContentKey, buildContentPrefix, podcastContactEmail } from '@/config'
+import { matchesConditionalRequest, readEdgeCache, writeEdgeCache } from '@/lib/edge-cache'
+import { getRssCacheTag, RSS_EDGE_CACHE_TTL_SECONDS } from '@/lib/rss-cache'
 import { getActiveRuntimeConfig } from '@/lib/runtime-config'
 import { resolveBaseUrlFromRequest } from '@/lib/site-url'
 import { getContentDays } from '@/lib/utils'
@@ -18,6 +20,11 @@ function escapeHtml(text: string): string {
 }
 
 export const revalidate = 3600
+
+// Finished feed responses are stored in Cloudflare's edge cache (see
+// RSS_EDGE_CACHE_TTL_SECONDS). Without it every RSS poll re-runs the handler
+// (KV list + one KV get per episode + one R2 head per episode), which drains
+// the Workers KV quota.
 
 interface RssEnv extends CloudflareEnv {
   PODCAST_KV: KVNamespace
@@ -127,7 +134,9 @@ function parseDateMs(value: unknown): number | undefined {
 }
 
 function getFeedLastModified(posts: Article[]): Date {
-  let latest = Date.now()
+  // Never seed with Date.now(): a shifting timestamp would bust the ETag and
+  // force clients to re-download the feed on every poll.
+  let latest = 0
 
   for (const post of posts) {
     const candidates: Array<unknown> = [post.updatedAt, post.publishedAt, post.date]
@@ -139,7 +148,35 @@ function getFeedLastModified(posts: Article[]): Date {
     }
   }
 
+  if (latest === 0) {
+    return new Date(Math.floor(Date.now() / 1000) * 1000)
+  }
+
   return new Date(Math.floor(latest / 1000) * 1000)
+}
+
+// The podcast library stamps <lastBuildDate> with the current time, which would
+// make the body (and therefore the ETag) change on every request. Rewrite it to
+// the feed's real last-modified time so identical feeds hash identically.
+function normalizeLastBuildDate(xml: string, lastModified: Date): string {
+  const value = lastModified.toUTCString()
+  if (/<lastBuildDate>[^<]*<\/lastBuildDate>/.test(xml)) {
+    return xml.replace(/<lastBuildDate>[^<]*<\/lastBuildDate>/, `<lastBuildDate>${value}</lastBuildDate>`)
+  }
+  return xml
+}
+
+function buildFeedHeaders(etag: string, lastModified: Date, xmlBytesLength?: number): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/xml; charset=utf-8',
+    'Cache-Control': `public, max-age=${RSS_EDGE_CACHE_TTL_SECONDS}, s-maxage=${RSS_EDGE_CACHE_TTL_SECONDS}, stale-while-revalidate=${RSS_EDGE_CACHE_TTL_SECONDS}`,
+    'ETag': etag,
+    'Last-Modified': lastModified.toUTCString(),
+  }
+  if (typeof xmlBytesLength === 'number') {
+    headers['Content-Length'] = String(xmlBytesLength)
+  }
+  return headers
 }
 
 async function sha256Hex(text: string): Promise<string> {
@@ -150,34 +187,35 @@ async function sha256Hex(text: string): Promise<string> {
     .join('')
 }
 
-function hasMatchingEtag(ifNoneMatch: string, etag: string): boolean {
-  const candidates = ifNoneMatch
-    .split(',')
-    .map(part => part.trim())
-    .filter(Boolean)
-
-  if (candidates.includes('*')) {
-    return true
-  }
-
-  for (const candidate of candidates) {
-    if (candidate === etag) {
-      return true
-    }
-    if (candidate.startsWith('W/') && candidate.slice(2) === etag) {
-      return true
-    }
-  }
-  return false
-}
-
 export async function GET(request: Request) {
   const requestUrl = new URL(request.url)
   const requestBaseUrl = requestUrl.origin
   const baseUrl = resolveBaseUrlFromRequest(request)
   const selfFeedUrl = `${requestBaseUrl}${requestUrl.pathname}`
-  const { env } = await getCloudflareContext({ async: true })
+  const { env, ctx } = await getCloudflareContext({ async: true })
   const rssEnv = env as RssEnv
+  const runEnv = rssEnv.NODE_ENV || 'production'
+  const cacheTag = getRssCacheTag(runEnv)
+
+  // Hot path: podcast platforms poll the feed frequently. If the finished
+  // response is already at the edge we return it without touching KV/R2.
+  const cached = await readEdgeCache(request, cacheTag)
+  if (cached.response) {
+    const cachedEtag = cached.response.headers.get('etag')
+    const cachedLastModified = cached.response.headers.get('last-modified')
+    if (cachedEtag && cachedLastModified && matchesConditionalRequest(request, cachedEtag, cachedLastModified)) {
+      return new NextResponse(null, {
+        status: 304,
+        headers: {
+          'Cache-Control': cached.response.headers.get('cache-control') ?? `public, max-age=${RSS_EDGE_CACHE_TTL_SECONDS}`,
+          'ETag': cachedEtag,
+          'Last-Modified': cachedLastModified,
+        },
+      })
+    }
+    return cached.response
+  }
+
   const runtimeConfig = await getActiveRuntimeConfig(rssEnv)
   const runtimeSite = runtimeConfig.config.site
   const contactEmail = runtimeSite.contactEmail || podcastContactEmail
@@ -185,7 +223,21 @@ export async function GET(request: Request) {
     ? `${contactEmail} (${runtimeSite.title})`
     : runtimeSite.title
 
-  // 如果没有缓存，生成新的响应
+  const pastDays = await getContentDays(rssEnv.PODCAST_KV, buildContentPrefix(runEnv), runtimeSite.rss.feedDays)
+  const posts = (await Promise.all(
+    pastDays.map(async (day) => {
+      const post = await rssEnv.PODCAST_KV.get(buildContentKey(runEnv, day), 'json')
+      return post as unknown as Article
+    }),
+  )).filter(Boolean)
+
+  const audioInfos = await Promise.all(
+    posts.map(post => rssEnv.PODCAST_R2.head(post.audio)),
+  )
+
+  const lastModified = getFeedLastModified(posts)
+  const lastModifiedString = lastModified.toUTCString()
+
   const feed = new Podcast({
     namespaces: {
       iTunes: true,
@@ -200,10 +252,12 @@ export async function GET(request: Request) {
       ? runtimeSite.coverLogoUrl
       : `${baseUrl}${runtimeSite.coverLogoUrl.startsWith('/') ? '' : '/'}${runtimeSite.coverLogoUrl}`,
     language: runtimeSite.rss.language,
-    pubDate: new Date(),
+    // Derive the channel timestamp from the content so the feed body is stable
+    // across requests (a changing body would invalidate the ETag every time).
+    pubDate: lastModified,
     ttl: 60,
     generator: runtimeSite.title,
-    copyright: `Copyright ${new Date().getUTCFullYear()} ${runtimeSite.title}`,
+    copyright: `Copyright ${lastModified.getUTCFullYear()} ${runtimeSite.title}`,
     categories: runtimeSite.rss.categories,
     itunesExplicit: false,
     itunesImage: runtimeSite.coverLogoUrl.startsWith('http')
@@ -228,19 +282,6 @@ export async function GET(request: Request) {
     managingEditor: editorContact,
     webMaster: editorContact,
   })
-
-  const runEnv = rssEnv.NODE_ENV || 'production'
-  const pastDays = await getContentDays(rssEnv.PODCAST_KV, buildContentPrefix(runEnv), runtimeSite.rss.feedDays)
-  const posts = (await Promise.all(
-    pastDays.map(async (day) => {
-      const post = await rssEnv.PODCAST_KV.get(buildContentKey(runEnv, day), 'json')
-      return post as unknown as Article
-    }),
-  )).filter(Boolean)
-
-  const audioInfos = await Promise.all(
-    posts.map(post => rssEnv.PODCAST_R2.head(post.audio)),
-  )
 
   posts.forEach((post, index) => {
     const audioInfo = audioInfos[index]
@@ -285,48 +326,26 @@ export async function GET(request: Request) {
     })
   })
 
-  const xml = feed.buildXml()
+  const xml = normalizeLastBuildDate(feed.buildXml(), lastModified)
   const xmlBytes = new TextEncoder().encode(xml)
   const etag = `"${await sha256Hex(xml)}"`
-  const lastModified = getFeedLastModified(posts).toUTCString()
 
-  const ifNoneMatch = request.headers.get('if-none-match')
-  if (ifNoneMatch && hasMatchingEtag(ifNoneMatch, etag)) {
+  if (matchesConditionalRequest(request, etag, lastModifiedString)) {
     return new NextResponse(null, {
       status: 304,
-      headers: {
-        'Cache-Control': `public, max-age=${revalidate}, s-maxage=${revalidate}`,
-        'ETag': etag,
-        'Last-Modified': lastModified,
-      },
+      headers: buildFeedHeaders(etag, lastModified),
     })
   }
 
-  const ifModifiedSince = request.headers.get('if-modified-since')
-  if (ifModifiedSince) {
-    const ifModifiedSinceMs = Date.parse(ifModifiedSince)
-    const lastModifiedMs = Date.parse(lastModified)
-    if (Number.isFinite(ifModifiedSinceMs) && Number.isFinite(lastModifiedMs) && ifModifiedSinceMs >= lastModifiedMs) {
-      return new NextResponse(null, {
-        status: 304,
-        headers: {
-          'Cache-Control': `public, max-age=${revalidate}, s-maxage=${revalidate}`,
-          'ETag': etag,
-          'Last-Modified': lastModified,
-        },
-      })
-    }
-  }
-
   const response = new NextResponse(xml, {
-    headers: {
-      'Content-Type': 'application/xml; charset=utf-8',
-      'Cache-Control': `public, max-age=${revalidate}, s-maxage=${revalidate}`,
-      'Content-Length': String(xmlBytes.byteLength),
-      'ETag': etag,
-      'Last-Modified': lastModified,
-    },
+    status: 200,
+    headers: buildFeedHeaders(etag, lastModified, xmlBytes.byteLength),
   })
+
+  const cacheWrite = writeEdgeCache(cached.cache, cached.cacheKey, response)
+  if (cacheWrite) {
+    ctx.waitUntil(cacheWrite)
+  }
 
   return response
 }
