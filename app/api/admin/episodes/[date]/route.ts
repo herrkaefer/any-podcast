@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { buildContentKey } from '@/config'
 import { jsonError, parseJsonWithSchema } from '@/lib/admin-api'
 import { requireAdminSession } from '@/lib/admin-auth'
-import { invalidateRssEdgeCache } from '@/lib/rss-cache'
+import { invalidateRssFeed } from '@/lib/rss-cache'
 import { episodePatchSchema } from '@/lib/schemas/admin'
 import { resolveBaseUrlFromHeaders } from '@/lib/site-url'
 
@@ -76,7 +76,7 @@ export async function PATCH(
     }
 
     await adminEnv.PODCAST_KV.put(key, JSON.stringify(next))
-    await invalidateRssEdgeCache(await resolveBaseUrlFromHeaders(), getRunEnv(adminEnv))
+    await invalidateRssFeed(await resolveBaseUrlFromHeaders(), getRunEnv(adminEnv), adminEnv.PODCAST_R2)
     return NextResponse.json({ ok: true, item: next })
   }
   catch (error) {
@@ -119,7 +119,7 @@ export async function DELETE(
     })
   }
 
-  await invalidateRssEdgeCache(await resolveBaseUrlFromHeaders(), getRunEnv(adminEnv))
+  await invalidateRssFeed(await resolveBaseUrlFromHeaders(), getRunEnv(adminEnv), adminEnv.PODCAST_R2)
 
   return NextResponse.json({
     ok: true,
