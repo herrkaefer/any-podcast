@@ -27,7 +27,8 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;')
 }
 
-export const revalidate = 3600
+export const dynamic = 'force-dynamic'
+export const revalidate = 0
 
 // The feed is served from a globally shared R2 snapshot (see lib/rss-cache.ts).
 // A request rebuilds the KV-heavy document only when that snapshot is missing

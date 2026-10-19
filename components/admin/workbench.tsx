@@ -2,9 +2,10 @@
 
 import type { RuntimeConfigBundle } from '@/types/runtime-config'
 import { useMemo, useRef, useState } from 'react'
-
 import { CONFIGURABLE_PLATFORM_OPTIONS } from '@/lib/podcast-platforms'
+
 import { findUnknownTemplateVariables, getTemplateVariables, renderTemplate } from '@/lib/template'
+import { edgeTtsPatch } from '@/lib/tts-config'
 
 type EditableSection = 'site' | 'hosts' | 'ai' | 'tts' | 'introMusic' | 'locale' | 'sources' | 'prompts' | 'test'
 type PromptKey = keyof RuntimeConfigBundle['prompts']
@@ -77,7 +78,7 @@ const promptMetaMap: Record<PromptKey, PromptMeta> = {
 }
 
 const themeColorOptions: RuntimeConfigBundle['site']['themeColor'][] = ['blue', 'pink', 'purple', 'green', 'yellow', 'orange', 'red']
-const aiProviderOptions: RuntimeConfigBundle['ai']['provider'][] = ['gemini', 'openai', 'minimax']
+const aiProviderOptions: RuntimeConfigBundle['ai']['provider'][] = ['opencode', 'gemini', 'openai', 'minimax']
 const ttsProviderOptions: RuntimeConfigBundle['tts']['provider'][] = ['edge', 'minimax', 'murf', 'gemini']
 const minimaxLanguageBoostOptions: NonNullable<RuntimeConfigBundle['tts']['languageBoost']>[] = ['auto', 'Chinese', 'English']
 const sourceTypeOptions: SourceItem['type'][] = ['rss', 'url', 'gmail']
@@ -123,6 +124,15 @@ function parseOptionalInt(value: string) {
     return undefined
   }
   const parsed = Number.parseInt(normalized, 10)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function parseOptionalNumber(value: string) {
+  const normalized = value.trim()
+  if (!normalized) {
+    return undefined
+  }
+  const parsed = Number(normalized)
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
@@ -1288,6 +1298,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
               ai: {
                 ...prev.ai,
                 provider: event.target.value as RuntimeConfigBundle['ai']['provider'],
+                ...(event.target.value === 'opencode' ? { model: 'deepseek-v4.1-flash' } : {}),
               },
             }))}
           >
@@ -1344,6 +1355,7 @@ export function AdminWorkbench({ initialDraft }: { initialDraft: RuntimeConfigBu
                 tts: {
                   ...prev.tts,
                   provider: event.target.value as RuntimeConfigBundle['tts']['provider'],
+                  ...(event.target.value === 'edge' ? edgeTtsPatch(prev.tts.language, prev.hosts) : {}),
                 },
               }))}
             >

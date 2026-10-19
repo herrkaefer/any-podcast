@@ -13,7 +13,7 @@
 ## 技术栈
 
 - **运行时**: Next.js 15 (App Router) + Cloudflare Workers (通过 OpenNext 适配)
-- **AI**: OpenAI / Gemini / MiniMax 内容生成
+- **AI**: OpenCode Go（DeepSeek Flash）/ OpenAI / Gemini / MiniMax 内容生成
 - **TTS**: Edge TTS / MiniMax / Murf / Gemini TTS
 - **存储**: Cloudflare KV (元数据) + R2 (音频文件)
 - **UI**: Tailwind CSS + shadcn/ui
@@ -46,7 +46,7 @@
 - [Node.js](https://nodejs.org/) >= 18
 - [pnpm](https://pnpm.io/)
 - [Cloudflare](https://dash.cloudflare.com/) 账号
-- [Gemini API 密钥](https://aistudio.google.com/apikey)（或 OpenAI API 密钥）
+- [OpenCode Go API 密钥](https://opencode.ai/docs/go/)（也可使用其他已支持的文本服务）
 
 ### 第 1 步：创建你的仓库
 
@@ -111,36 +111,38 @@ cp worker/.env.local.example worker/.env.local
 
 编辑 `.env.local`（Next.js 应用）：
 
-| 变量               | 必填 | 说明                                                                                                                 |
-| ------------------ | ---- | -------------------------------------------------------------------------------------------------------------------- |
-| `PODCAST_ID`       | 是   | 与 wrangler 配置中一致                                                                                               |
-| `ADMIN_TOKEN`      | 是   | Admin 管理后台的登录密码（设置一个强密码）                                                                           |
-| `NEXT_STATIC_HOST` | 是   | 音频文件的基础 URL。本地开发：`http://localhost:3000/static`。生产环境：部署后在 wrangler `vars` 中设置（见第 7 步） |
-| `NODE_ENV`         | 否   | 本地默认为 `development`。生产环境在 wrangler `vars` 中设置为 `production`                                           |
-| `PODCAST_WORKER_URL` | 否 | 生产环境中，当 Admin 通过 HTTP 调用 Worker 触发 workflow 且未使用 service binding 时使用的 Worker URL                 |
-| `TRIGGER_TOKEN`    | 否   | 生产环境中，Admin 通过 HTTP 调用 Worker 触发 workflow 时使用的令牌                                                  |
+| 变量                 | 必填 | 说明                                                                                                                 |
+| -------------------- | ---- | -------------------------------------------------------------------------------------------------------------------- |
+| `PODCAST_ID`         | 是   | 与 wrangler 配置中一致                                                                                               |
+| `ADMIN_TOKEN`        | 是   | Admin 管理后台的登录密码（设置一个强密码）                                                                           |
+| `NEXT_STATIC_HOST`   | 是   | 音频文件的基础 URL。本地开发：`http://localhost:3000/static`。生产环境：部署后在 wrangler `vars` 中设置（见第 7 步） |
+| `NODE_ENV`           | 否   | 本地默认为 `development`。生产环境在 wrangler `vars` 中设置为 `production`                                           |
+| `PODCAST_WORKER_URL` | 否   | 生产环境中，当 Admin 通过 HTTP 调用 Worker 触发 workflow 且未使用 service binding 时使用的 Worker URL                |
+| `TRIGGER_TOKEN`      | 否   | 生产环境中，Admin 通过 HTTP 调用 Worker 触发 workflow 时使用的令牌                                                   |
 
 编辑 `worker/.env.local`（Worker）：
 
-| 变量                    | 必填 | 说明                                                                                                  |
-| ----------------------- | ---- | ----------------------------------------------------------------------------------------------------- |
-| `PODCAST_ID`            | 是   | 与上面一致                                                                                            |
-| `GEMINI_API_KEY`        | 是   | Google Gemini API 密钥                                                                                |
-| `MINIMAX_API_KEY`       | 否   | MiniMax API 密钥（如使用 MiniMax 进行文本生成）                                                         |
-| `ADMIN_TOKEN`           | 是   | 与上面一致                                                                                            |
-| `PODCAST_WORKER_URL`    | 是   | Worker URL。本地开发：`http://localhost:8787`。生产环境：部署后在 wrangler `vars` 中设置（见第 7 步） |
-| `PODCAST_R2_BUCKET_URL` | 是   | R2 存储桶公开 URL。本地开发：`http://localhost:8787/static`。生产环境：你的 R2 自定义域名或公开 URL   |
-| `OPENAI_API_KEY`        | 否   | OpenAI API 密钥（如使用 OpenAI）                                                                      |
-| `CLOUDFLARE_ANYPODCAST_ACCOUNT_ID` | 否 | 用于 Markdown 抽取的 Cloudflare Account ID。配置后会优先使用 Cloudflare，再回退到 Jina |
-| `CLOUDFLARE_ANYPODCAST_API_TOKEN`  | 否 | 用于 Markdown 抽取的 Cloudflare API Token。需要 `Workers AI: Read` 和 `Browser Rendering: Edit` 权限 |
-| `JINA_KEY`              | 否   | Jina API 密钥（用于网页内容提取）                                                                     |
-| `MINIMAX_TTS_GROUP_ID`  | 否   | MiniMax TTS 的 Group ID（`tts.provider=minimax` 时必需）                                         |
-| `MINIMAX_TTS_API_KEY`   | 否   | MiniMax TTS 的 API 密钥（`tts.provider=minimax` 时必需）                                        |
-| `MURF_API_KEY`          | 否   | Murf 的 API 密钥（`tts.provider=murf` 时必需）                                                   |
-| `TRIGGER_TOKEN`         | 否   | 通过 curl 手动触发工作流的令牌                                                                        |
-| `GMAIL_*`               | 否   | Gmail OAuth 凭据（用于 Newsletter 内容源）                                                            |
+| 变量                               | 必填 | 说明                                                                                                  |
+| ---------------------------------- | ---- | ----------------------------------------------------------------------------------------------------- |
+| `PODCAST_ID`                       | 是   | 与上面一致                                                                                            |
+| `OPENCODE_API_KEY`                 | 是   | OpenCode Go API 密钥（默认 `ai.provider=opencode`，模型为 `deepseek-v4.1-flash`）                     |
+| `OPENCODE_MODEL`                   | 否   | 填写时覆盖 Admin 的 OpenCode 模型，例如 `deepseek-v4.1-flash`。                                       |
+| `GEMINI_API_KEY`                   | 否   | Google Gemini API 密钥                                                                                |
+| `MINIMAX_API_KEY`                  | 否   | MiniMax API 密钥（如使用 MiniMax 进行文本生成）                                                       |
+| `ADMIN_TOKEN`                      | 是   | 与上面一致                                                                                            |
+| `PODCAST_WORKER_URL`               | 是   | Worker URL。本地开发：`http://localhost:8787`。生产环境：部署后在 wrangler `vars` 中设置（见第 7 步） |
+| `PODCAST_R2_BUCKET_URL`            | 是   | R2 存储桶公开 URL。本地开发：`http://localhost:8787/static`。生产环境：你的 R2 自定义域名或公开 URL   |
+| `OPENAI_API_KEY`                   | 否   | OpenAI API 密钥（如使用 OpenAI）                                                                      |
+| `CLOUDFLARE_ANYPODCAST_ACCOUNT_ID` | 否   | 用于 Markdown 抽取的 Cloudflare Account ID。配置后会优先使用 Cloudflare，再回退到 Jina                |
+| `CLOUDFLARE_ANYPODCAST_API_TOKEN`  | 否   | 用于 Markdown 抽取的 Cloudflare API Token。需要 `Workers AI: Read` 和 `Browser Rendering: Edit` 权限  |
+| `JINA_KEY`                         | 否   | Jina API 密钥（用于网页内容提取）                                                                     |
+| `MINIMAX_TTS_GROUP_ID`             | 否   | MiniMax TTS 的 Group ID（`tts.provider=minimax` 时必需）                                              |
+| `MINIMAX_TTS_API_KEY`              | 否   | MiniMax TTS 的 API 密钥（`tts.provider=minimax` 时必需）                                              |
+| `MURF_API_KEY`                     | 否   | Murf 的 API 密钥（`tts.provider=murf` 时必需）                                                        |
+| `TRIGGER_TOKEN`                    | 否   | 通过 curl 手动触发工作流的令牌                                                                        |
+| `GMAIL_*`                          | 否   | Gmail OAuth 凭据（用于 Newsletter 内容源）                                                            |
 
-AI provider/model/base URL、workflow 测试项、sources、prompts、TTS 运行参数等业务配置通过 Admin 保存到 runtime config，不通过 Worker 环境变量配置。
+AI provider/model、workflow 测试项、sources、prompts、TTS 等业务配置通过 Admin 保存到 runtime config。`OPENCODE_MODEL` 是可选的 Worker 环境变量，用于覆盖 OpenCode 的模型设置。
 
 为了兼容现有部署，Worker 仍接受旧的 `TTS_API_ID` / `TTS_API_KEY`，但新配置建议改用上面的 provider-specific 命名。
 
@@ -157,7 +159,7 @@ Web 管理后台可以在运行时配置所有选项，无需修改代码：
 3. 在管理界面中配置所有设置：
    - **站点信息**: 标题、描述、Logo、主题色、联系邮箱
    - **主播设置**: 每位主播的名称、性别、人设、说话人标记
-   - **AI 配置**: 服务商（Gemini/OpenAI/MiniMax）、模型、API 地址
+   - **AI 配置**: 服务商（OpenCode/Gemini/OpenAI/MiniMax）和模型
    - **TTS 配置**: 服务商（Gemini/Edge/MiniMax/Murf）、语言、每位主播的语音、音频质量、片头音乐
    - **内容源**: 添加 RSS 订阅、网页 URL 或 Gmail 标签
    - **Prompt**: 自定义所有 AI 提示词（文章摘要、播客对话、博客文章、简介、标题）
@@ -178,6 +180,44 @@ cp workflow/sources/config.example.ts workflow/sources/config.local.ts
 #### 方式 C：代码中的静态默认值
 
 `config.ts` 包含站点元数据的静态默认值（标题、描述、SEO、主题）。当 KV 中没有运行时配置时，这些值会作为兜底使用。大多数情况下，建议优先通过 Admin 后台配置。
+
+文章正文优先使用 Cloudflare 渲染。中英文 Worker 共用由中文 Worker 托管的 Durable Object 串行队列，两次渲染开始时间至少相隔 11 秒；这是根据该账户实测的 `429`、`Retry-After: 10` 设置的，重试也会遵循服务返回的等待时间。公开静态 HTML 和 Jina 为备用通道。正文为空的文章直接跳过，摘要不得虚构缺失事实或读者评论。
+
+Edge 合成使用原版朗读端点及其 2026 年 10 月升级的 v2 签名，适配代码和 LGPL 许可保存在 `workflow/edge-drm/`。音频分段串行生成，段间等待三秒，失败时按指数退避重试。续跑以 R2 检查点为准，KV 保留 Admin 进度视图。发布后等待 KV 同步再清除 RSS 快照，临时音频使用一次批量删除。
+
+将 Worker 变量 `PODCAST_PUBLISH_MODE` 设为 `preview`，会把音频和节目资料保存在 `previews/<jobId>/`，不写入公开节目列表或 RSS；定时任务也遵循该设置。试听任务跨续跑仍保留试听状态。确认可以发布后，将变量改为 `publish` 供后续新任务使用；未设置该变量时保留原来的自动发布行为。
+
+### 使用 OpenCode Go 与 Edge TTS 生成本地试听
+
+在 `worker/.env.local` 中添加 `OPENCODE_API_KEY=你的密钥` 和 `OPENCODE_MODEL=deepseek-v4.1-flash`。`OPENCODE_MODEL` 对 OpenCode 的优先级高于 Admin 模型设置；不填时使用 Admin 的配置，可切换到该服务支持 Chat Completions 的其他模型。Edge TTS 不需要密钥。默认文本模型为 `deepseek-v4.1-flash`，使用 [OpenCode Go Chat Completions 接口](https://opencode.ai/docs/go/#endpoints)。
+
+两个语言预设均使用对应语言的单语言音色和正常语速：
+
+| 语言 | 第一位／男主播              | 第二位／女主播                 |
+| ---- | --------------------------- | ------------------------------ |
+| 中文 | `zh-CN-YunxiNeural`（云希） | `zh-CN-XiaoxiaoNeural`（晓晓） |
+| 英文 | `en-US-GuyNeural`           | `en-US-JennyNeural`            |
+
+已有播客可先将登录后的 Admin `GET /api/admin/config/draft` 响应保存为本地文件，再准备新配置。该操作保留主持人、内容源、提示词和片头音乐。切换到 Edge 时会清理旧 TTS 模型、接口和语速；Edge 使用百分比语速（`+0%` 为正常），不是 MiniMax 的倍数。
+
+```bash
+pnpm podcast:configure existing-config.json tmp/preview/config.json
+pnpm test:providers
+pnpm tts:smoke
+
+# 在另一个终端启动本地 Cloudflare Worker，验证实际运行环境：
+pnpm tts:worker
+pnpm tts:smoke http://localhost:8799
+
+# articles.json 为数组，每项包含 title、link、content（文章正文）
+pnpm podcast:preview tmp/preview/config.json articles.json tmp/preview/episode http://localhost:8799 https://your-podcast-worker.example.workers.dev
+```
+
+试听流程包括文章相关性判断与摘要、双人稿、标题、简介、节目笔记、逐段语音、MP3 合并和片头混音。结果包含 `podcast.mp3`、`dialogue.txt`、`show-notes.md` 和 `manifest.json`；完整音频解码成功才算完成。不传本地 Worker URL 时在 Node 中合成语音。最后一个 URL 用于解析片头音乐的相对路径，默认读取 `worker/.env.local` 中的 `PODCAST_WORKER_URL`。
+
+对于本项目的中英文 Spectrum 部署，`pnpm deploy:providers` 会将 `worker/.env.local` 中的 `OPENCODE_API_KEY` 和 `OPENCODE_MODEL` 安全上传到两个已有 Worker；也可传 `cn` 或 `en` 只更新一套。以后修改本地密钥或模型后，再运行该命令即可。模型留空时恢复使用 Admin 的设置。
+
+上述命令只生成本地文件。现有 KV 配置优先于代码默认值，部署代码本身不会迁移已有播客。试听验收后，部署时再更新对应 Worker 的密钥和 Admin AI/TTS 配置。
 
 ### 第 6 步：本地开发
 
@@ -200,7 +240,7 @@ pnpm deploy:worker
 # 命令行会输出 Worker URL，如 https://my-podcast-worker.<your-subdomain>.workers.dev
 
 # 为 Worker 设置生产环境密钥
-wrangler secret put GEMINI_API_KEY --cwd worker
+wrangler secret put OPENCODE_API_KEY --cwd worker
 wrangler secret put ADMIN_TOKEN --cwd worker
 # 根据需要添加其他密钥（OPENAI_API_KEY、MINIMAX_TTS_API_KEY、MURF_API_KEY 等）
 
@@ -214,16 +254,23 @@ pnpm run deploy
 在 `wrangler.jsonc`（Next.js 应用）的 `vars` 中添加：
 
 ```jsonc
-"NEXT_STATIC_HOST": "https://my-podcast.<your-subdomain>.workers.dev/static",
-"PODCAST_WORKER_URL": "https://my-podcast-worker.<your-subdomain>.workers.dev"
+{
+  "NEXT_STATIC_HOST": "https://my-podcast.<your-subdomain>.workers.dev/static",
+  "PODCAST_WORKER_URL": "https://my-podcast-worker.<your-subdomain>.workers.dev"
+}
 ```
 
 在 `worker/wrangler.jsonc`（Worker）的 `vars` 中添加：
 
 ```jsonc
-"PODCAST_WORKER_URL": "https://my-podcast-worker.<your-subdomain>.workers.dev",
-"PODCAST_R2_BUCKET_URL": "https://<your-r2-public-url>"
+{
+  "PODCAST_WORKER_URL": "https://my-podcast-worker.<your-subdomain>.workers.dev",
+  "PODCAST_R2_BUCKET_URL": "https://<your-r2-public-url>",
+  "PODCAST_SITE_URL": "https://my-podcast.<your-subdomain>.workers.dev"
+}
 ```
+
+将 Worker 的 `services` 中的 `PODCAST_SITE_SERVICE` 指向前端 Worker 名称。前端配置保留 `PUBLIC_PAGE_RENDERER` 及其迁移；模板已包含这些绑定。
 
 然后重新部署：`pnpm deploy:worker && pnpm run deploy`
 
@@ -235,6 +282,12 @@ pnpm run deploy
 2. 进入 `/admin`，通过 Admin 后台配置播客
 3. 触发第一期播客生成：进入 `/admin`，切换到 **Testing** 标签页，点击 **Trigger Workflow** 即可——也可以用 curl：`curl -X POST <你的 Worker URL>`
 4. Worker 的 Cron 定时任务会按计划自动生成新播客。默认为每天 UTC 06:05 触发——在 `worker/wrangler.jsonc` 的 `triggers.crons` 中配置，使用[标准 cron 语法](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
+
+### 公开页面与缓存更新
+
+公开网页和 RSS 先经过轻量入口 `site-entry.mjs`，缓存命中时不加载 Next.js。公开页面缓存在 R2；管理端修改会使缓存失效，正式发布后会清理并预热节目页、首页和 RSS。部署时保留 Wrangler 的这一入口配置。回归测试：`pnpm test:unit`。
+
+缓存未命中（包括首次访问和客户端导航）由 SQLite Durable Object `PublicPageRenderer` 渲染，不在普通边缘 Worker 中执行。正式发布后，工作流等待 KV 同步，清理所有域名的页面/RSS 缓存，再通过 `PODCAST_SITE_SERVICE` 和 `PODCAST_SITE_URL` 预热并核实节目页、首页和 RSS。配置缺失或未命中新缓存时，该步骤报错并重试，不会静默跳过。
 
 ## 运行多个播客
 

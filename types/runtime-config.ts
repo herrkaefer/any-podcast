@@ -70,7 +70,7 @@ export interface RuntimeTtsIntroMusicConfig {
 }
 
 export interface RuntimeAiConfig {
-  provider: 'openai' | 'gemini' | 'minimax'
+  provider: 'openai' | 'gemini' | 'minimax' | 'opencode'
   model: string
 }
 

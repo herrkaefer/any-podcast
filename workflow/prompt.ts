@@ -1,3 +1,5 @@
+import { episodeTitlePrompt, podcastEditorialPrompt, sharedWritingRules, storyFidelityZh } from './editorial-prompts'
+
 export const summarizeStoryPrompt = `
 你是播客的编辑助理，负责整理文章和社区讨论。
 
@@ -23,56 +25,13 @@ export const summarizeStoryPrompt = `
 - 摘要为简体中文，直接输出正文，无需前言或标题
 - 评论观点融入正文，不要单独列"评论区"章节
 - 保持简洁，不做过度加工
+
+${sharedWritingRules('zh')}
+
+${storyFidelityZh}
 `.trim()
 
-export const summarizePodcastPrompt = `
-你是播客的编辑，任务是将多篇文章摘要整理成一期双人对话播客节目稿。
-
-播客名称：{{podcastTitle}}
-播客定位：{{podcastDescription}}
-
-【主播设定】
-- {{host1Marker}}（{{host1Name}}）：{{host1Persona}}
-- {{host2Marker}}（{{host2Name}}）：{{host2Persona}}
-
-【对话风格】
-- 像两位长期合作的朋友在安静的咖啡馆里聊天，语气平实、尊重事实，不渲染、不夸张
-- {{host1Name}}负责开场、串联不同内容、提出大众可能会有的疑问
-- {{host2Name}}负责解释研究或概念的来龙去脉，指出容易被误解的地方
-- 话题之间使用自然过渡
-
-【内容要求】
-- 将多个话题整合为一期连贯的节目，不是简单拼接
-- 每个话题讨论 3-5 轮对话后自然过渡到下一个
-- 跳过争议性政治话题
-- 评论区的精彩观点融入对话，但不要提及"评论区"
-- 结尾需有告别语，并提醒听众可以在播客的节目页面或网站上查看本期讨论的文章摘要和原始链接
-
-【写作风格】
-- 像真实对话一样写：写完后想象两位主播坐在一起聊天，如果听起来像在"给别人讲道理"，就再放松一点
-- 节奏有起伏：长短句自然穿插，允许停顿、转折和顺着话题往前走
-- 少用套路话：不用「首先」「此外」「从某种意义上说」「这个问题很重要」等总结型表达
-- 用生活场景代替抽象判断
-- 尊重不确定性和个体差异
-
-【输出格式】
-- 简练优雅的中文，专业术语可保留英文
-- 纯文本，不使用 Markdown
-- 每行以"{{host1Marker}}："或"{{host2Marker}}："开头
-- 由{{host1Marker}}开场
-- 不要输出分隔符、标题或章节标记
-- 需要提示话题时用主播口播，不要单独成行标题
-
-示例：
-
-{{host1Marker}}：大家好，欢迎收听{{podcastTitle}}，我是{{host1Name}}。
-
-{{host2Marker}}：大家好，我是{{host2Name}}。
-
-{{host1Marker}}：这一期我们整理了几条最近的内容，有研究的，也有一些来自社区里的讨论。看下来之后，我有几个点挺想和你聊聊的。
-
-{{host2Marker}}：对，我也有类似的感觉。有些内容乍一看不复杂，但真的顺着想下去，其实挺值得慢慢说的。
-`.trim()
+export const summarizePodcastPrompt = podcastEditorialPrompt('zh')
 
 export const summarizeBlogPrompt = `
 你是中文博客的编辑，将多篇文章摘要整理成一篇适合搜索引擎收录的每日博客。
@@ -191,84 +150,4 @@ export const extractNewsletterLinksPrompt = `
 - 主页/分类页/目录页/导航页/标签页/存档页
 `.trim()
 
-export const titlePrompt = `
-你是播客标题编辑，根据本期对话内容生成一个适合作为"播客入口"的单集标题。
-
-播客名称：{{podcastTitle}}
-播客定位：{{podcastDescription}}
-
-【任务步骤】
-1. 先从对话中提炼本期的**一个核心问题或核心场景**
-   （而不是完整概括全部内容）
-2. 围绕这个核心问题或场景，生成 3–5 个候选标题
-   标题形式应优先选择：
-   - 普通人会问的问题，或
-   - 日常生活中的具体场景
-3. 每个标题按以下 3 个维度各打 1–10 分，并简述理由：
-   - 内容符合度：标题是否真实、准确地代表本期对话的主要讨论重点？
-   - 搜索潜力：目标听众是否可能使用标题中的词或场景进行搜索？
-   - 吸引力：标题是否让人想点击了解更多？
-
-【推荐规则】
-- 推荐标题必须是**问题型或具体场景型**
-- 如果标题主要由抽象概念或总结性结构构成，即使评分最高，也不得作为推荐标题
-- 若某个标题的内容符合度低于 7 分，不得推荐
-
-【标题原则】
-- 总长度 15–25 字，简体中文
-- 播客 App 列表页约显示前 20 字，关键信息尽量靠前
-- 聚焦一个点比覆盖全面更好
-- 除关键词外，尽量使用听众的日常语言
-- 禁止营销式用语：「深度」「重磅」「必听」「全面解析」「一文讲清」「避坑指南」等
-- 标题的每一部分都应包含具体信息，避免空泛总结
-- 禁止使用 Emoji
-- 不包含播客名称、期号或日期
-
-【输出要求】
-- 只输出一个合法 JSON 对象，不要 markdown，不要代码块，不要额外说明
-- JSON 必须包含以下字段：
-  - coreAngle: string
-  - candidates: 3-5 个候选项的数组
-  - recommendedIndex: number，从 0 开始
-  - recommendedTitle: string，必须与 candidates[recommendedIndex].title 完全一致
-- 每个 candidates 元素必须包含：
-  - title: string
-  - scores: { relevance: 1-10, search: 1-10, appeal: 1-10 }
-  - reason: string
-
-【输出格式示例】
-{
-  "coreAngle": "某个新工具如何改变开发者的工作流程",
-  "candidates": [
-    {
-      "title": "这个新工具真的能让开发效率翻倍吗",
-      "scores": {
-        "relevance": 9,
-        "search": 8,
-        "appeal": 9
-      },
-      "reason": "以常见疑问切入，准确代表讨论重点"
-    },
-    {
-      "title": "当开发者第一次用上这个工具，发生了什么变化",
-      "scores": {
-        "relevance": 8,
-        "search": 7,
-        "appeal": 8
-      },
-      "reason": "场景具体，但搜索指向略弱"
-    },
-    {
-      "title": "一个工具如何让十人团队省下半天时间",
-      "scores": {
-        "relevance": 7,
-        "search": 8,
-        "appeal": 9
-      },
-      "reason": "具体，但概括略偏宽"
-    }
-  ],
-  "recommendedIndex": 0,
-  "recommendedTitle": "这个新工具真的能让开发效率翻倍吗"
-}
-`.trim()
+export const titlePrompt = episodeTitlePrompt('zh')

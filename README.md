@@ -15,7 +15,7 @@ An AI-powered, configurable podcast platform that aggregates content sources, ge
 ## Tech Stack
 
 - **Runtime**: Next.js 15 (App Router) + Cloudflare Workers (via OpenNext)
-- **AI**: OpenAI / Gemini / MiniMax for content generation
+- **AI**: OpenCode Go (DeepSeek Flash) / OpenAI / Gemini / MiniMax for content generation
 - **TTS**: Edge TTS / MiniMax / Murf / Gemini TTS
 - **Storage**: Cloudflare KV (metadata) + R2 (audio files)
 - **UI**: Tailwind CSS + shadcn/ui
@@ -48,7 +48,7 @@ This allows the run to automatically continue in a fresh workflow instance befor
 - [Node.js](https://nodejs.org/) >= 18
 - [pnpm](https://pnpm.io/)
 - A [Cloudflare](https://dash.cloudflare.com/) account
-- A [Gemini API key](https://aistudio.google.com/apikey) (or OpenAI API key)
+- An [OpenCode Go API key](https://opencode.ai/docs/go/) (or a key for another supported text provider)
 
 ### Step 1: Create Your Repository
 
@@ -113,36 +113,38 @@ cp worker/.env.local.example worker/.env.local
 
 Edit `.env.local` (Next.js app):
 
-| Variable           | Required | Description                                                                                                                           |
-| ------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `PODCAST_ID`       | Yes      | Same as in wrangler config                                                                                                            |
-| `ADMIN_TOKEN`      | Yes      | Password for the Admin console (choose a strong value)                                                                                |
-| `NEXT_STATIC_HOST` | Yes      | Base URL for audio files. Local dev: `http://localhost:3000/static`. Production: set in wrangler `vars` after deployment (see Step 7) |
-| `NODE_ENV`         | No       | Defaults to `development` locally. Set to `production` in wrangler `vars`                                                             |
-| `PODCAST_WORKER_URL` | No     | Worker URL used by the Admin trigger route in production when service binding is unavailable                                           |
-| `TRIGGER_TOKEN`    | No       | Token used by the Admin trigger route when calling the Worker over HTTP in production                                                 |
+| Variable             | Required | Description                                                                                                                           |
+| -------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `PODCAST_ID`         | Yes      | Same as in wrangler config                                                                                                            |
+| `ADMIN_TOKEN`        | Yes      | Password for the Admin console (choose a strong value)                                                                                |
+| `NEXT_STATIC_HOST`   | Yes      | Base URL for audio files. Local dev: `http://localhost:3000/static`. Production: set in wrangler `vars` after deployment (see Step 7) |
+| `NODE_ENV`           | No       | Defaults to `development` locally. Set to `production` in wrangler `vars`                                                             |
+| `PODCAST_WORKER_URL` | No       | Worker URL used by the Admin trigger route in production when service binding is unavailable                                          |
+| `TRIGGER_TOKEN`      | No       | Token used by the Admin trigger route when calling the Worker over HTTP in production                                                 |
 
 Edit `worker/.env.local` (Worker):
 
-| Variable                | Required | Description                                                                                                      |
-| ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
-| `PODCAST_ID`            | Yes      | Same as above                                                                                                    |
-| `GEMINI_API_KEY`        | Yes      | Google Gemini API key                                                                                            |
-| `MINIMAX_API_KEY`       | No       | MiniMax API key (if using MiniMax for text generation)                                                          |
-| `ADMIN_TOKEN`           | Yes      | Same as above                                                                                                    |
-| `PODCAST_WORKER_URL`    | Yes      | Worker URL. Local dev: `http://localhost:8787`. Production: set in wrangler `vars` after deployment (see Step 7) |
-| `PODCAST_R2_BUCKET_URL` | Yes      | R2 bucket public URL. Local dev: `http://localhost:8787/static`. Production: your R2 custom domain or public URL |
-| `OPENAI_API_KEY`        | No       | OpenAI API key (if using OpenAI)                                                                                 |
-| `CLOUDFLARE_ANYPODCAST_ACCOUNT_ID` | No | Cloudflare account ID for markdown extraction. When configured, Cloudflare Markdown APIs are tried before Jina |
-| `CLOUDFLARE_ANYPODCAST_API_TOKEN`  | No | Cloudflare API token for markdown extraction. Requires `Workers AI: Read` and `Browser Rendering: Edit` scopes |
-| `JINA_KEY`              | No       | Jina API key (for web content extraction)                                                                        |
-| `MINIMAX_TTS_GROUP_ID`  | No       | MiniMax TTS Group ID (required when `tts.provider=minimax`)                                                     |
-| `MINIMAX_TTS_API_KEY`   | No       | MiniMax TTS API key (required when `tts.provider=minimax`)                                                      |
-| `MURF_API_KEY`          | No       | Murf API key (required when `tts.provider=murf`)                                                                 |
-| `TRIGGER_TOKEN`         | No       | Token for manually triggering the workflow via curl                                                              |
-| `GMAIL_*`               | No       | Gmail OAuth credentials (for newsletter sources)                                                                 |
+| Variable                           | Required | Description                                                                                                      |
+| ---------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `PODCAST_ID`                       | Yes      | Same as above                                                                                                    |
+| `OPENCODE_API_KEY`                 | Yes      | OpenCode Go API key (required for the default `ai.provider=opencode`; model `deepseek-v4.1-flash`)               |
+| `OPENCODE_MODEL`                   | No       | Overrides the Admin OpenCode model when set; e.g. `deepseek-v4.1-flash`.                                         |
+| `GEMINI_API_KEY`                   | No       | Google Gemini API key                                                                                            |
+| `MINIMAX_API_KEY`                  | No       | MiniMax API key (if using MiniMax for text generation)                                                           |
+| `ADMIN_TOKEN`                      | Yes      | Same as above                                                                                                    |
+| `PODCAST_WORKER_URL`               | Yes      | Worker URL. Local dev: `http://localhost:8787`. Production: set in wrangler `vars` after deployment (see Step 7) |
+| `PODCAST_R2_BUCKET_URL`            | Yes      | R2 bucket public URL. Local dev: `http://localhost:8787/static`. Production: your R2 custom domain or public URL |
+| `OPENAI_API_KEY`                   | No       | OpenAI API key (if using OpenAI)                                                                                 |
+| `CLOUDFLARE_ANYPODCAST_ACCOUNT_ID` | No       | Cloudflare account ID for markdown extraction. When configured, Cloudflare Markdown APIs are tried before Jina   |
+| `CLOUDFLARE_ANYPODCAST_API_TOKEN`  | No       | Cloudflare API token for markdown extraction. Requires `Workers AI: Read` and `Browser Rendering: Edit` scopes   |
+| `JINA_KEY`                         | No       | Jina API key (for web content extraction)                                                                        |
+| `MINIMAX_TTS_GROUP_ID`             | No       | MiniMax TTS Group ID (required when `tts.provider=minimax`)                                                      |
+| `MINIMAX_TTS_API_KEY`              | No       | MiniMax TTS API key (required when `tts.provider=minimax`)                                                       |
+| `MURF_API_KEY`                     | No       | Murf API key (required when `tts.provider=murf`)                                                                 |
+| `TRIGGER_TOKEN`                    | No       | Token for manually triggering the workflow via curl                                                              |
+| `GMAIL_*`                          | No       | Gmail OAuth credentials (for newsletter sources)                                                                 |
 
-Business runtime settings such as AI provider/model/base URL, workflow test settings, sources, prompts, and TTS options are configured in Admin and stored in runtime config, not in Worker env variables.
+Business runtime settings such as AI provider/model, workflow tests, sources, prompts and TTS are configured in Admin and stored in runtime config. `OPENCODE_MODEL` is an optional Worker environment override for the OpenCode model.
 
 For backward compatibility, the Worker still accepts legacy `TTS_API_ID` / `TTS_API_KEY`, but new deployments should use the provider-specific names above.
 
@@ -159,7 +161,7 @@ The web-based Admin console lets you configure everything at runtime without tou
 3. Configure all settings in the UI:
    - **Site**: title, description, logo, theme color, contact email
    - **Hosts**: name, gender, persona, speaker marker for each host
-   - **AI**: provider (Gemini/OpenAI/MiniMax), model, API base URL
+   - **AI**: provider (OpenCode/Gemini/OpenAI/MiniMax) and model
    - **TTS**: provider (Gemini/Edge/MiniMax/Murf), language, voice for each host, audio quality, intro music
    - **Sources**: add RSS feeds, URLs, or Gmail labels
    - **Prompts**: customize all AI prompts (story summary, podcast dialogue, blog post, intro, title)
@@ -180,6 +182,44 @@ Edit `workflow/sources/config.local.ts` to add your RSS feeds, URLs, or Gmail la
 #### Option C: Static Defaults in Code
 
 The file `config.ts` contains static defaults for site metadata (title, description, SEO, theme). These are used as fallbacks when no runtime config exists in KV. For most cases, prefer configuring via the Admin console instead.
+
+Cloudflare rendering remains the preferred article extractor. The two Spectrum Workers share a Durable Object hosted by the Chinese Worker to serialize render calls with at least 11 seconds between starts. This interval follows the tested account response (`429`, `Retry-After: 10`); retries also honor the server's requested delay. Public static HTML and Jina are fallbacks. Articles with no extracted body are skipped, and summaries must not invent missing facts or reader comments.
+
+Edge synthesis uses the read-aloud endpoint with its October 2026 v2 signature; the signature adaptation and LGPL notice are in `workflow/edge-drm/`. Segments run serially with a three-second pause and exponential retries. Continuations load their authoritative checkpoints from R2, with KV retaining the Admin progress view. Publication invalidates RSS snapshots after KV propagation; temporary audio is deleted in one batch.
+
+Set the Worker variable `PODCAST_PUBLISH_MODE` to `preview` to generate audio and episode metadata under `previews/<jobId>/` without writing the public episode list or RSS. This hold also applies to scheduled runs. A preview job stays a preview across continuations. Use `publish` for new runs only after approving publication; the default when the variable is absent preserves the existing publication behavior.
+
+### Generate a local preview with OpenCode Go and Edge TTS
+
+Add `OPENCODE_API_KEY=your_key` and `OPENCODE_MODEL=deepseek-v4.1-flash` to `worker/.env.local`. `OPENCODE_MODEL` takes precedence over the Admin model for OpenCode; omit it to use the Admin setting. It accepts models using the OpenCode Go Chat Completions endpoint. Edge TTS needs no key. The default text model is `deepseek-v4.1-flash`, using the [OpenCode Go Chat Completions endpoint](https://opencode.ai/docs/go/#endpoints).
+
+The language presets use native, single-language voices at normal speed:
+
+| Language | First/male host     | Second/female host     |
+| -------- | ------------------- | ---------------------- |
+| Chinese  | `zh-CN-YunxiNeural` | `zh-CN-XiaoxiaoNeural` |
+| English  | `en-US-GuyNeural`   | `en-US-JennyNeural`    |
+
+For an existing podcast, save the authenticated Admin `GET /api/admin/config/draft` response locally, then prepare a new configuration. This preserves its hosts, sources, editorial prompts and intro music. A provider switch resets the old TTS model, endpoint and speed; Edge speed is a percentage (`+0%` is normal), rather than MiniMax's multiplier.
+
+```bash
+pnpm podcast:configure existing-config.json tmp/preview/config.json
+pnpm test:providers
+pnpm tts:smoke
+
+# Test the actual Cloudflare Worker runtime in a second terminal:
+pnpm tts:worker
+pnpm tts:smoke http://localhost:8799
+
+# articles.json is an array of { "title": "...", "link": "https://...", "content": "..." }
+pnpm podcast:preview tmp/preview/config.json articles.json tmp/preview/episode http://localhost:8799 https://your-podcast-worker.example.workers.dev
+```
+
+The preview runs article relevance/summary, dialogue, title, description, show notes, each host's speech, MP3 concatenation and intro music mixing. It saves `podcast.mp3`, `dialogue.txt`, `show-notes.md`, and `manifest.json`, and requires a successful full audio decode. Omit the local Worker URL to synthesize in Node. The final URL argument resolves relative intro music URLs; it defaults to `PODCAST_WORKER_URL` from `worker/.env.local`.
+
+For the two Spectrum deployments, `pnpm deploy:providers` securely uploads `OPENCODE_API_KEY` and `OPENCODE_MODEL` from `worker/.env.local` to both existing Workers. Pass `cn` or `en` to update one. Run it again after changing the key or model locally. An empty model restores the Admin setting.
+
+These commands only create local files. Existing KV configurations keep taking precedence over code defaults; updating code alone does not migrate a live podcast. After reviewing the preview, update that podcast's Worker secret and Admin AI/TTS settings when deploying.
 
 ### Step 6: Local Development
 
@@ -202,7 +242,7 @@ pnpm deploy:worker
 # The CLI will print the Worker URL, e.g. https://my-podcast-worker.<your-subdomain>.workers.dev
 
 # Set production secrets for the Worker
-wrangler secret put GEMINI_API_KEY --cwd worker
+wrangler secret put OPENCODE_API_KEY --cwd worker
 wrangler secret put ADMIN_TOKEN --cwd worker
 # Add other secrets as needed (OPENAI_API_KEY, MINIMAX_TTS_API_KEY, MURF_API_KEY, etc.)
 
@@ -216,16 +256,23 @@ After the first deploy, you need to set the production URLs that weren't known b
 In `wrangler.jsonc` (Next.js app), add to `vars`:
 
 ```jsonc
-"NEXT_STATIC_HOST": "https://my-podcast.<your-subdomain>.workers.dev/static",
-"PODCAST_WORKER_URL": "https://my-podcast-worker.<your-subdomain>.workers.dev"
+{
+  "NEXT_STATIC_HOST": "https://my-podcast.<your-subdomain>.workers.dev/static",
+  "PODCAST_WORKER_URL": "https://my-podcast-worker.<your-subdomain>.workers.dev"
+}
 ```
 
 In `worker/wrangler.jsonc` (Worker), add to `vars`:
 
 ```jsonc
-"PODCAST_WORKER_URL": "https://my-podcast-worker.<your-subdomain>.workers.dev",
-"PODCAST_R2_BUCKET_URL": "https://<your-r2-public-url>"
+{
+  "PODCAST_WORKER_URL": "https://my-podcast-worker.<your-subdomain>.workers.dev",
+  "PODCAST_R2_BUCKET_URL": "https://<your-r2-public-url>",
+  "PODCAST_SITE_URL": "https://my-podcast.<your-subdomain>.workers.dev"
+}
 ```
+
+Set `PODCAST_SITE_SERVICE` in the Worker’s `services` to the frontend Worker name. Keep `PUBLIC_PAGE_RENDERER` and its migration in the frontend config; the templates include both bindings.
 
 Then redeploy both: `pnpm deploy:worker && pnpm run deploy`
 
@@ -237,6 +284,12 @@ After deployment:
 2. Go to `/admin` to configure your podcast via the Admin console
 3. Trigger the first episode from the **Admin console**: go to `/admin`, switch to the **Testing** tab, and click **Trigger Workflow** — or use curl: `curl -X POST <your-worker-url>`
 4. The Worker's cron trigger automatically generates new episodes on schedule. The default is daily at 06:05 UTC — configure this in `worker/wrangler.jsonc` under `triggers.crons` using [standard cron syntax](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
+
+### Public pages and cache updates
+
+Public HTML and RSS reads use the lightweight `site-entry.mjs` entry point before loading Next.js. Public documents are cached in R2; Admin edits invalidate them, and publication clears and warms the episode page, homepage and RSS. Keep this entry point in Wrangler configuration when deploying. Checks: `pnpm test:unit`.
+
+Cache misses, including first visits and client-side navigation, are rendered by `PublicPageRenderer` (a SQLite Durable Object), rather than the edge Worker. After publication the workflow waits for KV propagation, invalidates all page/feed host caches, and uses `PODCAST_SITE_SERVICE` with `PODCAST_SITE_URL` to warm and verify the episode page, homepage and RSS. A missing binding or unsuccessful verification fails the step and triggers retries.
 
 ## Running Multiple Podcasts
 

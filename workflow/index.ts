@@ -1,8 +1,10 @@
 import type { WorkflowEvent, WorkflowStep, WorkflowStepConfig } from 'cloudflare:workers'
 import type { AiEnv } from './ai'
+import type { ParsedConversationLine, RuntimeTtsSettings } from './dialogue'
+import type { PublicationMode } from './publication'
 import type { SourceConfig } from './sources/types'
-import type { TitleGenerationResult } from './title'
 
+import type { TitleGenerationResult } from './title'
 import type { RuntimeConfigBundle, RuntimeTtsIntroMusicConfig } from '@/types/runtime-config'
 
 import { WorkflowEntrypoint } from 'cloudflare:workers'
@@ -10,6 +12,9 @@ import { buildContentKey, buildPodcastKeyBase } from '@/config'
 import { getActiveRuntimeConfig } from '@/lib/runtime-config'
 import { getTemplateVariables, renderPromptTemplates } from '@/lib/template'
 import { createResponseText, getAiProvider, getMaxTokens, getPrimaryModel, getThinkingModel } from './ai'
+import { buildRuntimeTtsSettings, getSpeakerMarkers, parseConversationLines } from './dialogue'
+import { buildPodcastStoryInput } from './editorial-input'
+import { episodeAudioKey, resolvePublicationMode, saveEpisodeOutput } from './publication'
 import { getStoryCandidatesFromSources, processGmailMessage } from './sources'
 import { listGmailMessageRefs } from './sources/gmail'
 import { fetchRssItems } from './sources/rss'
@@ -17,12 +22,11 @@ import { getDateKeyInTimeZone, zonedTimeToUtc } from './timezone'
 import { getRecommendedTitle, InvalidEpisodeTitleOutputError, parseTitleGenerationResult, titleGenerationSchema } from './title'
 import synthesize, {
   buildGeminiTtsPrompt,
-  resolveMinimaxTtsApiKey,
-  resolveMinimaxTtsGroupId,
-  resolveMurfApiKey,
   synthesizeGeminiTTSWithRetry,
+  validateTtsConfig,
 } from './tts'
 import { addIntroMusic, concatAudioFiles, getStoryContent, isSubrequestLimitError } from './utils'
+import { invalidatePublishedWebsite, warmPublishedWebsite } from './website-publication'
 
 interface Params {
   today?: string
@@ -31,6 +35,8 @@ interface Params {
   windowHours?: number
   jobId?: string
   continuationSeq?: number
+  publish?: boolean
+  replaySummaryJobId?: string
 }
 
 interface Env extends CloudflareEnv, AiEnv {
@@ -42,6 +48,7 @@ interface Env extends CloudflareEnv, AiEnv {
   GMAIL_REFRESH_TOKEN?: string
   GMAIL_USER_EMAIL?: string
   NODE_ENV: string
+  PODCAST_PUBLISH_MODE?: string
   PODCAST_WORKER_URL: string
   PODCAST_R2_BUCKET_URL: string
   PODCAST_WORKFLOW: Workflow
@@ -66,24 +73,6 @@ interface RuntimePromptSet {
   intro: string
   title: string
   extractNewsletterLinks: string
-}
-
-interface ParsedConversationLine {
-  speaker: string
-  text: string
-  raw: string
-}
-
-interface RuntimeTtsSettings {
-  provider: 'edge' | 'minimax' | 'murf' | 'gemini'
-  language: string
-  languageBoost?: 'auto' | 'Chinese' | 'English'
-  model?: string
-  speed?: string | number
-  apiUrl?: string
-  geminiPrompt?: string
-  voicesBySpeaker: Record<string, string>
-  geminiSpeakers: { speaker: string, voice?: string }[]
 }
 
 type WorkflowStage
@@ -115,6 +104,8 @@ interface WorkflowProgressState {
 
 interface WorkflowJobState {
   jobId: string
+  replaySourceJobId?: string
+  publicationMode?: PublicationMode
   stage: WorkflowStage
   continuationSeq: number
   nowIso: string
@@ -205,115 +196,6 @@ function formatError(error: unknown) {
   }
 }
 
-function validateTtsConfig(env: Env, providerInput?: string): RuntimeTtsSettings['provider'] {
-  const provider = (providerInput || '').trim().toLowerCase()
-  if (!provider) {
-    throw new Error('runtime config tts.provider is required')
-  }
-
-  const isProduction = (env.NODE_ENV || 'production') === 'production'
-  const supported = isProduction ? ['gemini', 'minimax', 'murf'] : ['gemini', 'minimax', 'murf', 'edge']
-  if (!supported.includes(provider)) {
-    throw new Error(`Unsupported runtime tts.provider: ${provider} (supported: ${supported.join(', ')})`)
-  }
-
-  if (provider === 'gemini' && !env.GEMINI_API_KEY?.trim()) {
-    throw new Error('GEMINI_API_KEY is required when tts.provider=gemini')
-  }
-
-  if (provider === 'minimax') {
-    if (!resolveMinimaxTtsApiKey(env)) {
-      throw new Error('MINIMAX_TTS_API_KEY is required when tts.provider=minimax')
-    }
-    if (!resolveMinimaxTtsGroupId(env)) {
-      throw new Error('MINIMAX_TTS_GROUP_ID is required when tts.provider=minimax')
-    }
-  }
-
-  if (provider === 'murf' && !resolveMurfApiKey(env)) {
-    throw new Error('MURF_API_KEY is required when tts.provider=murf')
-  }
-
-  return provider as RuntimeTtsSettings['provider']
-}
-
-function getSpeakerMarkers(config: RuntimeConfigBundle) {
-  const markers = config.hosts
-    .map(host => host.speakerMarker.trim())
-    .filter(Boolean)
-  if (markers.length === 0) {
-    throw new Error('No speaker markers configured in hosts. Please configure hosts with speakerMarker in admin.')
-  }
-  return markers
-}
-
-function normalizeDialogText(value: string) {
-  return value.replace(/^[:：]\s*/, '').trim()
-}
-
-function parseConversationLines(lines: string[], markers: string[]): ParsedConversationLine[] {
-  const normalizedMarkers = markers
-    .map(marker => marker.trim())
-    .filter(Boolean)
-    .sort((a, b) => b.length - a.length)
-
-  return lines
-    .map((line) => {
-      const trimmed = line.trim()
-      if (!trimmed) {
-        return null
-      }
-
-      const matched = normalizedMarkers.find(marker => trimmed.startsWith(marker))
-      if (!matched) {
-        return null
-      }
-
-      const content = normalizeDialogText(trimmed.slice(matched.length))
-      if (!content) {
-        return null
-      }
-
-      return {
-        speaker: matched,
-        text: content,
-        raw: trimmed,
-      } satisfies ParsedConversationLine
-    })
-    .filter((item): item is ParsedConversationLine => Boolean(item))
-}
-
-function buildRuntimeTtsSettings(config: RuntimeConfigBundle): RuntimeTtsSettings {
-  const provider = config.tts.provider || 'edge'
-  const voicesBySpeaker: Record<string, string> = {}
-
-  for (const host of config.hosts) {
-    const voice = config.tts.voices[host.id]
-    if (voice) {
-      voicesBySpeaker[host.speakerMarker] = voice
-    }
-  }
-
-  const geminiSpeakers = config.hosts
-    .map(host => ({
-      speaker: host.speakerMarker,
-      voice: config.tts.voices[host.id],
-    }))
-    .filter(item => item.speaker)
-
-  return {
-    provider,
-    language: config.tts.language || 'zh-CN',
-    languageBoost: config.tts.languageBoost,
-    model: config.tts.model || undefined,
-    speed: config.tts.speed,
-    apiUrl: config.tts.apiUrl,
-    geminiPrompt: config.tts.geminiPrompt || undefined,
-    voicesBySpeaker,
-    geminiSpeakers,
-  }
-}
-
 function stripCodeFences(text: string) {
   return text.replace(/```(?:json)?/gi, '').trim()
 }
@@ -371,6 +253,7 @@ async function summarizeStoryWithRelevance(params: {
   maxOutputTokens: number
 }) {
   const { env, runtimeAi, model, instructions, input, maxOutputTokens } = params
+  const sourceInstructions = `${instructions}\n\nUse only facts present in the supplied article. Do not infer the article from its title, invent missing details, or fabricate reader comments. If no comments are supplied, omit comments entirely. If the input lacks substantive article text, return relevant=false and summary=null.`
   const maxAttempts = 2
   let lastError: unknown = null
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -380,8 +263,8 @@ async function summarizeStoryWithRelevance(params: {
         runtimeAi,
         model,
         instructions: attempt === 1
-          ? instructions
-          : `${instructions}\n\n【重要】上一次输出不是有效 JSON，请只输出一个完整 JSON 对象，不要代码块或多余文字。`,
+          ? sourceInstructions
+          : `${sourceInstructions}\n\n【重要】上一次输出不是有效 JSON，请只输出一个完整 JSON 对象，不要代码块或多余文字。`,
         input,
         maxOutputTokens,
         responseMimeType: 'application/json',
@@ -772,6 +655,8 @@ function parseWorkflowJobState(value: unknown): WorkflowJobState | null {
   const cursor = parseWorkflowCursor(record.cursor)
   return {
     jobId: record.jobId,
+    replaySourceJobId: typeof record.replaySourceJobId === 'string' ? record.replaySourceJobId : undefined,
+    publicationMode: record.publicationMode === 'preview' || record.publicationMode === 'publish' ? record.publicationMode : undefined,
     stage: record.stage,
     continuationSeq: typeof record.continuationSeq === 'number' && Number.isFinite(record.continuationSeq)
       ? Math.max(0, Math.floor(record.continuationSeq))
@@ -874,7 +759,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
     const today = event.payload?.today || windowDateKey
     const publishedAt = now.toISOString()
     const publishDateKey = getDateKeyInTimeZone(now, timeZone)
-    const runtimeAi = runtimeConfig.ai
+    const runtimeAi = { ...runtimeConfig.ai, sessionId: event.instanceId }
     const aiProvider = getAiProvider(this.env, runtimeAi)
     const maxTokens = getMaxTokens(this.env, aiProvider, runtimeAi)
     const primaryModel = getPrimaryModel(this.env, aiProvider, runtimeAi)
@@ -1248,10 +1133,15 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
     const budget = createBudgetTracker()
 
     let workflowState = await step.do('load workflow state', retryConfig, async () => {
+      // R2 is strongly consistent. KV remains the UI projection, but a new
+      // continuation must not resume from a cached cursor from another region.
+      const checkpoint = await loadJsonFromR2<WorkflowJobState>(this.env.PODCAST_R2, buildJobDataKey(jobId, 'state'))
+      if (checkpoint)
+        return parseWorkflowJobState(checkpoint)
       const raw = await this.env.PODCAST_KV.get(stateKey, 'json')
       return parseWorkflowJobState(raw)
     })
-    consumeBudget(budget, BUDGET_COST.kvRead, 'load workflow state', jobId)
+    consumeBudget(budget, BUDGET_COST.kvRead + BUDGET_COST.r2Read, 'load workflow state', jobId)
 
     if (!workflowState) {
       workflowState = createInitialWorkflowJobState({
@@ -1265,6 +1155,35 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         publishedAt,
         sourceTotal: enabledSources.length,
       })
+      const replayJobId = event.payload?.replaySummaryJobId
+      if (replayJobId) {
+        workflowState.replaySourceJobId = replayJobId
+        if (resolvePublicationMode(this.env.PODCAST_PUBLISH_MODE, event.payload?.publish) !== 'preview')
+          throw new Error('Replaying saved material requires preview mode')
+        if (!/^[\w-]{1,128}$/.test(replayJobId) || replayJobId === jobId)
+          throw new Error('Invalid source job for material replay')
+        const replaySummary = await step.do('load saved material for preview', retryConfig, async () => {
+          const saved = await loadJsonFromR2<SummarySnapshot>(this.env.PODCAST_R2, buildJobDataKey(replayJobId, 'summary'))
+          if (!saved?.allStories.length || saved.keptStories.length !== saved.allStories.length)
+            throw new Error('Saved preview material is missing or inconsistent')
+          return saved
+        })
+        consumeBudget(budget, BUDGET_COST.r2Read, 'load preview material', jobId)
+        const replaySummaryKey = buildJobDataKey(jobId, 'summary')
+        workflowState.summaryKey = replaySummaryKey
+        await step.do('copy saved material for preview', retryConfig, async () => {
+          await saveJsonToR2(this.env.PODCAST_R2, replaySummaryKey, replaySummary)
+        })
+        consumeBudget(budget, BUDGET_COST.r2Write, 'copy preview material', jobId)
+        workflowState.stage = 'compose_text'
+        workflowState.cursor.sourceIndex = enabledSources.length
+        workflowState.cursor.storyIndex = replaySummary.keptStories.length
+        workflowState.progress = normalizeProgress({
+          ...workflowState.progress,
+          storiesTotal: replaySummary.keptStories.length,
+          storiesRelevant: replaySummary.keptStories.length,
+        }, workflowState.cursor)
+      }
       logWorkflowObservation({
         jobId,
         stage: workflowState.stage,
@@ -1277,6 +1196,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
       })
     }
     else {
+      workflowState.continuationSeq = Math.max(workflowState.continuationSeq, requestedContinuationSeq)
       workflowState.progress = normalizeProgress({
         ...workflowState.progress,
         sourcesTotal: Math.max(workflowState.progress.sourcesTotal, enabledSources.length),
@@ -1293,14 +1213,17 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
       })
     }
 
+    workflowState.publicationMode = resolvePublicationMode(this.env.PODCAST_PUBLISH_MODE, event.payload?.publish, workflowState.publicationMode)
+
     const saveWorkflowState = async (label: string) => {
       await step.do(label, retryConfig, async () => {
         workflowState.progress = normalizeProgress(workflowState.progress, workflowState.cursor)
         workflowState.updatedAt = Date.now()
+        await saveJsonToR2(this.env.PODCAST_R2, buildJobDataKey(jobId, 'state'), workflowState)
         await this.env.PODCAST_KV.put(stateKey, JSON.stringify(workflowState))
         return workflowState.stage
       })
-      consumeBudget(budget, BUDGET_COST.kvWrite, label, jobId)
+      consumeBudget(budget, BUDGET_COST.kvWrite + BUDGET_COST.r2Write, label, jobId)
       logWorkflowObservation({
         jobId,
         stage: workflowState.stage,
@@ -1388,6 +1311,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             params: {
               jobId,
               continuationSeq: nextSeq,
+              publish: workflowState.publicationMode === 'publish',
               nowIso: workflowState.nowIso,
               today: workflowState.today,
               windowMode: workflowState.windowMode,
@@ -1966,12 +1890,13 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           const attemptInputs: { label: string, stories: string[] }[] = [
             { label: 'all', stories: allStories },
           ]
-          if (allStories.length > 6) {
+          if (!workflowState.replaySourceJobId && allStories.length > 6) {
             attemptInputs.push({ label: 'first-6', stories: allStories.slice(0, 6) })
           }
 
+          let lastError: unknown
           for (const attempt of attemptInputs) {
-            const input = attempt.stories.join('\n\n---\n\n')
+            const input = buildPodcastStoryInput(keptStories.slice(0, attempt.stories.length), attempt.stories)
             try {
               const { text } = await createResponseText({
                 env: this.env,
@@ -1986,9 +1911,11 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             catch (error) {
               if (isSubrequestLimitError(error))
                 throw error
+              lastError = error
+              console.warn('podcast content generation attempt failed', { attempt: attempt.label, error: formatError(error) })
             }
           }
-          return ''
+          throw lastError || new Error('podcast content generation returned no usable output')
         })
         consumeBudget(budget, BUDGET_COST.llmCompose, 'create podcast content', jobId)
         logComposeStep(1, 'podcast content', 'done', {
@@ -2020,7 +1947,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           const attemptInputs: { label: string, storyMeta: typeof blogStories, stories: string[] }[] = [
             { label: 'all', storyMeta: blogStories, stories: allStories },
           ]
-          if (allStories.length > 6) {
+          if (!workflowState.replaySourceJobId && allStories.length > 6) {
             attemptInputs.push({
               label: 'first-6',
               storyMeta: blogStories.slice(0, 6),
@@ -2028,6 +1955,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             })
           }
 
+          let lastError: unknown
           for (const attempt of attemptInputs) {
             const input = `<stories>${JSON.stringify(attempt.storyMeta)}</stories>\n\n---\n\n${attempt.stories.join('\n\n---\n\n')}`
             try {
@@ -2044,9 +1972,11 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             catch (error) {
               if (isSubrequestLimitError(error))
                 throw error
+              lastError = error
+              console.warn('blog content generation attempt failed', { attempt: attempt.label, error: formatError(error) })
             }
           }
-          return ''
+          throw lastError || new Error('blog content generation returned no usable output')
         })
         consumeBudget(budget, BUDGET_COST.llmCompose, 'create blog content', jobId)
         logComposeStep(2, 'blog content', 'done', {
@@ -2120,7 +2050,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
 
         const contentKey = buildContentKey(runEnv, workflowState.publishDateKey)
         const podcastKeyBase = buildPodcastKeyBase(runEnv, workflowState.publishDateKey)
-        const podcastKey = `${podcastKeyBase}.mp3`
+        const podcastKey = episodeAudioKey(workflowState.publicationMode, jobId, `${podcastKeyBase}.mp3`)
         const ttsInputOverride = ttsTestInputOverride.trim()
         const ttsSourceText = ttsInputOverride || podcastContent
         const conversations = ttsSourceText
@@ -2132,9 +2062,9 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           throw new Error('No valid TTS dialog lines found. Please ensure each line starts with configured speaker markers.')
         }
 
-        await step.do('save content to kv', retryConfig, async () => {
+        await step.do('save episode text', retryConfig, async () => {
           const updatedAt = Date.now()
-          await this.env.PODCAST_KV.put(contentKey, JSON.stringify({
+          await saveEpisodeOutput(this.env, workflowState.publicationMode!, jobId, contentKey, {
             date: workflowState.publishDateKey,
             publishedAt: workflowState.publishedAt,
             title: episodeTitle,
@@ -2146,7 +2076,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             updatedAt,
             configVersion: runtimeState.version,
             updatedBy: 'workflow',
-          }))
+          })
           return true
         })
         consumeBudget(budget, BUDGET_COST.kvWrite, 'save content to kv', jobId)
@@ -2204,6 +2134,8 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         if (!composeSnapshot) {
           throw new Error(`compose snapshot missing for job ${jobId}`)
         }
+        composeSnapshot.podcastKey = episodeAudioKey(workflowState.publicationMode, jobId, composeSnapshot.podcastKey)
+        workflowState.podcastKey = composeSnapshot.podcastKey
         workflowState.progress.ttsTotal = composeSnapshot.parsedConversations.length
         workflowState.progress.ttsProcessed = workflowState.cursor.ttsLineIndex
 
@@ -2271,7 +2203,13 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             const conversation = composeSnapshot.parsedConversations[index]
             await step.do(
               `create audio ${index}`,
-              { ...retryConfig, retries: withRetryLimit(0), timeout: '30 minutes' },
+              {
+                ...retryConfig,
+                retries: provider === 'edge'
+                  ? { limit: 4, delay: '20 seconds', backoff: 'exponential' }
+                  : withRetryLimit(0),
+                timeout: '30 minutes',
+              },
               async () => {
                 const audio = await synthesize(conversation.text, conversation.speaker, this.env, {
                   provider: composeSnapshot.ttsSettings.provider,
@@ -2297,14 +2235,14 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             if (hasMoreLines) {
               await step.sleep(
                 `yield between TTS lines after line ${index}`,
-                NON_GEMINI_TTS_LINE_SLEEP,
+                provider === 'edge' ? '3 seconds' : NON_GEMINI_TTS_LINE_SLEEP,
               )
             }
           }
 
           if (await maybeHandoff(
             'tts_render',
-            BUDGET_COST.audioMerge + BUDGET_COST.introMusic + BUDGET_COST.kvWrite + BUDGET_COST.workflowCreate,
+            BUDGET_COST.audioMerge + BUDGET_COST.introMusic + BUDGET_COST.kvWrite + BUDGET_COST.r2Write * 4 + BUDGET_COST.workflowCreate,
             'tts post process needs fresh budget',
             { ttsLineIndex: composeSnapshot.parsedConversations.length },
           )) {
@@ -2361,7 +2299,23 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         }
         consumeBudget(budget, BUDGET_COST.introMusic, 'add intro music', jobId)
 
-        await step.do('update content audio in kv', retryConfig, async () => {
+        await step.do('save completed episode audio', retryConfig, async () => {
+          if (workflowState.publicationMode === 'preview') {
+            await saveEpisodeOutput(this.env, 'preview', jobId, composeSnapshot.contentKey, {
+              date: workflowState.publishDateKey,
+              publishedAt: workflowState.publishedAt,
+              title: composeSnapshot.episodeTitle,
+              stories: composeSnapshot.stories,
+              podcastContent: composeSnapshot.podcastContent,
+              blogContent: composeSnapshot.blogContent,
+              introContent: composeSnapshot.introContent,
+              audio: composeSnapshot.podcastKey,
+              updatedAt: Date.now(),
+              configVersion: runtimeState.version,
+              updatedBy: 'workflow-preview',
+            })
+            return composeSnapshot.podcastKey
+          }
           const current = await this.env.PODCAST_KV.get(composeSnapshot.contentKey, 'json')
           if (!current || typeof current !== 'object') {
             throw new Error(`content not found for key: ${composeSnapshot.contentKey}`)
@@ -2376,6 +2330,24 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           return composeSnapshot.contentKey
         })
         consumeBudget(budget, BUDGET_COST.kvWrite, 'update content audio in kv', jobId)
+        // Allow globally cached KV reads to observe the audio URL before a new
+        // feed snapshot is built. Invalidate every serving host for this show.
+        if (workflowState.publicationMode === 'publish') {
+          await step.sleep('wait for episode publication propagation', '65 seconds')
+          await step.do('invalidate published RSS snapshots', retryConfig, async () => {
+            await invalidatePublishedWebsite(this.env.PODCAST_R2, runEnv)
+          })
+          consumeBudget(budget, BUDGET_COST.r2Read + BUDGET_COST.r2Write, 'invalidate RSS snapshots', jobId)
+          const siteUrl = (this.env as CloudflareEnv & { PODCAST_SITE_URL?: string }).PODCAST_SITE_URL
+          if (!siteUrl)
+            throw new Error('PODCAST_SITE_URL is required for publication warmup')
+          await step.do('warm published website and RSS', { ...retryConfig, retries: { limit: 4, delay: '5 seconds', backoff: 'exponential' } }, async () => {
+            const service = (this.env as CloudflareEnv & { PODCAST_SITE_SERVICE?: Fetcher }).PODCAST_SITE_SERVICE
+            if (!service)
+              throw new Error('PODCAST_SITE_SERVICE is required for publication warmup')
+            await warmPublishedWebsite(siteUrl, workflowState.publishDateKey, (url, init) => service.fetch(url, init))
+          })
+        }
         const podcastUrl = `${this.env.PODCAST_R2_BUCKET_URL}/${composeSnapshot.podcastKey}`
         console.info('podcast audio ready', {
           jobId,
@@ -2384,16 +2356,13 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         })
 
         await step.do('clean up temporary data', retryConfig, async () => {
-          const deleting: Array<Promise<unknown>> = [
-            this.env.PODCAST_R2.delete(basePodcastKey).catch(() => {}),
-            this.env.PODCAST_R2.delete(geminiWavKey).catch(() => {}),
-          ]
-          for (let index = 0; index < composeSnapshot.parsedConversations.length; index += 1) {
-            deleting.push(this.env.PODCAST_R2.delete(`${tmpPrefix}/podcast-${index}.mp3`).catch(() => {}))
-          }
-          await Promise.all(deleting)
+          // R2 supports batch deletes. One request avoids exceeding the Worker
+          // subrequest limit on episodes with more than 48 dialogue segments.
+          const keys = [basePodcastKey, geminiWavKey, ...composeSnapshot.parsedConversations.map((_, index) => `${tmpPrefix}/podcast-${index}.mp3`)]
+          await this.env.PODCAST_R2.delete(keys)
           return true
         })
+        consumeBudget(budget, BUDGET_COST.r2Write, 'clean up temporary audio', jobId)
 
         workflowState.status = 'done'
         workflowState.stage = 'done'

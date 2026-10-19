@@ -1,7 +1,8 @@
 import { Buffer } from 'node:buffer'
-import { synthesize } from '@echristian/edge-tts'
 import { GoogleGenAI } from '@google/genai'
 import { $fetch } from 'ofetch'
+import { edgeRate, getEdgeVoiceDefaults, isCompatibleEdgeVoice } from '@/lib/tts-config'
+import { synthesizeEdgeAudio } from './edge-tts'
 
 interface Env extends CloudflareEnv {
   MINIMAX_TTS_GROUP_ID?: string
@@ -10,6 +11,37 @@ interface Env extends CloudflareEnv {
   TTS_API_ID?: string
   TTS_API_KEY?: string
   GEMINI_API_KEY?: string
+}
+
+export function validateTtsConfig(env: Env, providerInput?: string): NonNullable<RuntimeTtsOptions['provider']> {
+  const provider = (providerInput || '').trim().toLowerCase()
+  if (!provider) {
+    throw new Error('runtime config tts.provider is required')
+  }
+
+  const supported = ['gemini', 'minimax', 'murf', 'edge']
+  if (!supported.includes(provider)) {
+    throw new Error(`Unsupported runtime tts.provider: ${provider} (supported: ${supported.join(', ')})`)
+  }
+
+  if (provider === 'gemini' && !env.GEMINI_API_KEY?.trim()) {
+    throw new Error('GEMINI_API_KEY is required when tts.provider=gemini')
+  }
+
+  if (provider === 'minimax') {
+    if (!resolveMinimaxTtsApiKey(env)) {
+      throw new Error('MINIMAX_TTS_API_KEY is required when tts.provider=minimax')
+    }
+    if (!resolveMinimaxTtsGroupId(env)) {
+      throw new Error('MINIMAX_TTS_GROUP_ID is required when tts.provider=minimax')
+    }
+  }
+
+  if (provider === 'murf' && !resolveMurfApiKey(env)) {
+    throw new Error('MURF_API_KEY is required when tts.provider=murf')
+  }
+
+  return provider as NonNullable<RuntimeTtsOptions['provider']>
 }
 
 export interface GeminiSpeakerConfig {
@@ -186,13 +218,6 @@ async function waitForMinimaxRateLimitWindow() {
   minimaxLastRequestAt = Date.now()
 }
 
-function resolveRateForEdge(speed: string | number | undefined, fallback: string) {
-  if (typeof speed === 'number') {
-    return `${speed}%`
-  }
-  return speed || fallback
-}
-
 function resolveVoiceBySpeaker(
   speaker: string,
   options: RuntimeTtsOptions | undefined,
@@ -214,16 +239,13 @@ function resolveVoiceBySpeaker(
 
 async function edgeTTS(text: string, speaker: string, env: Env, options?: RuntimeTtsOptions) {
   void env
-  const { audio } = await synthesize({
-    text,
-    language: options?.language || 'zh-CN',
-    voice: resolveVoiceBySpeaker(speaker, options, {
-      male: 'zh-CN-YunyangNeural',
-      female: 'zh-CN-XiaoxiaoNeural',
-    }),
-    rate: resolveRateForEdge(options?.speed, '10%'),
-  })
-  return audio
+  const language = options?.language || 'zh-CN'
+  const voice = options?.voicesBySpeaker?.[speaker]
+    || resolveVoiceBySpeaker(speaker, options, getEdgeVoiceDefaults(language))
+  if (!isCompatibleEdgeVoice(voice, language)) {
+    throw new Error(`Edge TTS voice ${voice} does not match ${language}; choose a native, single-language voice`)
+  }
+  return synthesizeEdgeAudio(text, voice, edgeRate(options?.speed))
 }
 
 export function resolveMinimaxTtsGroupId(env: Env) {

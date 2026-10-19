@@ -107,12 +107,12 @@ const hostSchema = z.object({
 }).strict()
 
 const aiSchema = z.object({
-  provider: z.enum(['openai', 'gemini', 'minimax']),
+  provider: z.enum(['openai', 'gemini', 'minimax', 'opencode']),
   model: z.string().min(1),
 }).strict()
 
 const editableAiPatchSchema = z.object({
-  provider: z.enum(['openai', 'gemini', 'minimax']).optional(),
+  provider: z.enum(['openai', 'gemini', 'minimax', 'opencode']).optional(),
   model: z.string().min(1).optional(),
 }).strict()
 

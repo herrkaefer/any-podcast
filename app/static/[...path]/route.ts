@@ -213,7 +213,7 @@ async function handleWithCache(request: Request, objectPath: string) {
     return fetchFromR2(request, objectPath)
   }
 
-  const cacheApi = (globalThis as { caches?: CacheStorage }).caches
+  const cacheApi = (globalThis as { caches?: CacheStorage & { default?: Cache } }).caches
   const cache = cacheApi?.default
   if (!cache) {
     return fetchFromR2(request, objectPath)

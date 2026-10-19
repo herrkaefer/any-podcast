@@ -1,4 +1,4 @@
-import type { MediaPlayerElement } from 'vidstack'
+import type { MediaPlayerInstance } from '@vidstack/react'
 import type { Episode } from '@/types/podcast'
 import { Store } from '@tanstack/store'
 
@@ -8,7 +8,7 @@ export interface PlayerStoreState {
 }
 
 let playerStore: Store<PlayerStoreState> | null = null
-let playerInstance: MediaPlayerElement | null = null
+let playerInstance: MediaPlayerInstance | null = null
 
 function createPlayerStore() {
   return new Store<PlayerStoreState>({
@@ -31,16 +31,14 @@ export function getPlayerStore(): Store<PlayerStoreState> {
   return playerStore
 }
 
-export function registerPlayerInstance(instance: MediaPlayerElement) {
+export function registerPlayerInstance(instance: MediaPlayerInstance) {
   playerInstance = instance
 }
 
 export function setCurrentEpisode(episode: Episode) {
   const store = getPlayerStore()
   store.setState(() => ({ currentEpisode: episode, isPlaying: true }))
-  if (playerInstance) {
-    playerInstance.src = episode.audio.src
-  }
+  // MediaPlayer receives its source from currentEpisode through React.
 }
 
 export function clearPlayerEpisode() {

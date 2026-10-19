@@ -18,13 +18,19 @@
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
-
     "use:cn": "cp wrangler.spectrum-cn.jsonc wrangler.jsonc && cp worker/wrangler.spectrum-cn.jsonc worker/wrangler.jsonc && echo 'Switched to spectrum-cn'",
-    "use:en": "cp wrangler.spectrum-en.jsonc wrangler.jsonc && cp worker/wrangler.spectrum-en.jsonc worker/wrangler.jsonc && echo 'Switched to spectrum-en'"
+    "use:en": "cp wrangler.spectrum-en.jsonc wrangler.jsonc && cp worker/wrangler.spectrum-en.jsonc worker/wrangler.jsonc && echo 'Switched to spectrum-en'",
+    "tts:smoke": "node --import tsx scripts/test-edge-tts.ts",
+    "tts:worker": "wrangler dev --config tests/wrangler.edge.jsonc --persist-to .wrangler/edge-test",
+    "podcast:configure": "node --import tsx scripts/prepare-podcast-config.ts",
+    "podcast:preview": "node --import tsx scripts/preview-podcast.ts",
+    "test:unit": "node --import tsx --test tests/providers.test.ts tests/public-cache.test.mjs tests/website-publication.test.ts",
+    "test:providers": "node --import tsx --test tests/providers.test.ts",
+    "deploy:providers": "node scripts/deploy-provider-settings.mjs"
   },
   "dependencies": {
+    "@andresaya/edge-tts": "1.9.1",
     "@cloudflare/puppeteer": "^1.0.4",
-    "@echristian/edge-tts": "^0.0.14",
     "@google/genai": "^1.39.0",
     "@radix-ui/react-slot": "^1.2.4",
     "@tanstack/react-store": "^0.8.0",
@@ -72,9 +78,11 @@
     "eslint-plugin-format": "^1.1.0",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.26",
+    "ffmpeg-static": "^5.3.0",
     "postcss": "^8.5.6",
     "puppeteer": "22.8.2",
     "tailwindcss": "^4.1.18",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "wrangler": "^4.63.0"
   }

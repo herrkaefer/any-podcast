@@ -1,9 +1,11 @@
 import type { RuntimeAiConfig } from '@/types/runtime-config'
 import { GoogleGenAI } from '@google/genai'
 
-export type AiProvider = 'openai' | 'gemini' | 'minimax'
+export type AiProvider = 'openai' | 'gemini' | 'minimax' | 'opencode'
 
 export interface AiEnv {
+  OPENCODE_API_KEY?: string
+  OPENCODE_MODEL?: string
   OPENAI_API_KEY?: string
   GEMINI_API_KEY?: string
   MINIMAX_API_KEY?: string
@@ -50,12 +52,23 @@ interface JsonSchemaObject {
 }
 
 const defaultOpenAIBaseUrl = 'https://api.openai.com/v1'
+export const defaultOpenCodeBaseUrl = 'https://opencode.ai/inference/go/openai/v1'
+export const defaultOpenCodeModel = 'deepseek-v4.1-flash'
+
 const defaultMiniMaxBaseUrl = 'https://api.minimaxi.com/v1'
 
-export type RuntimeAiOptions = RuntimeAiConfig
+export type RuntimeAiOptions = RuntimeAiConfig & { sessionId?: string }
+let defaultOpenCodeSessionId: string | undefined
 
 export function getAiProvider(env: AiEnv, options?: RuntimeAiOptions): AiProvider {
-  const provider = options?.provider ?? (env.GEMINI_API_KEY?.trim() ? 'gemini' : 'openai')
+  const provider = options?.provider ?? (env.OPENCODE_API_KEY?.trim() ? 'opencode' : env.GEMINI_API_KEY?.trim() ? 'gemini' : 'openai')
+
+  if (provider === 'opencode') {
+    if (!env.OPENCODE_API_KEY?.trim()) {
+      throw new Error('OPENCODE_API_KEY is required when ai.provider=opencode')
+    }
+    return provider
+  }
 
   if (provider === 'gemini') {
     if (!env.GEMINI_API_KEY?.trim()) {
@@ -88,7 +101,13 @@ export function getPrimaryModel(env: AiEnv, provider: AiProvider, options?: Runt
     throw new Error('OPENAI_API_KEY is required when ai.provider=openai')
   }
 
-  const model = options?.model?.trim()
+  if (provider === 'opencode' && !env.OPENCODE_API_KEY?.trim()) {
+    throw new Error('OPENCODE_API_KEY is required when ai.provider=opencode')
+  }
+
+  const model = provider === 'opencode'
+    ? env.OPENCODE_MODEL?.trim() || options?.model?.trim()
+    : options?.model?.trim()
   if (!model) {
     throw new Error('runtime config ai.model is required')
   }
@@ -215,7 +234,7 @@ function toJsonSchema(schema: unknown): JsonSchemaObject {
   }
 }
 
-function buildMiniMaxInstructions(
+function buildChatInstructions(
   instructions: string,
   responseMimeType?: string,
   responseSchema?: unknown,
@@ -286,19 +305,22 @@ export async function createResponseText(params: {
     }
   }
 
-  if (provider === 'minimax') {
-    if (!env.MINIMAX_API_KEY) {
-      throw new Error('MINIMAX_API_KEY is required when using MiniMax API')
+  if (provider === 'minimax' || provider === 'opencode') {
+    const isOpenCode = provider === 'opencode'
+    const apiKey = isOpenCode ? env.OPENCODE_API_KEY : env.MINIMAX_API_KEY
+    const serviceName = isOpenCode ? 'OpenCode Go' : 'MiniMax'
+    if (!apiKey) {
+      throw new Error(`${isOpenCode ? 'OPENCODE_API_KEY' : 'MINIMAX_API_KEY'} is required`)
     }
 
-    const url = buildChatCompletionsUrl(defaultMiniMaxBaseUrl)
+    const url = buildChatCompletionsUrl(isOpenCode ? defaultOpenCodeBaseUrl : defaultMiniMaxBaseUrl)
     const body: Record<string, unknown> = {
-      model,
-      reasoning_split: true,
+      model: isOpenCode ? env.OPENCODE_MODEL?.trim() || model : model,
+      ...(isOpenCode ? { thinking: { type: 'disabled' } } : { reasoning_split: true }),
       messages: [
         {
           role: 'system',
-          content: buildMiniMaxInstructions(instructions, responseMimeType, responseSchema),
+          content: buildChatInstructions(instructions, responseMimeType, responseSchema),
         },
         {
           role: 'user',
@@ -313,25 +335,35 @@ export async function createResponseText(params: {
     const response = await fetch(url, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${env.MINIMAX_API_KEY}`,
+        'Authorization': `Bearer ${apiKey.trim()}`,
+        ...(isOpenCode
+          ? {
+              'User-Agent': 'any-podcast/1.0',
+              'x-opencode-session': runtimeAi?.sessionId || (defaultOpenCodeSessionId ??= crypto.randomUUID()),
+            }
+          : {}),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(180000),
     })
 
     if (!response.ok) {
       const errorText = await response.text()
-      throw new Error(`MiniMax Chat Completions API error: ${response.status} ${response.statusText} ${errorText}`)
+      throw new Error(`${serviceName} Chat Completions API error: ${response.status} ${response.statusText} ${errorText}`)
     }
 
     const data = (await response.json()) as ChatCompletionsBody
     if (data.error?.message) {
-      throw new Error(`MiniMax Chat Completions API error: ${data.error.message}`)
+      throw new Error(`${serviceName} Chat Completions API error: ${data.error.message}`)
     }
 
+    if (data.choices?.[0]?.finish_reason === 'length') {
+      throw new Error(`${serviceName} output was truncated by the token limit`)
+    }
     const text = extractChatCompletionText(data)
     if (!text) {
-      throw new Error('MiniMax Chat Completions API returned empty output')
+      throw new Error(`${serviceName} Chat Completions API returned empty output`)
     }
 
     return {

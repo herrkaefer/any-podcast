@@ -1,5 +1,6 @@
 onlyBuiltDependencies:
   - esbuild
+  - ffmpeg-static
   - puppeteer
   - rclone.js
   - sharp

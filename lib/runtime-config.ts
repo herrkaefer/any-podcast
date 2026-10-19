@@ -5,6 +5,8 @@ import type {
 
 import { externalLinks, keepDays, podcast, podcastContactEmail, podcastId, site } from '@/config'
 import { isConfigurablePlatformId, normalizeRuntimeExternalLinks } from '@/lib/podcast-platforms'
+import { edgeTtsPatch, getEdgeVoiceDefaults, isCompatibleEdgeVoice } from '@/lib/tts-config'
+import { defaultOpenCodeModel } from '@/workflow/ai'
 import {
   extractNewsletterLinksPrompt,
   introPrompt,
@@ -13,6 +15,7 @@ import {
   summarizeStoryPrompt,
   titlePrompt,
 } from '@/workflow/prompt'
+import { englishPrompts } from '@/workflow/prompt-en'
 import { loadSourceConfig } from '@/workflow/sources/config'
 import {
   runtimeConfigBundleSchema,
@@ -87,14 +90,14 @@ function resolveRuntimePodcastId(env: RuntimeConfigEnv, podcastIdInput?: string)
   return podcastId
 }
 
-function getDefaultHosts() {
+function getDefaultHosts(language = 'en') {
   const host1 = podcast.hosts[0]
   const host2 = podcast.hosts[1]
   return [
     {
       id: 'host1',
       name: host1?.name || '主持人A',
-      speakerMarker: '男',
+      speakerMarker: language.startsWith('zh') ? '男' : 'Host1',
       gender: 'male' as const,
       persona: '',
       link: host1?.link || '',
@@ -102,7 +105,7 @@ function getDefaultHosts() {
     {
       id: 'host2',
       name: host2?.name || '主持人B',
-      speakerMarker: '女',
+      speakerMarker: language.startsWith('zh') ? '女' : 'Host2',
       gender: 'female' as const,
       persona: '',
       link: host2?.link || '',
@@ -177,19 +180,27 @@ function normalizeMinimaxLanguageBoost(
 }
 
 function normalizeTtsConfig(config: RuntimeConfigBundle): RuntimeConfigBundle {
-  const hosts = config.hosts.length > 0 ? config.hosts : getDefaultHosts()
-  const provider = config.tts.provider || 'gemini'
+  const hosts = config.hosts.length > 0 ? config.hosts : getDefaultHosts(config.locale.language)
+  const provider = config.tts.provider || 'edge'
+  const language = config.tts.language || (config.locale.language.startsWith('en') ? 'en-US' : 'zh-CN')
   const defaultGeminiModel = 'gemini-2.5-flash-preview-tts'
   const defaultGeminiPrompt = '请用中文播报以下播客对话，语气自然、节奏流畅、音量稳定。'
   const currentVoices = config.tts.voices || {}
   const hostVoiceDefaults = hosts.map((host, index) => ({
     hostId: host.id,
-    defaultVoice: index === 0 ? 'Puck' : 'Zephyr',
+    defaultVoice: provider === 'edge'
+      ? (currentVoices[host.id] && isCompatibleEdgeVoice(currentVoices[host.id], language)
+          ? currentVoices[host.id]
+          : getEdgeVoiceDefaults(language)[(host.gender || (index === 0 ? 'male' : 'female')) === 'male' ? 'male' : 'female'])
+      : index === 0 ? 'Puck' : 'Zephyr',
   }))
 
   const voices: Record<string, string> = {}
   for (const item of hostVoiceDefaults) {
-    voices[item.hostId] = currentVoices[item.hostId] || item.defaultVoice
+    const currentVoice = currentVoices[item.hostId]
+    voices[item.hostId] = currentVoice && (provider !== 'edge' || isCompatibleEdgeVoice(currentVoice, language))
+      ? currentVoice
+      : item.defaultVoice
   }
 
   return {
@@ -206,7 +217,7 @@ function normalizeTtsConfig(config: RuntimeConfigBundle): RuntimeConfigBundle {
     tts: {
       ...config.tts,
       provider,
-      language: config.tts.language || 'zh-CN',
+      language,
       languageBoost: provider === 'minimax'
         ? normalizeMinimaxLanguageBoost(config.tts.languageBoost, config.tts.language)
         : config.tts.languageBoost,
@@ -252,10 +263,12 @@ async function sha256(input: string) {
     .join('')
 }
 
-export async function buildDefaultRuntimeConfig(): Promise<RuntimeConfigBundle> {
+export async function buildDefaultRuntimeConfig(podcastIdInput = podcastId): Promise<RuntimeConfigBundle> {
   const sourceConfig = await loadSourceConfig()
   const nowIso = new Date().toISOString()
-  const hosts = getDefaultHosts()
+  const isChinese = podcastIdInput === 'spectrum-podcast'
+  const hosts = getDefaultHosts(isChinese ? 'zh' : 'en')
+  const language = isChinese ? 'zh-CN' : 'en-US'
 
   const baseConfig: RuntimeConfigBundle = {
     site: {
@@ -276,7 +289,7 @@ export async function buildDefaultRuntimeConfig(): Promise<RuntimeConfigBundle> 
       },
       externalLinks: getDefaultExternalLinks(),
       rss: {
-        language: 'en',
+        language: isChinese ? 'zh-CN' : 'en',
         categories: DEFAULT_RSS_CATEGORIES,
         itunesCategories: DEFAULT_RSS_CATEGORIES.map(text => ({ text })),
         feedDays: 0,
@@ -285,18 +298,11 @@ export async function buildDefaultRuntimeConfig(): Promise<RuntimeConfigBundle> 
     },
     hosts,
     ai: {
-      provider: 'gemini',
-      model: 'gemini-2.0-flash',
+      provider: 'opencode',
+      model: defaultOpenCodeModel,
     },
     tts: {
-      provider: 'gemini',
-      language: 'en-US',
-      model: 'gemini-2.5-flash-preview-tts',
-      voices: {
-        [hosts[0].id]: 'Puck',
-        [hosts[1].id]: 'Zephyr',
-      },
-      geminiPrompt: 'Read the following podcast dialogue in English with a natural tone, smooth pacing, and steady volume.',
+      ...edgeTtsPatch(language, hosts),
       introMusic: {
         url: '/static/theme.mp3',
         fadeOutStart: 19,
@@ -306,7 +312,7 @@ export async function buildDefaultRuntimeConfig(): Promise<RuntimeConfigBundle> 
       audioQuality: 5,
     },
     locale: {
-      language: 'en',
+      language: isChinese ? 'zh' : 'en',
       timezone: 'America/Chicago',
       dateFormat: 'YYYY-MM-DD',
     },
@@ -316,17 +322,19 @@ export async function buildDefaultRuntimeConfig(): Promise<RuntimeConfigBundle> 
       newsletterHosts: DEFAULT_NEWSLETTER_HOSTS,
       archiveLinkKeywords: DEFAULT_ARCHIVE_LINK_KEYWORDS,
     },
-    prompts: {
-      summarizeStory: summarizeStoryPrompt,
-      summarizePodcast: summarizePodcastPrompt,
-      summarizeBlog: summarizeBlogPrompt,
-      intro: introPrompt,
-      title: titlePrompt,
-      extractNewsletterLinks: extractNewsletterLinksPrompt,
-    },
+    prompts: isChinese
+      ? {
+          summarizeStory: summarizeStoryPrompt,
+          summarizePodcast: summarizePodcastPrompt,
+          summarizeBlog: summarizeBlogPrompt,
+          intro: introPrompt,
+          title: titlePrompt,
+          extractNewsletterLinks: extractNewsletterLinksPrompt,
+        }
+      : englishPrompts,
     test: { ...DEFAULT_TEST_CONFIG },
     meta: {
-      podcastId,
+      podcastId: podcastIdInput,
       updatedAt: nowIso,
       updatedBy: 'system',
       version: 'latest',
@@ -409,7 +417,7 @@ export async function getDraftRuntimeConfig(env: RuntimeConfigEnv, podcastIdInpu
   if (draft) {
     return normalizeTtsConfig(draft)
   }
-  const defaultConfig = await buildDefaultRuntimeConfig()
+  const defaultConfig = await buildDefaultRuntimeConfig(resolvedPodcastId)
   const configForChecksum = {
     ...defaultConfig,
     meta: {
@@ -466,6 +474,9 @@ export function mergeRuntimeConfig(current: RuntimeConfigBundle, patch: unknown)
     tts: parsedPatch.tts
       ? {
           ...current.tts,
+          ...(parsedPatch.tts.provider === 'edge' && current.tts.provider !== 'edge'
+            ? edgeTtsPatch(parsedPatch.tts.language || current.tts.language, parsedPatch.hosts || current.hosts)
+            : {}),
           ...parsedPatch.tts,
           introMusic: parsedPatch.tts.introMusic
             ? { ...current.tts.introMusic, ...parsedPatch.tts.introMusic }

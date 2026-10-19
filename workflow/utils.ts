@@ -1,5 +1,7 @@
 import puppeteer from '@cloudflare/puppeteer'
 import { $fetch } from 'ofetch'
+import { extractStaticHtmlContent } from './html-content'
+import { RenderRequestQueue } from './render-rate-limit'
 
 interface SelectorOptions {
   include?: string
@@ -7,6 +9,7 @@ interface SelectorOptions {
 }
 
 interface CloudflareMarkdownEnv {
+  CLOUDFLARE_RENDER_GATE?: DurableObjectNamespace
   CLOUDFLARE_ANYPODCAST_ACCOUNT_ID?: string
   CLOUDFLARE_ANYPODCAST_API_TOKEN?: string
 }
@@ -267,9 +270,12 @@ async function getContentFromCloudflareDocumentUrl(
   return item.data || ''
 }
 
+const localRenderQueues = new Map<string, RenderRequestQueue>()
+
 async function getContentFromCloudflareWebUrl(
   url: string,
   credentials: { accountId: string, apiToken: string },
+  gate?: DurableObjectNamespace,
 ) {
   try {
     const markdownForAgentsResponse = await fetchWithTimeout(url, {
@@ -288,17 +294,38 @@ async function getContentFromCloudflareWebUrl(
   }
 
   console.info('get content from cloudflare browser-rendering markdown', { url })
-  const result = await $fetch<CloudflareMarkdownResponse>(
-    `https://api.cloudflare.com/client/v4/accounts/${credentials.accountId}/browser-rendering/markdown`,
-    {
+  let result: CloudflareMarkdownResponse
+  if (gate) {
+    const stub = gate.get(gate.idFromName(credentials.accountId))
+    const response = await stub.fetch('https://render.internal/markdown', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${credentials.apiToken}`,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    })
+    if (!response.ok) {
+      const error = createHttpError(response.status, await response.text()) as Error & { retryAfterMs?: number }
+      error.retryAfterMs = Number(response.headers.get('retry-after') || 0) * 1000
+      throw error
+    }
+    result = await response.json() as CloudflareMarkdownResponse
+  }
+  else {
+    let queue = localRenderQueues.get(credentials.accountId)
+    if (!queue) {
+      queue = new RenderRequestQueue()
+      localRenderQueues.set(credentials.accountId, queue)
+    }
+    result = await queue.run(() => $fetch<CloudflareMarkdownResponse>(
+      `https://api.cloudflare.com/client/v4/accounts/${credentials.accountId}/browser-rendering/markdown`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${credentials.apiToken}` },
+        timeout: 30000,
+        retry: 0,
+        body: { url },
       },
-      timeout: 30000,
-      body: { url },
-    },
-  )
+    ))
+  }
 
   if (!result.success) {
     throw new Error(extractApiMessages(result).join('; ') || 'Cloudflare browser rendering markdown failed')
@@ -317,6 +344,7 @@ export async function getContentFromCloudflare(
   selector?: SelectorOptions,
   CLOUDFLARE_ANYPODCAST_ACCOUNT_ID?: string,
   CLOUDFLARE_ANYPODCAST_API_TOKEN?: string,
+  gate?: DurableObjectNamespace,
 ) {
   const credentials = normalizeCloudflareCredentials(CLOUDFLARE_ANYPODCAST_ACCOUNT_ID, CLOUDFLARE_ANYPODCAST_API_TOKEN)
   if (!credentials) {
@@ -338,7 +366,7 @@ export async function getContentFromCloudflare(
     return getContentFromCloudflareDocumentUrl(url, credentials)
   }
 
-  return getContentFromCloudflareWebUrl(url, credentials)
+  return getContentFromCloudflareWebUrl(url, credentials, gate)
 }
 
 export async function getContentFromCloudflareWithRetry(
@@ -347,14 +375,14 @@ export async function getContentFromCloudflareWithRetry(
   selector?: SelectorOptions,
   CLOUDFLARE_ANYPODCAST_ACCOUNT_ID?: string,
   CLOUDFLARE_ANYPODCAST_API_TOKEN?: string,
-  options?: { retryLimit?: number, retryDelayMs?: number },
+  options?: { retryLimit?: number, retryDelayMs?: number, gate?: DurableObjectNamespace },
 ) {
   const retryLimit = options?.retryLimit ?? 2
   let retryDelayMs = options?.retryDelayMs ?? 2000
 
   for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
     try {
-      return await getContentFromCloudflare(url, format, selector, CLOUDFLARE_ANYPODCAST_ACCOUNT_ID, CLOUDFLARE_ANYPODCAST_API_TOKEN)
+      return await getContentFromCloudflare(url, format, selector, CLOUDFLARE_ANYPODCAST_ACCOUNT_ID, CLOUDFLARE_ANYPODCAST_API_TOKEN, options?.gate)
     }
     catch (error) {
       if (isSubrequestLimitError(error)) {
@@ -374,7 +402,9 @@ export async function getContentFromCloudflareWithRetry(
         reason = 'timeout'
       }
       console.warn(`Cloudflare markdown ${reason}, retrying in ${retryDelayMs}ms`, { url, attempt: attempt + 1 })
-      await sleep(retryDelayMs)
+      const retryAfter = error as { retryAfterMs?: number, response?: { headers?: Headers } }
+      const retryAfterMs = retryAfter.retryAfterMs || Number(retryAfter.response?.headers?.get('retry-after') || 0) * 1000
+      await sleep(Math.max(retryDelayMs, retryAfterMs ? retryAfterMs + 500 : 0))
       retryDelayMs *= 2
     }
   }
@@ -443,6 +473,17 @@ export async function getContentFromJina(url: string, format: 'html' | 'markdown
   return content
 }
 
+export async function getContentFromStaticHtml(url: string) {
+  const response = await fetch(url, {
+    headers: { 'User-Agent': 'AnyPodcast/1.0', 'Accept': 'text/html' },
+    signal: AbortSignal.timeout(20000),
+  })
+  if (!response.ok || !response.headers.get('content-type')?.includes('text/html')) {
+    return ''
+  }
+  return extractStaticHtmlContent(await response.text(), response.url || url)
+}
+
 export async function getContentFromCloudflareWithJinaFallback(
   url: string,
   format: 'html' | 'markdown',
@@ -460,7 +501,7 @@ export async function getContentFromCloudflareWithJinaFallback(
       selector,
       env.CLOUDFLARE_ANYPODCAST_ACCOUNT_ID,
       env.CLOUDFLARE_ANYPODCAST_API_TOKEN,
-      options?.cloudflare,
+      { ...options?.cloudflare, gate: env.CLOUDFLARE_RENDER_GATE },
     )
     if (content) {
       return content
@@ -470,7 +511,24 @@ export async function getContentFromCloudflareWithJinaFallback(
     if (isSubrequestLimitError(error)) {
       throw error
     }
-    console.warn('cloudflare markdown extraction failed, fallback to jina', { url, error })
+    console.warn('cloudflare markdown extraction failed, try static HTML then Jina', { url, error })
+  }
+
+  // Public static HTML is the fallback after rendered extraction fails.
+  if (format === 'markdown' && isSelectorOptionsEmpty(selector)
+    && !/\.(?:pdf|docx?|xlsx?|pptx?|odt|ods|epub)(?:[?#]|$)/i.test(url)) {
+    try {
+      const content = await getContentFromStaticHtml(url)
+      if (content) {
+        console.info('extracted static HTML content', { url, characters: content.length })
+        return content
+      }
+    }
+    catch (error) {
+      if (isSubrequestLimitError(error))
+        throw error
+      console.warn('static HTML extraction failed; try Jina', { url, error: (error as Error)?.message })
+    }
   }
 
   return getContentFromJinaWithRetry(url, format, selector, env.JINA_KEY, options?.jina)
@@ -534,6 +592,11 @@ export async function getStoryContent(
       }
       return getContentFromFirecrawl(storyUrl, 'markdown', {}, env.FIRECRAWL_KEY)
     })
+
+  if (!article.trim()) {
+    console.warn('article body is empty; skip rather than summarize the title', { title: story.title })
+    return ''
+  }
 
   return [
     story.title

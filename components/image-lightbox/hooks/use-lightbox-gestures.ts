@@ -49,7 +49,7 @@ export function useLightboxGestures({ zoom, setZoom, onPrevious, onNext }: UseLi
   const handleTouchStart = useCallback(
     (e: React.TouchEvent<HTMLImageElement>) => {
       if (e.touches.length === 2) {
-        const [touch1, touch2] = e.touches
+        const [touch1, touch2] = [e.touches[0], e.touches[1]]
         const distance = Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY)
         setTouchStart({
           x: (touch1.clientX + touch2.clientX) / 2,
@@ -71,7 +71,7 @@ export function useLightboxGestures({ zoom, setZoom, onPrevious, onNext }: UseLi
   const handleTouchMove = useCallback(
     (e: React.TouchEvent<HTMLImageElement>) => {
       if (e.touches.length === 2 && touchStart) {
-        const [touch1, touch2] = e.touches
+        const [touch1, touch2] = [e.touches[0], e.touches[1]]
         const distance = Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY)
         const scale = (distance / touchStart.distance) * zoom.scale
         setZoom({

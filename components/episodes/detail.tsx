@@ -69,8 +69,8 @@ export function EpisodeDetail({ episode, initialPage }: EpisodeDetailProps) {
         {children}
       </a>
     ),
-    img: ({ src, alt }: { src?: string, alt?: string }) => {
-      if (!src)
+    img: ({ src, alt }) => {
+      if (typeof src !== 'string' || !src)
         return null
       const index = images.findIndex(img => img.src === src)
       return (

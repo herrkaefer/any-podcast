@@ -1,4 +1,5 @@
 export * from '../workflow'
+export { CloudflareRenderGate } from './render-gate'
 
 type WindowMode = 'calendar' | 'rolling'
 
@@ -128,8 +129,11 @@ function getScheduledWorkflowParams(event: ScheduledEvent): WorkflowTriggerParam
 
 export default {
   async runWorkflow(event: ScheduledEvent | Request, env: Env, ctx: ExecutionContext) {
-    console.info('trigger event by:', event)
     const isScheduled = 'scheduledTime' in event
+    console.info('workflow trigger', {
+      type: isScheduled ? 'scheduled' : 'http',
+      ...(isScheduled ? { scheduledTime: event.scheduledTime, cron: event.cron } : {}),
+    })
 
     let triggerParams: WorkflowTriggerParams
     try {
@@ -176,7 +180,7 @@ export default {
       return this.runWorkflow(request, env, ctx)
     }
     if (pathname === '/audio' || pathname === '/audio.html') {
-      return env.ASSETS.fetch(request)
+      return env.ASSETS?.fetch(request) ?? new Response('Assets unavailable', { status: 503 })
     }
     if (pathname.includes('/static')) {
       const filename = pathname.replace('/static/', '')
@@ -190,8 +194,8 @@ export default {
       }
 
       // Fallback for local assets (e.g. worker/static/theme.mp3).
-      const fallbackAsset = await env.ASSETS.fetch(new URL(`/${filename}`, request.url).toString())
-      if (fallbackAsset.ok) {
+      const fallbackAsset = await env.ASSETS?.fetch(new URL(`/${filename}`, request.url).toString())
+      if (fallbackAsset?.ok) {
         console.info('fetch static file fallback to assets:', filename)
         return fallbackAsset
       }

@@ -71,11 +71,12 @@ export function EpisodeManagement() {
       if (!response.ok || !body.items) {
         throw new Error(body.error || 'Failed to load episodes')
       }
-      setEpisodes(sortEpisodes(body.items))
+      const items = body.items
+      setEpisodes(sortEpisodes(items))
       setCurrentPage(body.page || page)
       setTotalEpisodes(body.total || 0)
       setTotalPages(body.totalPages || 1)
-      setSelectedEpisode(prev => (prev && !body.items.some(item => item.date === prev.date) ? null : prev))
+      setSelectedEpisode(prev => (prev && !items.some(item => item.date === prev.date) ? null : prev))
     }
     catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to load episodes')
