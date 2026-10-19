@@ -89,6 +89,30 @@ test('two repair rounds continue with the last usable script even when review no
   assert.equal(statuses.at(-1), 'fallback')
 })
 
+test('spoken-delivery repairs preserve the speaker and leave the co-host interpretation untouched', async () => {
+  const source = { source: 'Publisher', title: 'Participation', content: 'Some people find a reminder helpful. It is optional.' }
+  const original = 'Aaron: I can see why a reminder might help some people.\nJamie: This constitutes an optional facilitation modality.'
+  let passes = 0
+  const result = await composeReviewedScript({
+    articles: [source],
+    markers: ['Aaron', 'Jamie'],
+    draft: async () => original,
+    review: async (_pass, _input, current) => {
+      passes++
+      return parseScriptReview(JSON.stringify({
+        checks: checks(current),
+        approved: passes > 1,
+        issues: passes > 1 ? [] : [{ line: 2, original: original.split('\n')[1], replacement: 'Jamie: A reminder is one option that may help.', category: 'delivery', explanation: 'Dense written wording obscures the optional suggestion.', evidence: [{ articleIndex: 0, paragraphs: [0] }] }],
+        warnings: [],
+      }), current, [source])
+    },
+    checkpoint: async () => {},
+  })
+  assert.equal(passes, 2)
+  assert.equal(result.split('\n')[0], original.split('\n')[0])
+  assert.equal(result.split('\n')[1], 'Jamie: A reminder is one option that may help.')
+})
+
 test('a reviewer cannot approve broken formatting or inject a different speaker', async () => {
   await assert.rejects(composeReviewedScript({
     articles: [article],
