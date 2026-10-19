@@ -52,12 +52,12 @@ const promptKeys: PromptKey[] = [
 
 const promptMetaMap: Record<PromptKey, PromptMeta> = {
   summarizeStory: {
-    label: 'Single Article Diagnostic',
-    description: 'Optional single-article test only. Full episodes use cleaned article bodies directly.',
+    label: 'Detailed Article Summaries',
+    description: 'Preserve article details, cases, identities, statistical context and source evidence before episode composition.',
   },
   summarizePodcast: {
     label: 'Podcast Dialogue Generation',
-    description: 'Produce one two-host conversation from complete cleaned articles, each with a source and title.',
+    description: 'Produce one detailed conversation from all relevant article summaries; full-article review runs before audio or publication.',
   },
   summarizeBlog: {
     label: 'Blog Content Generation',

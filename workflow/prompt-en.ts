@@ -1,14 +1,8 @@
 import type { RuntimePromptsConfig } from '@/types/runtime-config'
-import { episodeTitlePrompt, podcastEditorialPrompt, sharedWritingRules, storyFidelityEn } from './editorial-prompts'
+import { episodeTitlePrompt, podcastEditorialPrompt, richStorySummaryPrompt } from './editorial-prompts'
 
 export const englishPrompts: RuntimePromptsConfig = {
-  summarizeStory: `You are an editorial assistant for {{podcastTitle}}.
-Podcast scope: {{podcastDescription}}
-Read the supplied article and comments. Decide whether its main subject fits this scope.
-Return only JSON with relevant (boolean), summary (string or null), and reason (a brief string).
-Write the summary in English. Preserve the facts, explain unfamiliar terms briefly, and distinguish evidence from opinion. Do not invent details or turn preliminary findings into advice. For an irrelevant article set summary to null.
-${sharedWritingRules('en')}
-${storyFidelityEn}`,
+  summarizeStory: richStorySummaryPrompt('en'),
   summarizePodcast: podcastEditorialPrompt('en'),
   summarizeBlog: `You are the show-notes editor for {{podcastTitle}}.
 Scope: {{podcastDescription}}

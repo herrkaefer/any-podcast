@@ -7,9 +7,10 @@ import { parseEnv } from 'node:util'
 import ffmpegPath from 'ffmpeg-static'
 import { runtimeConfigBundleSchema } from '../lib/schemas/admin'
 import { getTemplateVariables, renderPromptTemplates } from '../lib/template'
-import { createResponseText, getPrimaryModel } from '../workflow/ai'
+import { createResponseText, getMaxTokens, getPrimaryModel } from '../workflow/ai'
 import { buildRuntimeTtsSettings, getSpeakerMarkers, parseConversationLines } from '../workflow/dialogue'
-import { buildPodcastStoryInput, createEditorialArticle, linkArticleHeadings } from '../workflow/editorial-input'
+import { createEditorialArticle, linkArticleHeadings } from '../workflow/editorial-input'
+import { buildRichSummaryInput, composeReviewedScript, generateRichSummary, parseScriptReview, scriptReviewJsonSchema, scriptReviewPrompt } from '../workflow/editorial-pipeline'
 import { getRecommendedTitle, parseTitleGenerationResult, titleGenerationSchema } from '../workflow/title'
 import synthesize from '../workflow/tts'
 
@@ -37,7 +38,7 @@ async function main() {
   if (config.ai.provider !== 'opencode' || config.tts.provider !== 'edge') {
     throw new Error('Preview expects an OpenCode + Edge config. Run podcast:configure first.')
   }
-  const runtimeAi = { ...config.ai, sessionId: crypto.randomUUID() }
+  const runtimeAi = { ...config.ai, sessionId: crypto.randomUUID(), reasoning: true }
   const model = getPrimaryModel(env, 'opencode', runtimeAi)
   const prompts = renderPromptTemplates(config.prompts, getTemplateVariables(config))
   const settings = buildRuntimeTtsSettings(config)
@@ -47,14 +48,16 @@ async function main() {
   }
   const output = resolve(outputDir)
   await mkdir(output, { recursive: true })
-  const ask = async (instructions: string, input: string, schema?: object) => {
+  const reviewAi = { ...runtimeAi, reasoning: true, modelOverride: env.OPENCODE_REVIEW_MODEL?.trim() }
+  const reviewModel = getPrimaryModel(env, 'opencode', reviewAi)
+  const ask = async (instructions: string, input: string, schema?: object, review = false) => {
     const response = await createResponseText({
       env,
-      runtimeAi,
-      model,
+      runtimeAi: review ? reviewAi : runtimeAi,
+      model: review ? reviewModel : model,
       instructions,
       input,
-      maxOutputTokens: 8192,
+      maxOutputTokens: getMaxTokens(env, 'opencode', runtimeAi),
       ...(schema ? { responseMimeType: 'application/json', responseSchema: schema } : {}),
     })
     return response.text
@@ -62,9 +65,22 @@ async function main() {
   const stories = articles.map(article => ({ title: article.title, url: article.link, sourceName: article.source || new URL(article.link).hostname }))
   const materials = articles.map((article, index) => createEditorialArticle(stories[index], article.content))
   await writeFile(resolve(output, 'articles.json'), `${JSON.stringify(materials, null, 2)}\n`)
-  const storyInput = buildPodcastStoryInput(materials)
-  console.info('Writing dialogue')
-  const dialogue = await ask(prompts.summarizePodcast, storyInput)
+  const summaries = []
+  for (const [index, article] of materials.entries()) {
+    const summary = await generateRichSummary(article, prompts.summarizeStory, ask)
+    summaries.push({ articleIndex: index, summary })
+    await writeFile(resolve(output, 'summaries.json'), `${JSON.stringify(summaries, null, 2)}\n`)
+  }
+  const summaryInput = buildRichSummaryInput(materials, summaries)
+  if (!summaryInput)
+    throw new Error('No relevant articles survived detailed summarization')
+  const dialogue = await composeReviewedScript({
+    articles: materials,
+    markers: getSpeakerMarkers(config),
+    draft: () => ask(prompts.summarizePodcast, summaryInput),
+    review: async (_pass, input, script) => parseScriptReview(await ask(scriptReviewPrompt, input, scriptReviewJsonSchema, true), script, materials),
+    checkpoint: state => writeFile(resolve(output, `editorial-${state.pass}-${state.status}.json`), `${JSON.stringify(state, null, 2)}\n`),
+  })
   await writeFile(resolve(output, 'dialogue.txt'), `${dialogue}\n`)
   const rawLines = dialogue.split('\n').map(line => line.trim()).filter(Boolean)
   const lines = parseConversationLines(rawLines, getSpeakerMarkers(config))
@@ -137,7 +153,8 @@ async function main() {
     title,
     podcastId: config.meta.podcastId,
     createdAt: new Date().toISOString(),
-    ai: { ...config.ai, model },
+    ai: { ...config.ai, model, reviewModel },
+    automatedEditsOnly: true,
     tts: { provider: config.tts.provider, language: settings.language, voices: config.tts.voices, speed: settings.speed },
     ttsRuntime: workerUrl ? 'local-cloudflare-worker' : 'node',
     sources: stories.map(({ title, url }) => ({ title, link: url })),

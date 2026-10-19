@@ -1,15 +1,5 @@
 import { originalTitlePrompts } from './title-prompts'
 
-export const storyFidelityZh = `【事实与来源】
-- 只据输入正文；正文不足则 relevant=false、summary=null，不凭标题补写。
-- 数字保留单位、时间、人群和分母；区分相关与因果、群体与个体、研究与观点。
-- 保留影响理解的证据局限，如预印本、动物模型和样本范围。不编造背景、引语、案例或未提供的社区评论。`
-
-export const storyFidelityEn = `Source fidelity:
-- Use only the supplied article. If its body is insufficient, return relevant=false and summary=null; do not infer content from the headline.
-- Keep numbers with units, time spans, populations and denominators. Distinguish association from causation, group findings from individual predictions, and findings from opinions.
-- Retain material limits such as preprint status, animal models and sample scope. Invent no background, quotations, examples or unsupplied community reactions.`
-
 export const respectfulToneZh = `面向所有感兴趣的听众，不预设身份或经历。平等尊重神经多样性人士的自主性、边界和支持需要；不居高临下、怜悯、幼儿化、煽情或替人发言，不把差异写成品格缺陷或要求所有人迎合规范。采用中性称呼，不泛称“患者”；带有评判的原文措辞须中性转述。社交策略出现时就注明是原文提供的可选做法，不用命令式，不要求对视、掩饰差异或披露诊断。不许诺效果，不给个体诊疗建议。`
 
 export const respectfulToneEn = `Welcome anyone interested; assume no listener identity or experience. Respect neurodivergent people's agency, boundaries and support needs. Avoid condescension, pity, infantilization, sensationalism and speaking for others. Do not frame differences as character flaws or demand conformity. Use neutral terms, avoid blanket labels such as patients, and paraphrase judgmental source language neutrally. Attribute social strategies where they appear as optional suggestions; never issue commands to make eye contact, mask differences or disclose a diagnosis. Promise no outcomes and give no individual clinical advice.`
@@ -28,6 +18,19 @@ export function sharedWritingRules(language: 'zh' | 'en') {
 - ${respectfulToneZh}`
 }
 
+export function richStorySummaryPrompt(language: 'zh' | 'en') {
+  const task = language === 'en'
+    ? `You prepare detailed article briefs for {{podcastTitle}}. Scope: {{podcastDescription}}.
+Decide whether the article’s main subject fits the show, including research reliability, funding and policy directly concerning the show's topics. Read the complete article, setting aside navigation, ads, subscription notices and related-story teasers. Preserve its substantive content, useful detail and author’s reasoning rather than compressing it into a short abstract. Let the amount of information determine the length; keep distinct findings, definitions, methods, examples, opposing views and limitations. Combine repetition without dropping information needed to understand a claim.
+Write in English. Reuse faithful source wording where helpful. Preserve names, institutions, exact professional roles, numbers with units, dates, populations, denominators and comparison groups. Distinguish findings, hypotheses, opinions and anecdotes. Keep research stage and uncertainty attached to the claim. Record concrete cases and attributed quotations, without creating new ones or filling gaps from memory.
+Return the summary JSON: overview introduces the article; people records identities and institutions; findings records all substantive findings, numbers and reasoning; context records background, definitions and methods; examples records cases, quotations and attributed viewpoints; limitations records qualifications and disagreements. Each detail has text and evidence, an array of the paragraph IDs shown with the article. Cite the paragraphs that establish the detail; the original wording is preserved through these references. Put each detail in its most useful section, without repeating it across sections. Sections without relevant content stay empty; do not write explanations about missing material. For an irrelevant article use relevant=false, a brief reason, an empty overview and empty arrays.`
+    : `你为《{{podcastTitle}}》整理详细文章摘要。节目关注{{podcastDescription}}。
+判断文章的主要内容是否与节目相关，直接涉及节目主题的研究可靠性、经费和政策也属于相关内容。通读全文，忽略导航、广告、订阅提示和相关推荐，尽量保留原文的实质内容、细节和论述脉络，不压缩成几句概述。篇幅随信息量展开，保留不同发现、概念定义、研究方法、具体案例、不同观点和必要限定；合并重复，不省掉理解事实所需的信息。
+摘要用简体中文，尽量沿用忠实的原文表述。人名、机构、具体职务、数字及单位、时间、人群、统计分母和比较对象保持准确。分清研究发现、假说、作者观点和个人经验，证据阶段与不确定性跟随相应结论。案例、引语和观点保留归属，不编造、不凭记忆补充。
+返回摘要JSON：overview概括文章；people记录人物与机构身份；findings充分记录实质发现、数字和论述；context记录背景、定义与方法；examples记录案例、引语及各方观点；limitations记录限定条件与分歧。每条细节包含text和evidence；evidence是支撑该细节的原文段落编号数组，使用文章中标出的paragraph编号，原句由这些编号保留。每条信息放在最合适的一栏，不跨栏重复。没有相应内容的栏留空，不写资料缺失的说明。不相关时relevant=false，reason简述原因，overview为空字符串，各栏为空数组。`
+  return task
+}
+
 export function podcastEditorialPrompt(language: 'zh' | 'en') {
   if (language === 'en') {
     return `You are the producer of {{podcastTitle}}. Write a full-length, 1,500–1,900-word two-host episode from the recording brief below.
@@ -41,7 +44,7 @@ Hosts:
 
 Today's conversation:
 Survey today’s articles and choose the most substantial developments and everyday questions that fit the show’s scope. Balance research, news and personal perspectives by their substance, combining overlapping advice to leave room for distinct findings. Discuss what happened, what is interesting about it and what it might mean in everyday life. Spend more time on substantial findings and keep minor updates brief. Let each host respond to the other’s ideas and move the conversation forward, like longtime colleagues chatting in a quiet cafe.
-Use the reporting and research as your factual foundation. Read the articles as a whole, setting aside navigation, advertising, subscription notices and footers. Keep names, institutions, professional roles, quotations, numbers, dates, ages and populations faithful to the reporting, retaining statistical denominators and comparison groups; distinguish findings, authors’ views and the hosts’ interpretations. Keep timelines and forecasts tied to what the reporting actually establishes. Omit unnecessary titles or details rather than substituting a different identity or claim. Explain unfamiliar concepts with well-established knowledge and everyday analogies. Keep association distinct from causation and exploratory research distinct from clinical conclusions.
+Use the reporting and research as your factual foundation. Keep names, institutions, professional roles, quotations, numbers, dates, ages and populations faithful to the reporting, retaining statistical denominators and comparison groups; distinguish findings, authors’ views and the hosts’ interpretations. Keep timelines and forecasts tied to what the reporting actually establishes. Omit unnecessary titles or details rather than substituting a different identity or claim. Explain unfamiliar concepts with well-established knowledge and everyday analogies. Keep association distinct from causation and exploratory research distinct from clinical conclusions.
 
 Writing:
 - Use natural, idiomatic spoken English, contractions and varied sentence lengths. Make every exchange add something; keep names, numbers and abbreviations selective. Mention a publication or researcher where it helps listeners understand whose finding or view is being discussed.
@@ -61,7 +64,7 @@ Spoken script only, with one turn per line beginning exactly with "{{host1Marker
 
 【本期选题】
 通览本期选读文章，挑选与节目定位相关的新进展和实际问题，聊清发生了什么、有趣在哪里、与日常生活有什么关系。研究、新闻与经验观点按信息量安排主次，同类建议合并，给不同的重要发现留出空间。值得展开的多聊，短消息简述。像两位长期合作的朋友在安静的咖啡馆交谈，接住彼此的想法，顺着内容往前走。
-通读文章，忽略导航、广告、订阅提示和页脚，以报道和研究为事实基础。人名、机构、职务、引语、数字、统计口径、比较对象、时间、人群和年龄忠于原文，分清研究发现、作者观点与主播的理解，时间表与前景判断有报道依据；不必要的头衔或细节可以省略，不换成另一种身份或说法。陌生概念可用确定的基础知识和生活类比解释。相关性与因果、探索性研究与临床结论分清楚。
+以报道和研究为事实基础，充分利用其中的具体发现、案例和细节，让解释有内容、有来由。人名、机构、职务、引语、数字、统计口径、比较对象、时间、人群和年龄忠于原文，分清研究发现、作者观点与主播的理解，时间表与前景判断有报道依据；不必要的头衔或细节可以省略，不换成另一种身份或说法。陌生概念可用确定的基础知识和生活类比解释。相关性与因果、探索性研究与临床结论分清楚。
 
 【写作】
 - 自然口语，长短句穿插，每轮都增加一点内容，人名、数字和缩写适量。需要交代观点归属时，自然说出媒体、研究或作者。

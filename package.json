@@ -23,8 +23,9 @@
     "tts:smoke": "node --import tsx scripts/test-edge-tts.ts",
     "tts:worker": "wrangler dev --config tests/wrangler.edge.jsonc --persist-to .wrangler/edge-test",
     "podcast:configure": "node --import tsx scripts/prepare-podcast-config.ts",
+    "podcast:script-preview": "node --import tsx scripts/preview-script.ts",
     "podcast:preview": "node --import tsx scripts/preview-podcast.ts",
-    "test:unit": "node --import tsx --import ./tests/register-cloudflare-stub.mjs --test tests/providers.test.ts tests/public-cache.test.mjs tests/website-publication.test.ts tests/workflow-full-articles.test.ts",
+    "test:unit": "node --import tsx --import ./tests/register-cloudflare-stub.mjs --test tests/providers.test.ts tests/public-cache.test.mjs tests/website-publication.test.ts tests/workflow-full-articles.test.ts tests/editorial-pipeline.test.ts",
     "test:providers": "node --import tsx --test tests/providers.test.ts",
     "deploy:providers": "node scripts/deploy-provider-settings.mjs"
   },

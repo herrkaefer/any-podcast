@@ -67,7 +67,9 @@ test('openCode uses Chat Completions, its own key and session, preserves JSON in
     const body = JSON.parse(init?.body as string)
     assert.equal(body.model, 'deepseek-v4.1-flash')
     assert.equal(body.max_tokens, 1234)
-    assert.deepEqual(body.thinking, { type: 'disabled' })
+    assert.deepEqual(body.thinking, { type: 'enabled' })
+    assert.equal(body.reasoning_effort, 'high')
+    assert.deepEqual(body.response_format, { type: 'json_object' })
     assert.match(body.messages[0].content, /JSON Schema/)
     return Response.json({ choices: [{ message: { content: '<think>internal</think>{"relevant":true}' }, finish_reason: 'stop' }] })
   }

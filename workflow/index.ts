@@ -2,6 +2,7 @@ import type { WorkflowEvent, WorkflowStep, WorkflowStepConfig } from 'cloudflare
 import type { AiEnv } from './ai'
 import type { ParsedConversationLine, RuntimeTtsSettings } from './dialogue'
 import type { EditorialArticle } from './editorial-input'
+import type { ArticleSummary } from './editorial-pipeline'
 import type { PublicationMode } from './publication'
 import type { SourceConfig } from './sources/types'
 
@@ -14,7 +15,8 @@ import { getActiveRuntimeConfig } from '@/lib/runtime-config'
 import { getTemplateVariables, renderPromptTemplates } from '@/lib/template'
 import { createResponseText, getAiProvider, getMaxTokens, getPrimaryModel, getThinkingModel } from './ai'
 import { buildRuntimeTtsSettings, getSpeakerMarkers, parseConversationLines } from './dialogue'
-import { buildPodcastStoryInput, createEditorialArticle, linkArticleHeadings, uniqueArticleStories } from './editorial-input'
+import { createEditorialArticle, linkArticleHeadings, uniqueArticleStories } from './editorial-input'
+import { buildRichSummaryInput, composeReviewedScript, generateRichSummary, parseScriptReview, scriptReviewJsonSchema, scriptReviewPrompt } from './editorial-pipeline'
 import { episodeAudioKey, resolvePublicationMode, saveEpisodeOutput } from './publication'
 import { getStoryCandidatesFromSources, processGmailMessage } from './sources'
 import { listGmailMessageRefs } from './sources/gmail'
@@ -26,7 +28,7 @@ import synthesize, {
   synthesizeGeminiTTSWithRetry,
   validateTtsConfig,
 } from './tts'
-import { addIntroMusic, concatAudioFiles, getStoryArticle, getStoryContent, isSubrequestLimitError } from './utils'
+import { addIntroMusic, concatAudioFiles, getStoryArticle, isSubrequestLimitError } from './utils'
 import { invalidatePublishedWebsite, warmPublishedWebsite } from './website-publication'
 
 interface Params {
@@ -62,12 +64,6 @@ interface Env extends CloudflareEnv, AiEnv {
   TTS_API_KEY?: string
 }
 
-interface StorySummaryResult {
-  relevant: boolean
-  summary: string | null
-  reason: string
-}
-
 interface RuntimePromptSet {
   summarizeStory: string
   summarizePodcast: string
@@ -81,6 +77,7 @@ type WorkflowStage
   = | 'collect_candidates'
     | 'expand_gmail'
     | 'collect_articles'
+    | 'summarize_articles'
     | 'summarize_stories' // Checkpoints from earlier deployments.
     | 'compose_text'
     | 'tts_render'
@@ -90,6 +87,7 @@ interface WorkflowCursorState {
   sourceIndex: number
   gmailIndex: number
   storyIndex: number
+  summaryIndex: number
   ttsLineIndex: number
 }
 
@@ -101,6 +99,7 @@ interface WorkflowProgressState {
   storiesTotal: number
   storiesProcessed: number
   storiesCollected: number
+  summariesProcessed: number
   ttsTotal: number
   ttsProcessed: number
 }
@@ -121,6 +120,7 @@ interface WorkflowJobState {
   progress: WorkflowProgressState
   candidatesKey?: string
   articlesKey?: string
+  summariesKey?: string
   composeKey?: string
   contentKey?: string
   podcastKey?: string
@@ -167,16 +167,6 @@ interface ComposeSnapshot {
   isDev: boolean
 }
 
-const storySummarySchema = {
-  type: 'OBJECT',
-  properties: {
-    relevant: { type: 'BOOLEAN' },
-    summary: { type: 'STRING', nullable: true },
-    reason: { type: 'STRING' },
-  },
-  required: ['relevant', 'summary', 'reason'],
-} as const
-
 function formatError(error: unknown) {
   const err = error as {
     name?: string
@@ -197,100 +187,6 @@ function formatError(error: unknown) {
     cause: err?.cause,
     data: err?.data,
   }
-}
-
-function stripCodeFences(text: string) {
-  return text.replace(/```(?:json)?/gi, '').trim()
-}
-
-function extractJsonObject(text: string) {
-  const trimmed = text.trim()
-  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-    return trimmed
-  }
-  const match = trimmed.match(/\{[\s\S]*\}/)
-  return match ? match[0] : ''
-}
-
-function parseStorySummary(text: string): StorySummaryResult | null {
-  const cleaned = stripCodeFences(text)
-  const json = extractJsonObject(cleaned)
-  if (!json) {
-    return null
-  }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(json)
-  }
-  catch {
-    return null
-  }
-  if (!parsed || typeof parsed !== 'object') {
-    return null
-  }
-  const record = parsed as Record<string, unknown>
-  if (typeof record.relevant !== 'boolean') {
-    return null
-  }
-  const reason = typeof record.reason === 'string' ? record.reason.trim() : ''
-  const summary = typeof record.summary === 'string' ? record.summary.trim() : ''
-  if (!reason) {
-    return null
-  }
-  if (record.relevant && !summary) {
-    return null
-  }
-  return {
-    relevant: record.relevant,
-    summary: summary || null,
-    reason,
-  }
-}
-
-async function summarizeStoryWithRelevance(params: {
-  env: AiEnv
-  runtimeAi: RuntimeConfigBundle['ai']
-  model: string
-  instructions: string
-  input: string
-  maxOutputTokens: number
-}) {
-  const { env, runtimeAi, model, instructions, input, maxOutputTokens } = params
-  const sourceInstructions = `${instructions}\n\nUse only facts present in the supplied article. Do not infer the article from its title, invent missing details, or fabricate reader comments. If no comments are supplied, omit comments entirely. If the input lacks substantive article text, return relevant=false and summary=null.`
-  const maxAttempts = 2
-  let lastError: unknown = null
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      const response = await createResponseText({
-        env,
-        runtimeAi,
-        model,
-        instructions: attempt === 1
-          ? sourceInstructions
-          : `${sourceInstructions}\n\n【重要】上一次输出不是有效 JSON，请只输出一个完整 JSON 对象，不要代码块或多余文字。`,
-        input,
-        maxOutputTokens,
-        responseMimeType: 'application/json',
-        responseSchema: storySummarySchema,
-      })
-      const parsed = parseStorySummary(response.text)
-      if (!parsed) {
-        lastError = new Error('story summary output is not valid JSON')
-        continue
-      }
-      return { result: parsed, usage: response.usage, finishReason: response.finishReason }
-    }
-    catch (error) {
-      if (isSubrequestLimitError(error))
-        throw error
-      lastError = error
-    }
-  }
-
-  if (lastError instanceof Error) {
-    throw lastError
-  }
-  throw new Error('story summary failed after 2 attempts')
 }
 
 function toLogPreview(value: string, maxLength = 280) {
@@ -381,7 +277,7 @@ const retryConfig: WorkflowStepConfig = {
     delay: '10 seconds',
     backoff: 'exponential',
   },
-  timeout: '3 minutes',
+  timeout: '6 minutes',
 }
 
 const DEFAULT_FFMPEG_AUDIO_QUALITY = 5
@@ -401,6 +297,7 @@ const BUDGET_COST = {
   sourceFetchGmailPerRef: 1,
   gmailExpand: 3,
   storyContent: 2,
+  articleSummary: 4,
   llmCompose: 2,
   ttsLine: 3,
   audioMerge: 3,
@@ -500,6 +397,7 @@ function createInitialProgress(sourceTotal: number): WorkflowProgressState {
     storiesTotal: 0,
     storiesProcessed: 0,
     storiesCollected: 0,
+    summariesProcessed: 0,
     ttsTotal: 0,
     ttsProcessed: 0,
   }
@@ -515,6 +413,7 @@ function normalizeProgress(
   normalized.sourcesProcessed = Math.max(normalized.sourcesProcessed, cursor.sourceIndex)
   normalized.gmailProcessed = Math.max(normalized.gmailProcessed, cursor.gmailIndex)
   normalized.storiesProcessed = Math.max(normalized.storiesProcessed, cursor.storyIndex)
+  normalized.summariesProcessed = Math.max(normalized.summariesProcessed, cursor.summaryIndex)
   normalized.ttsProcessed = Math.max(normalized.ttsProcessed, cursor.ttsLineIndex)
 
   normalized.sourcesTotal = Math.max(normalized.sourcesTotal, normalized.sourcesProcessed)
@@ -545,6 +444,7 @@ function parseWorkflowProgress(
     storiesTotal: normalizeNonNegativeInt(record.storiesTotal),
     storiesProcessed: normalizeNonNegativeInt(record.storiesProcessed),
     storiesCollected: normalizeNonNegativeInt(record.storiesCollected ?? record.storiesRelevant),
+    summariesProcessed: normalizeNonNegativeInt(record.summariesProcessed),
     ttsTotal: normalizeNonNegativeInt(record.ttsTotal),
     ttsProcessed: normalizeNonNegativeInt(record.ttsProcessed),
   }, cursor)
@@ -554,6 +454,7 @@ const WORKFLOW_STAGE_FLOW: Array<{ stage: WorkflowStage, name: string }> = [
   { stage: 'collect_candidates', name: 'collect candidates' },
   { stage: 'expand_gmail', name: 'expand gmail links' },
   { stage: 'collect_articles', name: 'collect cleaned articles' },
+  { stage: 'summarize_articles', name: 'prepare detailed article summaries' },
   { stage: 'compose_text', name: 'compose podcast/blog text' },
   { stage: 'tts_render', name: 'render tts audio' },
   { stage: 'done', name: 'done' },
@@ -600,6 +501,7 @@ function logWorkflowObservation(params: {
         total: progress.storiesTotal,
         collected: progress.storiesCollected,
       },
+      summaries: { processed: progress.summariesProcessed, total: progress.storiesCollected },
       ttsLines: {
         processed: progress.ttsProcessed,
         total: progress.ttsTotal,
@@ -618,6 +520,7 @@ function createInitialCursor(): WorkflowCursorState {
     sourceIndex: 0,
     gmailIndex: 0,
     storyIndex: 0,
+    summaryIndex: 0,
     ttsLineIndex: 0,
   }
 }
@@ -626,6 +529,7 @@ function isWorkflowStage(value: unknown): value is WorkflowStage {
   return value === 'collect_candidates'
     || value === 'expand_gmail'
     || value === 'collect_articles'
+    || value === 'summarize_articles'
     || value === 'summarize_stories'
     || value === 'compose_text'
     || value === 'tts_render'
@@ -640,6 +544,7 @@ function parseWorkflowCursor(value: unknown): WorkflowCursorState {
     sourceIndex: normalizeNonNegativeInt(record.sourceIndex),
     gmailIndex: normalizeNonNegativeInt(record.gmailIndex),
     storyIndex: normalizeNonNegativeInt(record.storyIndex),
+    summaryIndex: normalizeNonNegativeInt(record.summaryIndex),
     ttsLineIndex: normalizeNonNegativeInt(record.ttsLineIndex),
   }
 }
@@ -676,6 +581,7 @@ function parseWorkflowJobState(value: unknown): WorkflowJobState | null {
     progress: parseWorkflowProgress(record.progress, cursor),
     candidatesKey: typeof record.candidatesKey === 'string' ? record.candidatesKey : undefined,
     articlesKey: typeof record.articlesKey === 'string' ? record.articlesKey : undefined,
+    summariesKey: typeof record.summariesKey === 'string' ? record.summariesKey : undefined,
     composeKey: typeof record.composeKey === 'string' ? record.composeKey : undefined,
     contentKey: typeof record.contentKey === 'string' ? record.contentKey : undefined,
     podcastKey: typeof record.podcastKey === 'string' ? record.podcastKey : undefined,
@@ -762,11 +668,18 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
     const today = event.payload?.today || windowDateKey
     const publishedAt = now.toISOString()
     const publishDateKey = getDateKeyInTimeZone(now, timeZone)
-    const runtimeAi = { ...runtimeConfig.ai, sessionId: event.instanceId }
+    const runtimeAi = { ...runtimeConfig.ai, sessionId: event.instanceId, reasoning: true }
     const aiProvider = getAiProvider(this.env, runtimeAi)
     const maxTokens = getMaxTokens(this.env, aiProvider, runtimeAi)
     const primaryModel = getPrimaryModel(this.env, aiProvider, runtimeAi)
     const thinkingModel = getThinkingModel(this.env, aiProvider, runtimeAi)
+    const writingAi = { ...runtimeAi, reasoning: true }
+    const summarizeArticle = (article: EditorialArticle) => generateRichSummary(article, runtimePrompts.summarizeStory, async (instructions, input, schema) => {
+      const response = await createResponseText({ env: this.env, runtimeAi, model: primaryModel, instructions, input, responseMimeType: 'application/json', responseSchema: schema, maxOutputTokens: maxTokens })
+      return response.text
+    })
+    const reviewAi = { ...runtimeAi, reasoning: true, modelOverride: aiProvider === 'opencode' ? this.env.OPENCODE_REVIEW_MODEL?.trim() : undefined }
+    const reviewModel = getPrimaryModel(this.env, aiProvider, reviewAi)
     const testConfig = runtimeConfig.test
     const testStep = testConfig.workflowTestStep.trim().toLowerCase()
     const testInputOverride = testConfig.workflowTestInput
@@ -1058,19 +971,10 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           if (!story) {
             throw new Error('workflow test step "story": no stories found')
           }
-          const storyResponse = await getStoryContent(story, maxTokens, this.env)
-          const { result } = await summarizeStoryWithRelevance({
-            env: this.env,
-            runtimeAi,
-            model: primaryModel,
-            instructions: runtimePrompts.summarizeStory,
-            input: storyResponse,
-            maxOutputTokens: maxTokens,
-          })
-          if (!result.relevant) {
-            return `NOT_RELEVANT: ${result.reason}`
-          }
-          return result.summary || ''
+          const body = await getStoryArticle(story, this.env)
+          if (!body.trim())
+            return 'NO_ARTICLE_BODY'
+          return JSON.stringify(await summarizeArticle(createEditorialArticle(story, body)))
         }
 
         if (testStep === 'podcast') {
@@ -1178,7 +1082,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           await saveJsonToR2(this.env.PODCAST_R2, materialKey, materials)
         })
         consumeBudget(budget, BUDGET_COST.r2Write, 'copy preview articles', jobId)
-        workflowState.stage = 'compose_text'
+        workflowState.stage = 'summarize_articles'
         workflowState.cursor.sourceIndex = enabledSources.length
         workflowState.cursor.storyIndex = materials.stories.length
         workflowState.progress = normalizeProgress({
@@ -1217,11 +1121,16 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
       })
     }
 
-    if (!workflowState.articlesKey && ['collect_articles', 'compose_text'].includes(workflowState.stage)) {
+    if (!workflowState.articlesKey && ['collect_articles', 'summarize_articles', 'compose_text'].includes(workflowState.stage)) {
       workflowState.stage = 'collect_articles'
       workflowState.cursor.storyIndex = 0
       workflowState.progress.storiesProcessed = 0
       workflowState.progress.storiesCollected = 0
+    }
+
+    if (workflowState.stage === 'compose_text' && !workflowState.summariesKey) {
+      workflowState.stage = 'summarize_articles'
+      workflowState.cursor.summaryIndex = 0
     }
 
     workflowState.publicationMode = resolvePublicationMode(this.env.PODCAST_PUBLISH_MODE, event.payload?.publish, workflowState.publicationMode)
@@ -1271,7 +1180,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
     const loadArticleSnapshot = async () => {
       if (!workflowState.articlesKey)
         return { stories: [], articles: [] } satisfies ArticleSnapshot
-      const loaded = await step.do('load full article snapshot', retryConfig, async () => {
+      const loaded = await step.do(`load full article snapshot ${workflowState.cursor.storyIndex}`, retryConfig, async () => {
         return await loadJsonFromR2<ArticleSnapshot>(this.env.PODCAST_R2, workflowState.articlesKey!)
       })
       consumeBudget(budget, BUDGET_COST.r2Read, 'load full article snapshot', jobId)
@@ -1288,6 +1197,24 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
       })
       consumeBudget(budget, BUDGET_COST.r2Write, 'save full article snapshot', jobId)
       workflowState.articlesKey = key
+    }
+
+    const loadSummaries = async () => {
+      if (!workflowState.summariesKey)
+        return [] as ArticleSummary[]
+      const loaded = await step.do(`load detailed summaries ${workflowState.cursor.summaryIndex}`, retryConfig, async () => loadJsonFromR2<ArticleSummary[]>(this.env.PODCAST_R2, workflowState.summariesKey!))
+      consumeBudget(budget, BUDGET_COST.r2Read, 'load detailed summaries', jobId)
+      if (!loaded || loaded.length < workflowState.cursor.summaryIndex || loaded.some((item, index) => item.articleIndex !== index))
+        throw new Error('Detailed summaries checkpoint is missing or inconsistent')
+      workflowState.cursor.summaryIndex = loaded.length
+      workflowState.progress.summariesProcessed = loaded.length
+      return loaded
+    }
+    const saveSummaries = async (summaries: ArticleSummary[]) => {
+      const key = buildJobDataKey(jobId, 'summaries')
+      await step.do(`save detailed summaries ${summaries.length}`, retryConfig, async () => saveJsonToR2(this.env.PODCAST_R2, key, summaries))
+      consumeBudget(budget, BUDGET_COST.r2Write, 'save detailed summaries', jobId)
+      workflowState.summariesKey = key
     }
 
     const loadComposeSnapshot = async () => {
@@ -1430,7 +1357,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         })
         return
       }
-      const currentStageCursor = `${workflowState.stage}:${workflowState.cursor.sourceIndex}:${workflowState.cursor.gmailIndex}:${workflowState.cursor.storyIndex}:${workflowState.cursor.ttsLineIndex}`
+      const currentStageCursor = `${workflowState.stage}:${workflowState.cursor.sourceIndex}:${workflowState.cursor.gmailIndex}:${workflowState.cursor.storyIndex}:${workflowState.cursor.summaryIndex}:${workflowState.cursor.ttsLineIndex}`
       if (stageLogCursor !== currentStageCursor) {
         stageLogCursor = currentStageCursor
         logWorkflowObservation({
@@ -1696,23 +1623,50 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           await saveWorkflowState('no article bodies available')
           return
         }
+        workflowState.stage = 'summarize_articles'
+        await saveWorkflowState('stage transition: collect_articles -> summarize_articles')
+        continue
+      }
+
+      if (workflowState.stage === 'summarize_articles') {
+        const materials = await loadArticleSnapshot()
+        const summaries = await loadSummaries()
+        for (let index = workflowState.cursor.summaryIndex; index < materials.articles.length; index++) {
+          if (await maybeHandoff('summarize_articles', BUDGET_COST.articleSummary + BUDGET_COST.r2Write * 2 + BUDGET_COST.kvWrite + BUDGET_COST.workflowCreate, `summarize article ${index}`, { summaryIndex: index }))
+            return
+          const summary = await step.do(`prepare detailed summary ${index}`, { ...retryConfig, timeout: '11 minutes', retries: withRetryLimit(1) }, () => summarizeArticle(materials.articles[index]))
+          consumeBudget(budget, BUDGET_COST.articleSummary, `summarize article ${index}`, jobId)
+          summaries.push({ articleIndex: index, summary })
+          workflowState.cursor.summaryIndex = index + 1
+          workflowState.progress.summariesProcessed = index + 1
+          await saveSummaries(summaries)
+          await saveWorkflowState(`checkpoint detailed summary ${index}`)
+        }
         workflowState.stage = 'compose_text'
-        await saveWorkflowState('stage transition: collect_articles -> compose_text')
+        await saveWorkflowState('stage transition: summarize_articles -> compose_text')
         continue
       }
 
       if (workflowState.stage === 'compose_text') {
         if (await maybeHandoff(
           'compose_text',
-          BUDGET_COST.llmCompose * 4 + BUDGET_COST.kvWrite + BUDGET_COST.r2Write + BUDGET_COST.workflowCreate,
+          BUDGET_COST.llmCompose * 10 + BUDGET_COST.kvWrite + BUDGET_COST.r2Write * 6 + BUDGET_COST.workflowCreate,
           'compose text stage needs fresh budget',
         )) {
           return
         }
 
         const articleSnapshot = await loadArticleSnapshot()
-        const keptStories = articleSnapshot.stories
         const articles = articleSnapshot.articles
+        const summaries = await loadSummaries()
+        const articleInput = buildRichSummaryInput(articles, summaries)
+        if (!articleInput) {
+          workflowState.stage = 'done'
+          workflowState.status = 'done'
+          await saveWorkflowState('no relevant detailed summaries')
+          return
+        }
+        const keptStories = summaries.filter(item => item.summary.relevant).map(item => articleSnapshot.stories[item.articleIndex])
         workflowState.progress.storiesCollected = keptStories.length
         const composeStepsTotal = 4
         const logComposeStep = (
@@ -1764,22 +1718,30 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           return
         }
 
-        const articleInput = buildPodcastStoryInput(articles)
         await step.sleep('Give AI a break', breakTime)
 
         logComposeStep(1, 'podcast content', 'start', { inputArticles: articles.length })
-        const podcastContent = await step.do('create podcast content', { ...retryConfig, retries: withRetryLimit(3) }, async () => {
-          const { text } = await createResponseText({
-            env: this.env,
-            runtimeAi,
-            model: thinkingModel,
-            instructions: runtimePrompts.summarizePodcast,
-            input: articleInput,
-            maxOutputTokens: maxTokens,
-          })
-          return text
+        const podcastContent = await composeReviewedScript({
+          articles,
+          markers: speakerMarkers,
+          draft: () => step.do('draft podcast from detailed summaries', { ...retryConfig, timeout: '6 minutes' }, async () => {
+            const { text } = await createResponseText({ env: this.env, runtimeAi: writingAi, model: thinkingModel, instructions: runtimePrompts.summarizePodcast, input: articleInput, maxOutputTokens: maxTokens })
+            return text
+          }),
+          review: async (pass, input, script) => {
+            const result = await step.do(`review podcast against full articles ${pass}`, { ...retryConfig, timeout: '6 minutes', retries: withRetryLimit(1) }, async () => {
+              const { text } = await createResponseText({ env: this.env, runtimeAi: reviewAi, model: reviewModel, instructions: scriptReviewPrompt, input, responseMimeType: 'application/json', responseSchema: scriptReviewJsonSchema, maxOutputTokens: maxTokens })
+              return parseScriptReview(text, script, articles)
+            })
+            consumeBudget(budget, BUDGET_COST.llmCompose * 2, `review podcast ${pass}`, jobId)
+            return result
+          },
+          checkpoint: async (state) => {
+            await step.do(`save editorial review ${state.pass} ${state.status}`, retryConfig, () => saveJsonToR2(this.env.PODCAST_R2, buildJobDataKey(jobId, `editorial-${state.pass}-${state.status}`), state))
+            consumeBudget(budget, BUDGET_COST.r2Write, 'save editorial review', jobId)
+          },
         })
-        consumeBudget(budget, BUDGET_COST.llmCompose, 'create podcast content', jobId)
+        consumeBudget(budget, BUDGET_COST.llmCompose, 'draft podcast from detailed summaries', jobId)
         logComposeStep(1, 'podcast content', 'done', {
           outputChars: podcastContent.length,
         })

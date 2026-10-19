@@ -1,35 +1,6 @@
-import { episodeTitlePrompt, podcastEditorialPrompt, sharedWritingRules, storyFidelityZh } from './editorial-prompts'
+import { episodeTitlePrompt, podcastEditorialPrompt, richStorySummaryPrompt } from './editorial-prompts'
 
-export const summarizeStoryPrompt = `
-你是播客的编辑助理，负责整理文章和社区讨论。
-
-【输入格式】
-- <title>：文章标题
-- <article>：文章正文
-- <comments>：社区评论
-
-【相关性判断】
-文章的主要内容必须与 {{podcastDescription}} 相关，才判定为相关。仅在背景或附带中提及不算相关。
-
-【工作目标】
-1. 保留文章原文的核心内容，尽量使用原文表述
-2. 筛选讨论区有价值的观点（支持、反对、补充）
-3. 专业术语首次出现时用括号简要解释
-
-【输出要求】
-- 只输出一个 JSON 对象，不要解释或额外文本，不要代码块
-- 输出结构：
-  - relevant: boolean（相关为 true，不相关为 false）
-  - summary: string | null（相关则给摘要；不相关必须为 null）
-  - reason: string（一句话说明判断依据，极简即可）
-- 摘要为简体中文，直接输出正文，无需前言或标题
-- 评论观点融入正文，不要单独列"评论区"章节
-- 保持简洁，不做过度加工
-
-${sharedWritingRules('zh')}
-
-${storyFidelityZh}
-`.trim()
+export const summarizeStoryPrompt = richStorySummaryPrompt('zh')
 
 export const summarizePodcastPrompt = podcastEditorialPrompt('zh')
 

@@ -2,7 +2,7 @@
 
 <img src="public/logo.png" alt="Any Podcast" height="240" />
 
-一个可配置的 AI 播客平台：自动聚合内容源，从完整文章撰写对话并输出播客音频。你可以为不同主题配置独立的内容源，组合成自己的播客流。
+一个可配置的 AI 播客平台：自动聚合内容源，从丰富文章摘要撰写对话并输出播客音频。你可以为不同主题配置独立的内容源，组合成自己的播客流。
 
 ## 理念
 
@@ -24,7 +24,7 @@
 
 核心思路：
 
-- 主流程仍然是一个 `PodcastWorkflow`，按阶段执行：`collect_candidates -> expand_gmail -> collect_articles -> compose_text -> tts_render -> done`
+- 主流程仍然是一个 `PodcastWorkflow`，按阶段执行：`collect_candidates -> expand_gmail -> collect_articles -> summarize_articles -> compose_text -> tts_render -> done`
 - 在运行中维护 subrequest 预算（软上限 `45`，保留 `6`）
 - 每次进入高成本步骤前，先估算下一步成本；若预算即将超限，则先做 checkpoint，再创建下一个 continuation 实例继续
 - continuation 仍是同一个主流程，继承相同 `jobId`，并通过 `continuationSeq` 递增（实例 ID 形如 `<jobId>-c<seq>`）
@@ -35,6 +35,8 @@
 - **R2**：保存较大的阶段快照数据，key 形如 `workflow/jobs/<jobId>/*.json`
   - `candidates.json`：候选文章与 Gmail 待展开消息
   - `articles.json`：完整文章正文和内部来源元数据
+  - `summaries.json`：丰富摘要及原文段落证据
+  - `editorial-*.json`：发布前的草稿、审稿及决策
   - `compose.json`：播客/博客生成结果与 TTS 输入
 
 这样做的结果是：单次运行接近上限时会自动“换实例继续”，而不丢失进度，最终仍产出同一集 podcast/blog/audio。
@@ -162,7 +164,7 @@ Web 管理后台可以在运行时配置所有选项，无需修改代码：
    - **AI 配置**: 服务商（OpenCode/Gemini/OpenAI/MiniMax）和模型
    - **TTS 配置**: 服务商（Gemini/Edge/MiniMax/Murf）、语言、每位主播的语音、音频质量、片头音乐
    - **内容源**: 添加 RSS 订阅、网页 URL 或 Gmail 标签
-   - **Prompt**: 自定义所有 AI 提示词（单篇文章诊断、播客对话、节目笔记、简介、标题）
+   - **Prompt**: 自定义所有 AI 提示词（丰富文章摘要、播客对话、节目笔记、简介、标题）
    - **语言和时区**: 语言、时区
 
 所有更改保存到 KV，在下次工作流运行时立即生效。
@@ -187,7 +189,19 @@ Edge 合成使用原版朗读端点及其 2026 年 10 月升级的 v2 签名，�
 
 将 Worker 变量 `PODCAST_PUBLISH_MODE` 设为 `preview`，会把音频和节目资料保存在 `previews/<jobId>/`，不写入公开节目列表或 RSS；定时任务也遵循该设置。试听任务跨续跑仍保留试听状态。确认可以发布后，将变量改为 `publish` 供后续新任务使用；未设置该变量时保留原来的自动发布行为。
 
-整期脚本直接使用完整文章，不再逐篇调用 AI 生成摘要。交给对话模型的每篇文章只有 `source`、`title`、`content`；去掉网址目标，保留链接文字与文章内容。制片人简报引导模型忽略导航、广告和页脚，一次完成选题和对话。完整资料保存在 R2，供续跑及试听重放（`replayMaterialJobId`）；失败重试不会截断正文或悄悄减少为六篇。原文链接留在内部元数据，节目笔记完成后再补上出处。单篇摘要提示词仅供 Admin 的可选诊断测试使用。
+每篇完整文章先生成丰富的结构化摘要，再将全部相关摘要一起交给模型写整期双人稿。摘要按信息量展开，保留人物机构身份、发现与统计口径、定义方法、具体案例、各方观点及必要局限，不设很短的固定字数上限。证据通过原文段落编号定位，原文保存在 R2，便于核查。
+
+独立审稿节点逐轮台词对照完整原文，记录核查依据并明确统计分母和比较对象，检查实质性的事实和尊重表达问题，提出有出处的单轮台词修改；程序最多自动修订两轮，每轮重新审核。审核不作为发布门槛：修订两轮后仍有意见，或审核服务不可用、修改无效时，保留记录并使用最后一版可用稿继续合成和发布；空稿、说话人格式损坏仍属于技术失败。所有 DeepSeek 文本调用均启用 high 级别思考，包括摘要、写稿、审核、标题、简介和节目笔记。风格建议不触发强制改写。草稿、审稿及最终采用结果保存在 R2。可用 `OPENCODE_REVIEW_MODEL` 单独选择审核模型；不填时使用写稿模型。`pnpm deploy:providers` 会部署两个模型变量。
+
+文章元数据只包含 `source`、`title`、`content`，去掉网址目标。导航页脚保留给模型自行辨识，不增加站点裁剪规则。原文及摘要均支持续跑恢复；`replayMaterialJobId` 复用原文并重新生成摘要。失败重试不截断文章、不悄悄减少为六篇。原文链接仅留在内部元数据，节目笔记完成后再补出处。
+
+仅生成文字、全程自动审核，不合成或发布：
+
+```bash
+OPENCODE_REVIEW_MODEL=deepseek-v4-pro pnpm podcast:script-preview existing-config.json articles.json tmp/script-preview
+```
+
+`articles.json` 可以是 `{source,title,content}` 数组，或包含 `articles` 数组的对象。测试保留丰富摘要、模型草稿和每次审核，将最终可用稿保存为 `dialogue.txt`。可加 `--draft existing-draft.txt` 对已有模型稿件执行同样的自动审核与修订。导出的 `prompts.json` 仅包含需要合并到现有 Admin 配置的三项提示词；主持人、来源、标题风格等保持由原配置管理。已有节目部署时，需将这些提示词与代码一起更新。
 
 ### 使用 OpenCode Go 与 Edge TTS 生成本地试听
 
@@ -215,7 +229,7 @@ pnpm tts:smoke http://localhost:8799
 pnpm podcast:preview tmp/preview/config.json articles.json tmp/preview/episode http://localhost:8799 https://your-podcast-worker.example.workers.dev
 ```
 
-试听流程将完整文章交给一次对话请求统一选题并写双人稿，再生成标题、简介和节目笔记，逐段合成语音、合并 MP3 并混入片头。结果包含 `podcast.mp3`、`dialogue.txt`、`show-notes.md` 和 `manifest.json`；完整音频解码成功才算完成。不传本地 Worker URL 时在 Node 中合成语音。最后一个 URL 用于解析片头音乐的相对路径，默认读取 `worker/.env.local` 中的 `PODCAST_WORKER_URL`。
+试听流程先生成丰富摘要，统一写双人稿并自动审核，再生成标题、简介和节目笔记，逐段合成语音、合并 MP3 并混入片头。结果包含 `podcast.mp3`、`dialogue.txt`、`show-notes.md` 和 `manifest.json`；完整音频解码成功才算完成。不传本地 Worker URL 时在 Node 中合成语音。最后一个 URL 用于解析片头音乐的相对路径，默认读取 `worker/.env.local` 中的 `PODCAST_WORKER_URL`。
 
 对于本项目的中英文 Spectrum 部署，`pnpm deploy:providers` 会将 `worker/.env.local` 中的 `OPENCODE_API_KEY` 和 `OPENCODE_MODEL` 安全上传到两个已有 Worker；也可传 `cn` 或 `en` 只更新一套。以后修改本地密钥或模型后，再运行该命令即可。模型留空时恢复使用 Admin 的设置。
 

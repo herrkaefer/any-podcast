@@ -6,6 +6,7 @@ export type AiProvider = 'openai' | 'gemini' | 'minimax' | 'opencode'
 export interface AiEnv {
   OPENCODE_API_KEY?: string
   OPENCODE_MODEL?: string
+  OPENCODE_REVIEW_MODEL?: string
   OPENAI_API_KEY?: string
   GEMINI_API_KEY?: string
   MINIMAX_API_KEY?: string
@@ -57,7 +58,7 @@ export const defaultOpenCodeModel = 'deepseek-v4.1-flash'
 
 const defaultMiniMaxBaseUrl = 'https://api.minimaxi.com/v1'
 
-export type RuntimeAiOptions = RuntimeAiConfig & { sessionId?: string }
+export type RuntimeAiOptions = RuntimeAiConfig & { sessionId?: string, modelOverride?: string, reasoning?: boolean }
 let defaultOpenCodeSessionId: string | undefined
 
 export function getAiProvider(env: AiEnv, options?: RuntimeAiOptions): AiProvider {
@@ -106,7 +107,7 @@ export function getPrimaryModel(env: AiEnv, provider: AiProvider, options?: Runt
   }
 
   const model = provider === 'opencode'
-    ? env.OPENCODE_MODEL?.trim() || options?.model?.trim()
+    ? options?.modelOverride?.trim() || env.OPENCODE_MODEL?.trim() || options?.model?.trim()
     : options?.model?.trim()
   if (!model) {
     throw new Error('runtime config ai.model is required')
@@ -118,9 +119,10 @@ export function getThinkingModel(env: AiEnv, provider: AiProvider, options?: Run
   return getPrimaryModel(env, provider, options)
 }
 
-export function getMaxTokens(_: AiEnv, _provider: AiProvider, options?: RuntimeAiOptions): number {
+export function getMaxTokens(_: AiEnv, provider: AiProvider, options?: RuntimeAiOptions): number {
   void options
-  return 8192
+  // Reasoning shares the output budget with the detailed article brief or episode.
+  return provider === 'opencode' ? 32768 : 8192
 }
 
 function buildResponsesUrl(): string {
@@ -222,6 +224,11 @@ function toJsonSchema(schema: unknown): JsonSchemaObject {
       throw new Error(`Unsupported responseSchema type: ${rawType || 'unknown'}`)
   }
 
+  for (const keyword of ['description', 'examples', 'enum', 'minimum', 'maximum', 'minLength', 'maxLength', 'minItems', 'maxItems']) {
+    if (record[keyword] !== undefined)
+      jsonSchema[keyword] = record[keyword]
+  }
+
   if (!nullable) {
     return jsonSchema
   }
@@ -314,9 +321,12 @@ export async function createResponseText(params: {
     }
 
     const url = buildChatCompletionsUrl(isOpenCode ? defaultOpenCodeBaseUrl : defaultMiniMaxBaseUrl)
+    const requestModel = isOpenCode ? runtimeAi?.modelOverride?.trim() || env.OPENCODE_MODEL?.trim() || model : model
+    const useThinking = isOpenCode && runtimeAi?.reasoning !== false && /^deepseek-/i.test(requestModel)
     const body: Record<string, unknown> = {
-      model: isOpenCode ? env.OPENCODE_MODEL?.trim() || model : model,
-      ...(isOpenCode ? { thinking: { type: 'disabled' } } : { reasoning_split: true }),
+      model: requestModel,
+      ...(isOpenCode ? { thinking: { type: useThinking ? 'enabled' : 'disabled' }, ...(useThinking ? { reasoning_effort: 'high' } : {}) } : { reasoning_split: true }),
+      ...(isOpenCode && responseMimeType === 'application/json' ? { response_format: { type: 'json_object' } } : {}),
       messages: [
         {
           role: 'system',
@@ -345,7 +355,7 @@ export async function createResponseText(params: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(180000),
+      signal: AbortSignal.timeout(useThinking ? 300000 : 180000),
     })
 
     if (!response.ok) {

@@ -13,6 +13,7 @@ const settings = {
   OPENCODE_API_KEY: env.OPENCODE_API_KEY.trim(),
   // An empty override restores the model selected in Admin.
   OPENCODE_MODEL: env.OPENCODE_MODEL?.trim() || '',
+  OPENCODE_REVIEW_MODEL: env.OPENCODE_REVIEW_MODEL?.trim() || '',
 }
 const targets = process.argv.slice(2)
 for (const target of targets.length ? targets : ['cn', 'en']) {

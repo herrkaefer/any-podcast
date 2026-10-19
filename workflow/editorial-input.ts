@@ -23,7 +23,10 @@ export function createEditorialArticle(story: ArticleStory, body: string): Edito
 export function buildPodcastStoryInput(articles: EditorialArticle[]) {
   if (!articles.length)
     throw new Error('No article bodies are available')
-  return JSON.stringify({ articles: articles.map(article => createEditorialArticle({ title: article.title, sourceName: article.source }, article.content)) })
+  const packet = { articles: articles.map(({ source, title, content }) => ({ source, title, content })) }
+  if (packet.articles.some(article => !article.content.trim() || /https?:\/\//i.test(JSON.stringify(article))))
+    throw new Error('Editorial article content must be nonempty and URL-free')
+  return JSON.stringify(packet)
 }
 
 /** Add public citations after generation; article URLs never go to the model. */

@@ -4,7 +4,7 @@
 
 [中文](./README.zh-CN.md)
 
-An AI-powered, configurable podcast platform that aggregates content sources, writes conversations from complete articles, and produces podcast audio. You can define different sources per topic and build your own podcast flow.
+An AI-powered, configurable podcast platform that aggregates content sources, writes conversations from detailed article summaries, and produces podcast audio. You can define different sources per topic and build your own podcast flow.
 
 ## Philosophy
 
@@ -26,7 +26,7 @@ To prevent `Too many subrequests` failures in long runs (many sources, many stor
 
 Core approach:
 
-- Keep one `PodcastWorkflow` stage flow: `collect_candidates -> expand_gmail -> collect_articles -> compose_text -> tts_render -> done`
+- Keep one `PodcastWorkflow` stage flow: `collect_candidates -> expand_gmail -> collect_articles -> summarize_articles -> compose_text -> tts_render -> done`
 - Track a subrequest budget during execution (soft limit `45`, reserve `6`)
 - Before high-cost work, estimate the next cost; if budget is near the threshold, checkpoint first and spawn a continuation instance
 - The continuation is still the same main workflow, reusing the same `jobId` and incrementing `continuationSeq` (instance ID like `<jobId>-c<seq>`)
@@ -37,6 +37,8 @@ State and snapshot storage:
 - **R2** stores larger stage snapshots under keys like `workflow/jobs/<jobId>/*.json`
   - `candidates.json`: candidate stories and pending Gmail expansions
   - `articles.json`: complete article bodies and internal source metadata
+  - `summaries.json`: detailed summaries and original-paragraph evidence references
+  - `editorial-*.json`: draft/review decisions before publication
   - `compose.json`: composed podcast/blog text and TTS inputs
 
 This allows the run to automatically continue in a fresh workflow instance before hitting the hard limit, without losing progress, while still producing one logical episode output.
@@ -164,7 +166,7 @@ The web-based Admin console lets you configure everything at runtime without tou
    - **AI**: provider (OpenCode/Gemini/OpenAI/MiniMax) and model
    - **TTS**: provider (Gemini/Edge/MiniMax/Murf), language, voice for each host, audio quality, intro music
    - **Sources**: add RSS feeds, URLs, or Gmail labels
-   - **Prompts**: customize all AI prompts (single-article diagnostic, podcast dialogue, show notes, intro, title)
+   - **Prompts**: customize all AI prompts (detailed article summaries, podcast dialogue, show notes, intro, title)
    - **Locale**: language, timezone
 
 All changes are saved to KV and take effect immediately on the next workflow run.
@@ -189,7 +191,19 @@ Edge synthesis uses the read-aloud endpoint with its October 2026 v2 signature; 
 
 Set the Worker variable `PODCAST_PUBLISH_MODE` to `preview` to generate audio and episode metadata under `previews/<jobId>/` without writing the public episode list or RSS. This hold also applies to scheduled runs. A preview job stays a preview across continuations. Use `publish` for new runs only after approving publication; the default when the variable is absent preserves the existing publication behavior.
 
-Episode composition uses complete article text, not per-article AI summaries. Each article sent to the dialogue model contains only `source`, `title` and `content`; URL destinations are removed while link text and all article content remain. The producer brief asks the model to ignore navigation, ads and footers, select topics and write the conversation in one pass. Complete materials are checkpointed in R2 for continuations and preview replay (`replayMaterialJobId`). No retry silently truncates articles or drops them to a six-story subset. Original URLs stay in internal metadata; public citations are added after show-note generation. The single-article summary prompt is only an optional Admin diagnostic.
+Episode composition first prepares detailed, structured summaries of every complete article, then gives all relevant summaries to one dialogue request. Summaries retain identities, findings, numbers with statistical context, definitions, methods, cases, attributed viewpoints and limitations. Length follows the substantive information rather than a short fixed cap. Evidence references point to numbered original paragraphs; the original text remains in R2 for verification.
+
+A separate reviewer receives the complete articles and draft, records a source-based check for every spoken turn (including statistical denominators and comparison objects), checks material factual and respect issues, and proposes only exact-turn corrections with valid source references. The workflow applies at most two repair rounds and rechecks each result. Review is best effort: after two repair rounds, or if the review service is unavailable or returns invalid edits, the workflow continues with the last usable script and records remaining issues. Editorial approval is not a publication gate. Empty scripts or broken speaker formatting remain technical failures. All DeepSeek text calls use thinking mode at high effort, including summaries, dialogue, review, title, description and show notes. Optional style suggestions do not force rewrites. Each draft, review and final decision is checkpointed in R2. `OPENCODE_REVIEW_MODEL` optionally selects a different reviewer; absent that, it uses the writing model. `pnpm deploy:providers` deploys both model settings.
+
+Only `source`, `title` and `content` are sent as article metadata, with URL destinations removed. Navigation and footers remain for the model to recognize, without page-specific cropping. Complete articles and detailed summaries support continuation recovery; `replayMaterialJobId` reuses saved originals and makes fresh summaries. No retry silently truncates articles or drops them to a six-story subset. Public citations are added after show-note generation from internal URL metadata.
+
+A text-only automated test, without TTS or publication:
+
+```bash
+OPENCODE_REVIEW_MODEL=deepseek-v4-pro pnpm podcast:script-preview existing-config.json articles.json tmp/script-preview
+```
+
+`articles.json` is an array of `{source,title,content}` or an object containing an `articles` array. The test saves detailed summaries, original model drafts, every review, and `dialogue.txt` for the final usable version. Use `--draft existing-draft.txt` to run the same automatic checks and repairs on an existing model draft. The exported `prompts.json` contains only the three prompts to merge into an existing Admin configuration; hosts, sources, title style and other settings remain under that configuration. Deploy existing shows with these prompt updates together with the code.
 
 ### Generate a local preview with OpenCode Go and Edge TTS
 
@@ -217,7 +231,7 @@ pnpm tts:smoke http://localhost:8799
 pnpm podcast:preview tmp/preview/config.json articles.json tmp/preview/episode http://localhost:8799 https://your-podcast-worker.example.workers.dev
 ```
 
-The preview writes the dialogue directly from complete articles, then generates the title, description and show notes, synthesizes each host’s speech, concatenates MP3 segments and mixes intro music. It saves `podcast.mp3`, `dialogue.txt`, `show-notes.md`, and `manifest.json`, and requires a successful full audio decode. Omit the local Worker URL to synthesize in Node. The final URL argument resolves relative intro music URLs; it defaults to `PODCAST_WORKER_URL` from `worker/.env.local`.
+The preview summarizes complete articles in detail, writes and automatically reviews the dialogue, then generates the title, description and show notes, synthesizes each host’s speech, concatenates MP3 segments and mixes intro music. It saves `podcast.mp3`, `dialogue.txt`, `show-notes.md`, and `manifest.json`, and requires a successful full audio decode. Omit the local Worker URL to synthesize in Node. The final URL argument resolves relative intro music URLs; it defaults to `PODCAST_WORKER_URL` from `worker/.env.local`.
 
 For the two Spectrum deployments, `pnpm deploy:providers` securely uploads `OPENCODE_API_KEY` and `OPENCODE_MODEL` from `worker/.env.local` to both existing Workers. Pass `cn` or `en` to update one. Run it again after changing the key or model locally. An empty model restores the Admin setting.
 
