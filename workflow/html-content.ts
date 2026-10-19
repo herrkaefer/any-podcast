@@ -1,4 +1,5 @@
 import * as cheerio from 'cheerio'
+import MarkdownIt from 'markdown-it'
 
 /** Extract public, static article/newsletter content while retaining source links. */
 export function extractStaticHtmlContent(html: string, sourceUrl: string): string {
@@ -42,4 +43,19 @@ export function extractStaticHtmlContent(html: string, sourceUrl: string): strin
     .replace(/\n{3,}/g, '\n\n')
     .trim()
   return title ? `# ${title}\n\n${text}` : text
+}
+
+const articleMarkdown = new MarkdownIt({ html: true, linkify: false })
+
+/** Normalize article markup and remove URL destinations without selecting or truncating the body. */
+export function cleanArticleText(markdown: string): string {
+  const $ = cheerio.load(articleMarkdown.render(markdown))
+  $('script, style, noscript, svg, iframe, img').remove()
+  $('br').replaceWith('\n')
+  $('table').each((_, element) => {
+    const rows = $(element).find('tr').map((_, row) => $(row).find('th, td').map((_, cell) => $(cell).text().replace(/\s+/g, ' ').trim()).get().join(' | ')).get()
+    $(element).replaceWith($('<pre>').text(rows.join('\n')))
+  })
+  $('p, div, section, h1, h2, h3, h4, h5, h6, li, tr, blockquote, pre').append('\n\n')
+  return $('body').text().replace(/(?:https?:\/\/|www\.)[^\s<>"'\u3001-\u303F\uFF00-\uFFEF]+/gi, '').replace(/[\u200B-\u200D\uFEFF\u00AD]/g, '').replace(/\u034F/g, '').replace(/[\t ]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim()
 }

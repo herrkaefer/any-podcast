@@ -2,7 +2,7 @@
 
 <img src="public/logo.png" alt="Any Podcast" height="240" />
 
-一个可配置的 AI 播客平台：自动聚合内容源，生成摘要并输出播客音频。你可以为不同主题配置独立的内容源，组合成自己的播客流。
+一个可配置的 AI 播客平台：自动聚合内容源，从完整文章撰写对话并输出播客音频。你可以为不同主题配置独立的内容源，组合成自己的播客流。
 
 ## 理念
 
@@ -24,7 +24,7 @@
 
 核心思路：
 
-- 主流程仍然是一个 `PodcastWorkflow`，按阶段执行：`collect_candidates -> expand_gmail -> summarize_stories -> compose_text -> tts_render -> done`
+- 主流程仍然是一个 `PodcastWorkflow`，按阶段执行：`collect_candidates -> expand_gmail -> collect_articles -> compose_text -> tts_render -> done`
 - 在运行中维护 subrequest 预算（软上限 `45`，保留 `6`）
 - 每次进入高成本步骤前，先估算下一步成本；若预算即将超限，则先做 checkpoint，再创建下一个 continuation 实例继续
 - continuation 仍是同一个主流程，继承相同 `jobId`，并通过 `continuationSeq` 递增（实例 ID 形如 `<jobId>-c<seq>`）
@@ -34,7 +34,7 @@
 - **KV**：保存轻量工作状态（当前阶段、游标、进度、快照 key 等），key 形如 `workflow:job:<jobId>:state`
 - **R2**：保存较大的阶段快照数据，key 形如 `workflow/jobs/<jobId>/*.json`
   - `candidates.json`：候选文章与 Gmail 待展开消息
-  - `summary.json`：摘要结果（相关/不相关）
+  - `articles.json`：完整文章正文和内部来源元数据
   - `compose.json`：播客/博客生成结果与 TTS 输入
 
 这样做的结果是：单次运行接近上限时会自动“换实例继续”，而不丢失进度，最终仍产出同一集 podcast/blog/audio。
@@ -43,7 +43,7 @@
 
 ### 前置条件
 
-- [Node.js](https://nodejs.org/) >= 18
+- [Node.js](https://nodejs.org/) >= 22.15
 - [pnpm](https://pnpm.io/)
 - [Cloudflare](https://dash.cloudflare.com/) 账号
 - [OpenCode Go API 密钥](https://opencode.ai/docs/go/)（也可使用其他已支持的文本服务）
@@ -162,7 +162,7 @@ Web 管理后台可以在运行时配置所有选项，无需修改代码：
    - **AI 配置**: 服务商（OpenCode/Gemini/OpenAI/MiniMax）和模型
    - **TTS 配置**: 服务商（Gemini/Edge/MiniMax/Murf）、语言、每位主播的语音、音频质量、片头音乐
    - **内容源**: 添加 RSS 订阅、网页 URL 或 Gmail 标签
-   - **Prompt**: 自定义所有 AI 提示词（文章摘要、播客对话、博客文章、简介、标题）
+   - **Prompt**: 自定义所有 AI 提示词（单篇文章诊断、播客对话、节目笔记、简介、标题）
    - **语言和时区**: 语言、时区
 
 所有更改保存到 KV，在下次工作流运行时立即生效。
@@ -181,11 +181,13 @@ cp workflow/sources/config.example.ts workflow/sources/config.local.ts
 
 `config.ts` 包含站点元数据的静态默认值（标题、描述、SEO、主题）。当 KV 中没有运行时配置时，这些值会作为兜底使用。大多数情况下，建议优先通过 Admin 后台配置。
 
-文章正文优先使用 Cloudflare 渲染。中英文 Worker 共用由中文 Worker 托管的 Durable Object 串行队列，两次渲染开始时间至少相隔 11 秒；这是根据该账户实测的 `429`、`Retry-After: 10` 设置的，重试也会遵循服务返回的等待时间。公开静态 HTML 和 Jina 为备用通道。正文为空的文章直接跳过，摘要不得虚构缺失事实或读者评论。
+文章正文优先使用 Cloudflare 渲染。中英文 Worker 共用由中文 Worker 托管的 Durable Object 串行队列，两次渲染开始时间至少相隔 11 秒；这是根据该账户实测的 `429`、`Retry-After: 10` 设置的，重试也会遵循服务返回的等待时间。公开静态 HTML 和 Jina 为备用通道。正文为空的文章直接跳过，对话保持事实与来源一致。
 
 Edge 合成使用原版朗读端点及其 2026 年 10 月升级的 v2 签名，适配代码和 LGPL 许可保存在 `workflow/edge-drm/`。音频分段串行生成，段间等待三秒，失败时按指数退避重试。续跑以 R2 检查点为准，KV 保留 Admin 进度视图。发布后等待 KV 同步再清除 RSS 快照，临时音频使用一次批量删除。
 
 将 Worker 变量 `PODCAST_PUBLISH_MODE` 设为 `preview`，会把音频和节目资料保存在 `previews/<jobId>/`，不写入公开节目列表或 RSS；定时任务也遵循该设置。试听任务跨续跑仍保留试听状态。确认可以发布后，将变量改为 `publish` 供后续新任务使用；未设置该变量时保留原来的自动发布行为。
+
+整期脚本直接使用完整文章，不再逐篇调用 AI 生成摘要。交给对话模型的每篇文章只有 `source`、`title`、`content`；去掉网址目标，保留链接文字与文章内容。制片人简报引导模型忽略导航、广告和页脚，一次完成选题和对话。完整资料保存在 R2，供续跑及试听重放（`replayMaterialJobId`）；失败重试不会截断正文或悄悄减少为六篇。原文链接留在内部元数据，节目笔记完成后再补上出处。单篇摘要提示词仅供 Admin 的可选诊断测试使用。
 
 ### 使用 OpenCode Go 与 Edge TTS 生成本地试听
 
@@ -213,7 +215,7 @@ pnpm tts:smoke http://localhost:8799
 pnpm podcast:preview tmp/preview/config.json articles.json tmp/preview/episode http://localhost:8799 https://your-podcast-worker.example.workers.dev
 ```
 
-试听流程包括文章相关性判断与摘要、双人稿、标题、简介、节目笔记、逐段语音、MP3 合并和片头混音。结果包含 `podcast.mp3`、`dialogue.txt`、`show-notes.md` 和 `manifest.json`；完整音频解码成功才算完成。不传本地 Worker URL 时在 Node 中合成语音。最后一个 URL 用于解析片头音乐的相对路径，默认读取 `worker/.env.local` 中的 `PODCAST_WORKER_URL`。
+试听流程将完整文章交给一次对话请求统一选题并写双人稿，再生成标题、简介和节目笔记，逐段合成语音、合并 MP3 并混入片头。结果包含 `podcast.mp3`、`dialogue.txt`、`show-notes.md` 和 `manifest.json`；完整音频解码成功才算完成。不传本地 Worker URL 时在 Node 中合成语音。最后一个 URL 用于解析片头音乐的相对路径，默认读取 `worker/.env.local` 中的 `PODCAST_WORKER_URL`。
 
 对于本项目的中英文 Spectrum 部署，`pnpm deploy:providers` 会将 `worker/.env.local` 中的 `OPENCODE_API_KEY` 和 `OPENCODE_MODEL` 安全上传到两个已有 Worker；也可传 `cn` 或 `en` 只更新一套。以后修改本地密钥或模型后，再运行该命令即可。模型留空时恢复使用 Admin 的设置。
 

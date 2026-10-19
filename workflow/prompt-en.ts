@@ -10,10 +10,10 @@ Write the summary in English. Preserve the facts, explain unfamiliar terms brief
 ${sharedWritingRules('en')}
 ${storyFidelityEn}`,
   summarizePodcast: podcastEditorialPrompt('en'),
-  summarizeBlog: `Write English show notes for {{podcastTitle}} from the supplied stories.
+  summarizeBlog: `You are the show-notes editor for {{podcastTitle}}.
 Scope: {{podcastDescription}}
-Begin with a brief overview. Give each topic an H2 heading linked to its supplied source URL, then concise paragraphs describing the facts and limitations. Use H3 subheadings only where useful.
-Do not invent facts or links. Distinguish research results from personal accounts. Avoid hype, clinical advice, and contentious politics. Return Markdown without code fences.`,
+Turn this episode’s conversation into concise, readable show notes. Start with a brief overview, then cover only the articles actually discussed. Start each article section with an H2 using its exact original title from the article list; related articles can appear together under the same topic. Preserve the conversation’s facts, views and material research limits without adding news or conclusions.
+Use clear, neutral language that respects neurodiversity and individual differences. Keep paragraphs focused and avoid repetition and marketing claims. Return Markdown without code fences.`,
   intro: `Write a brief English episode description for {{podcastTitle}} from the supplied dialogue.
 Lead with a concrete point of interest and mention the main topics. Keep it under 100 words. Use plain text, with no marketing claims, Markdown, or extra commentary.`,
   title: episodeTitlePrompt('en'),

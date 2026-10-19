@@ -9,10 +9,11 @@ import { runtimeConfigBundleSchema } from '../lib/schemas/admin'
 import { getTemplateVariables, renderPromptTemplates } from '../lib/template'
 import { createResponseText, getPrimaryModel } from '../workflow/ai'
 import { buildRuntimeTtsSettings, getSpeakerMarkers, parseConversationLines } from '../workflow/dialogue'
+import { buildPodcastStoryInput, createEditorialArticle, linkArticleHeadings } from '../workflow/editorial-input'
 import { getRecommendedTitle, parseTitleGenerationResult, titleGenerationSchema } from '../workflow/title'
 import synthesize from '../workflow/tts'
 
-interface SourceArticle { title: string, link: string, content: string, publishedAt?: string }
+interface SourceArticle { source?: string, title: string, link: string, content: string, publishedAt?: string }
 
 function ffmpeg(args: string[]) {
   if (!ffmpegPath) {
@@ -58,28 +59,10 @@ async function main() {
     })
     return response.text
   }
-  const stories: Array<{ title: string, link: string, summary: string }> = []
-  for (const [index, article] of articles.entries()) {
-    console.info(`Summarizing article ${index + 1}/${articles.length}`)
-    const text = await ask(prompts.summarizeStory, JSON.stringify(article), {
-      type: 'OBJECT',
-      properties: {
-        relevant: { type: 'BOOLEAN' },
-        summary: { type: 'STRING', nullable: true },
-        reason: { type: 'STRING' },
-      },
-      required: ['relevant', 'summary', 'reason'],
-    })
-    const result = JSON.parse(text)
-    if (result.relevant === true && typeof result.summary === 'string' && result.summary.trim()) {
-      stories.push({ title: article.title, link: article.link, summary: result.summary })
-    }
-  }
-  if (!stories.length) {
-    throw new Error('No relevant articles survived the production relevance prompt')
-  }
-  await writeFile(resolve(output, 'stories.json'), `${JSON.stringify(stories, null, 2)}\n`)
-  const storyInput = `<stories>${JSON.stringify(stories)}</stories>`
+  const stories = articles.map(article => ({ title: article.title, url: article.link, sourceName: article.source || new URL(article.link).hostname }))
+  const materials = articles.map((article, index) => createEditorialArticle(stories[index], article.content))
+  await writeFile(resolve(output, 'articles.json'), `${JSON.stringify(materials, null, 2)}\n`)
+  const storyInput = buildPodcastStoryInput(materials)
   console.info('Writing dialogue')
   const dialogue = await ask(prompts.summarizePodcast, storyInput)
   await writeFile(resolve(output, 'dialogue.txt'), `${dialogue}\n`)
@@ -102,7 +85,7 @@ async function main() {
   }
   const title = getRecommendedTitle(titleResult)
   const intro = await ask(prompts.intro, dialogue)
-  const blog = await ask(prompts.summarizeBlog, storyInput)
+  const blog = linkArticleHeadings(await ask(prompts.summarizeBlog, JSON.stringify({ articles: materials.map(({ source, title }) => ({ source, title })), conversation: dialogue })), stories)
   await writeFile(resolve(output, 'show-notes.md'), `# ${title}\n\n${intro}\n\n${blog}\n`)
   console.info(`Synthesizing ${lines.length} turns`)
   for (const [index, line] of lines.entries()) {
@@ -157,7 +140,7 @@ async function main() {
     ai: { ...config.ai, model },
     tts: { provider: config.tts.provider, language: settings.language, voices: config.tts.voices, speed: settings.speed },
     ttsRuntime: workerUrl ? 'local-cloudflare-worker' : 'node',
-    sources: stories.map(({ title, link }) => ({ title, link })),
+    sources: stories.map(({ title, url }) => ({ title, link: url })),
     dialogueTurns: lines.length,
     audioBytes: (await readFile(finalPath)).length,
     decodedSuccessfully: true,

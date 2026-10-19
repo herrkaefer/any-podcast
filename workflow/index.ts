@@ -1,6 +1,7 @@
 import type { WorkflowEvent, WorkflowStep, WorkflowStepConfig } from 'cloudflare:workers'
 import type { AiEnv } from './ai'
 import type { ParsedConversationLine, RuntimeTtsSettings } from './dialogue'
+import type { EditorialArticle } from './editorial-input'
 import type { PublicationMode } from './publication'
 import type { SourceConfig } from './sources/types'
 
@@ -13,7 +14,7 @@ import { getActiveRuntimeConfig } from '@/lib/runtime-config'
 import { getTemplateVariables, renderPromptTemplates } from '@/lib/template'
 import { createResponseText, getAiProvider, getMaxTokens, getPrimaryModel, getThinkingModel } from './ai'
 import { buildRuntimeTtsSettings, getSpeakerMarkers, parseConversationLines } from './dialogue'
-import { buildPodcastStoryInput } from './editorial-input'
+import { buildPodcastStoryInput, createEditorialArticle, linkArticleHeadings, uniqueArticleStories } from './editorial-input'
 import { episodeAudioKey, resolvePublicationMode, saveEpisodeOutput } from './publication'
 import { getStoryCandidatesFromSources, processGmailMessage } from './sources'
 import { listGmailMessageRefs } from './sources/gmail'
@@ -25,7 +26,7 @@ import synthesize, {
   synthesizeGeminiTTSWithRetry,
   validateTtsConfig,
 } from './tts'
-import { addIntroMusic, concatAudioFiles, getStoryContent, isSubrequestLimitError } from './utils'
+import { addIntroMusic, concatAudioFiles, getStoryArticle, getStoryContent, isSubrequestLimitError } from './utils'
 import { invalidatePublishedWebsite, warmPublishedWebsite } from './website-publication'
 
 interface Params {
@@ -36,7 +37,8 @@ interface Params {
   jobId?: string
   continuationSeq?: number
   publish?: boolean
-  replaySummaryJobId?: string
+  replayMaterialJobId?: string
+  replaySummaryJobId?: string // Older clients may use this name; complete article bodies are still required.
 }
 
 interface Env extends CloudflareEnv, AiEnv {
@@ -78,7 +80,8 @@ interface RuntimePromptSet {
 type WorkflowStage
   = | 'collect_candidates'
     | 'expand_gmail'
-    | 'summarize_stories'
+    | 'collect_articles'
+    | 'summarize_stories' // Checkpoints from earlier deployments.
     | 'compose_text'
     | 'tts_render'
     | 'done'
@@ -97,7 +100,7 @@ interface WorkflowProgressState {
   gmailProcessed: number
   storiesTotal: number
   storiesProcessed: number
-  storiesRelevant: number
+  storiesCollected: number
   ttsTotal: number
   ttsProcessed: number
 }
@@ -117,7 +120,7 @@ interface WorkflowJobState {
   cursor: WorkflowCursorState
   progress: WorkflowProgressState
   candidatesKey?: string
-  summaryKey?: string
+  articlesKey?: string
   composeKey?: string
   contentKey?: string
   podcastKey?: string
@@ -143,9 +146,9 @@ interface CandidateSnapshot {
   }>
 }
 
-interface SummarySnapshot {
-  keptStories: Story[]
-  allStories: string[]
+interface ArticleSnapshot {
+  stories: Story[]
+  articles: EditorialArticle[]
 }
 
 interface ComposeSnapshot {
@@ -398,7 +401,6 @@ const BUDGET_COST = {
   sourceFetchGmailPerRef: 1,
   gmailExpand: 3,
   storyContent: 2,
-  storySummary: 2,
   llmCompose: 2,
   ttsLine: 3,
   audioMerge: 3,
@@ -497,7 +499,7 @@ function createInitialProgress(sourceTotal: number): WorkflowProgressState {
     gmailProcessed: 0,
     storiesTotal: 0,
     storiesProcessed: 0,
-    storiesRelevant: 0,
+    storiesCollected: 0,
     ttsTotal: 0,
     ttsProcessed: 0,
   }
@@ -520,8 +522,8 @@ function normalizeProgress(
   normalized.storiesTotal = Math.max(normalized.storiesTotal, normalized.storiesProcessed)
   normalized.ttsTotal = Math.max(normalized.ttsTotal, normalized.ttsProcessed)
 
-  normalized.storiesRelevant = Math.min(
-    Math.max(0, Math.floor(normalized.storiesRelevant)),
+  normalized.storiesCollected = Math.min(
+    Math.max(0, Math.floor(normalized.storiesCollected)),
     normalized.storiesTotal,
   )
 
@@ -542,7 +544,7 @@ function parseWorkflowProgress(
     gmailProcessed: normalizeNonNegativeInt(record.gmailProcessed),
     storiesTotal: normalizeNonNegativeInt(record.storiesTotal),
     storiesProcessed: normalizeNonNegativeInt(record.storiesProcessed),
-    storiesRelevant: normalizeNonNegativeInt(record.storiesRelevant),
+    storiesCollected: normalizeNonNegativeInt(record.storiesCollected ?? record.storiesRelevant),
     ttsTotal: normalizeNonNegativeInt(record.ttsTotal),
     ttsProcessed: normalizeNonNegativeInt(record.ttsProcessed),
   }, cursor)
@@ -551,7 +553,7 @@ function parseWorkflowProgress(
 const WORKFLOW_STAGE_FLOW: Array<{ stage: WorkflowStage, name: string }> = [
   { stage: 'collect_candidates', name: 'collect candidates' },
   { stage: 'expand_gmail', name: 'expand gmail links' },
-  { stage: 'summarize_stories', name: 'summarize stories' },
+  { stage: 'collect_articles', name: 'collect cleaned articles' },
   { stage: 'compose_text', name: 'compose podcast/blog text' },
   { stage: 'tts_render', name: 'render tts audio' },
   { stage: 'done', name: 'done' },
@@ -596,7 +598,7 @@ function logWorkflowObservation(params: {
       stories: {
         processed: progress.storiesProcessed,
         total: progress.storiesTotal,
-        relevant: progress.storiesRelevant,
+        collected: progress.storiesCollected,
       },
       ttsLines: {
         processed: progress.ttsProcessed,
@@ -623,6 +625,7 @@ function createInitialCursor(): WorkflowCursorState {
 function isWorkflowStage(value: unknown): value is WorkflowStage {
   return value === 'collect_candidates'
     || value === 'expand_gmail'
+    || value === 'collect_articles'
     || value === 'summarize_stories'
     || value === 'compose_text'
     || value === 'tts_render'
@@ -657,7 +660,7 @@ function parseWorkflowJobState(value: unknown): WorkflowJobState | null {
     jobId: record.jobId,
     replaySourceJobId: typeof record.replaySourceJobId === 'string' ? record.replaySourceJobId : undefined,
     publicationMode: record.publicationMode === 'preview' || record.publicationMode === 'publish' ? record.publicationMode : undefined,
-    stage: record.stage,
+    stage: record.stage === 'summarize_stories' ? 'collect_articles' : record.stage,
     continuationSeq: typeof record.continuationSeq === 'number' && Number.isFinite(record.continuationSeq)
       ? Math.max(0, Math.floor(record.continuationSeq))
       : 0,
@@ -672,7 +675,7 @@ function parseWorkflowJobState(value: unknown): WorkflowJobState | null {
     cursor,
     progress: parseWorkflowProgress(record.progress, cursor),
     candidatesKey: typeof record.candidatesKey === 'string' ? record.candidatesKey : undefined,
-    summaryKey: typeof record.summaryKey === 'string' ? record.summaryKey : undefined,
+    articlesKey: typeof record.articlesKey === 'string' ? record.articlesKey : undefined,
     composeKey: typeof record.composeKey === 'string' ? record.composeKey : undefined,
     contentKey: typeof record.contentKey === 'string' ? record.contentKey : undefined,
     podcastKey: typeof record.podcastKey === 'string' ? record.podcastKey : undefined,
@@ -1155,33 +1158,34 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         publishedAt,
         sourceTotal: enabledSources.length,
       })
-      const replayJobId = event.payload?.replaySummaryJobId
+      const replayJobId = event.payload?.replayMaterialJobId || event.payload?.replaySummaryJobId
       if (replayJobId) {
         workflowState.replaySourceJobId = replayJobId
         if (resolvePublicationMode(this.env.PODCAST_PUBLISH_MODE, event.payload?.publish) !== 'preview')
           throw new Error('Replaying saved material requires preview mode')
         if (!/^[\w-]{1,128}$/.test(replayJobId) || replayJobId === jobId)
           throw new Error('Invalid source job for material replay')
-        const replaySummary = await step.do('load saved material for preview', retryConfig, async () => {
-          const saved = await loadJsonFromR2<SummarySnapshot>(this.env.PODCAST_R2, buildJobDataKey(replayJobId, 'summary'))
-          if (!saved?.allStories.length || saved.keptStories.length !== saved.allStories.length)
-            throw new Error('Saved preview material is missing or inconsistent')
+        const materials = await step.do('load saved full articles for preview', retryConfig, async () => {
+          const saved = await loadJsonFromR2<ArticleSnapshot>(this.env.PODCAST_R2, buildJobDataKey(replayJobId, 'articles'))
+          if (!saved?.articles.length || saved.stories.length !== saved.articles.length)
+            throw new Error('Saved full articles are missing; summaries alone cannot be replayed. Collect article bodies first.')
           return saved
         })
-        consumeBudget(budget, BUDGET_COST.r2Read, 'load preview material', jobId)
-        const replaySummaryKey = buildJobDataKey(jobId, 'summary')
-        workflowState.summaryKey = replaySummaryKey
-        await step.do('copy saved material for preview', retryConfig, async () => {
-          await saveJsonToR2(this.env.PODCAST_R2, replaySummaryKey, replaySummary)
+        consumeBudget(budget, BUDGET_COST.r2Read, 'load preview articles', jobId)
+        const materialKey = buildJobDataKey(jobId, 'articles')
+        workflowState.articlesKey = materialKey
+        await step.do('copy full articles for preview', retryConfig, async () => {
+          await saveJsonToR2(this.env.PODCAST_R2, materialKey, materials)
         })
-        consumeBudget(budget, BUDGET_COST.r2Write, 'copy preview material', jobId)
+        consumeBudget(budget, BUDGET_COST.r2Write, 'copy preview articles', jobId)
         workflowState.stage = 'compose_text'
         workflowState.cursor.sourceIndex = enabledSources.length
-        workflowState.cursor.storyIndex = replaySummary.keptStories.length
+        workflowState.cursor.storyIndex = materials.stories.length
         workflowState.progress = normalizeProgress({
           ...workflowState.progress,
-          storiesTotal: replaySummary.keptStories.length,
-          storiesRelevant: replaySummary.keptStories.length,
+          storiesTotal: materials.stories.length,
+          storiesProcessed: materials.stories.length,
+          storiesCollected: materials.stories.length,
         }, workflowState.cursor)
       }
       logWorkflowObservation({
@@ -1211,6 +1215,13 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         budget,
         label: 'resume from persisted state',
       })
+    }
+
+    if (!workflowState.articlesKey && ['collect_articles', 'compose_text'].includes(workflowState.stage)) {
+      workflowState.stage = 'collect_articles'
+      workflowState.cursor.storyIndex = 0
+      workflowState.progress.storiesProcessed = 0
+      workflowState.progress.storiesCollected = 0
     }
 
     workflowState.publicationMode = resolvePublicationMode(this.env.PODCAST_PUBLISH_MODE, event.payload?.publish, workflowState.publicationMode)
@@ -1257,25 +1268,26 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
       workflowState.candidatesKey = key
     }
 
-    const loadSummarySnapshot = async () => {
-      if (!workflowState.summaryKey) {
-        return { keptStories: [], allStories: [] } satisfies SummarySnapshot
-      }
-      const loaded = await step.do('load summary snapshot', retryConfig, async () => {
-        return await loadJsonFromR2<SummarySnapshot>(this.env.PODCAST_R2, workflowState.summaryKey as string)
+    const loadArticleSnapshot = async () => {
+      if (!workflowState.articlesKey)
+        return { stories: [], articles: [] } satisfies ArticleSnapshot
+      const loaded = await step.do('load full article snapshot', retryConfig, async () => {
+        return await loadJsonFromR2<ArticleSnapshot>(this.env.PODCAST_R2, workflowState.articlesKey!)
       })
-      consumeBudget(budget, BUDGET_COST.r2Read, 'load summary snapshot', jobId)
-      return loaded || { keptStories: [], allStories: [] } satisfies SummarySnapshot
+      consumeBudget(budget, BUDGET_COST.r2Read, 'load full article snapshot', jobId)
+      if (!loaded || loaded.stories.length !== loaded.articles.length)
+        throw new Error('Full article snapshot is missing or inconsistent')
+      return loaded
     }
 
-    const saveSummarySnapshot = async (snapshot: SummarySnapshot) => {
-      const key = workflowState.summaryKey || buildJobDataKey(jobId, 'summary')
-      await step.do('save summary snapshot', retryConfig, async () => {
+    const saveArticleSnapshot = async (snapshot: ArticleSnapshot) => {
+      const key = workflowState.articlesKey || buildJobDataKey(jobId, 'articles')
+      await step.do('save full article snapshot', retryConfig, async () => {
         await saveJsonToR2(this.env.PODCAST_R2, key, snapshot)
         return key
       })
-      consumeBudget(budget, BUDGET_COST.r2Write, 'save summary snapshot', jobId)
-      workflowState.summaryKey = key
+      consumeBudget(budget, BUDGET_COST.r2Write, 'save full article snapshot', jobId)
+      workflowState.articlesKey = key
     }
 
     const loadComposeSnapshot = async () => {
@@ -1566,7 +1578,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         }
 
         const blockedStories = candidatesSnapshot.stories.filter(story => isBlockedStoryUrl(story.url))
-        const candidateStories = candidatesSnapshot.stories.filter(story => !isBlockedStoryUrl(story.url))
+        const candidateStories = uniqueArticleStories(candidatesSnapshot.stories.filter(story => !isBlockedStoryUrl(story.url)))
         if (blockedStories.length > 0) {
           console.warn('blocked story urls skipped', {
             count: blockedStories.length,
@@ -1606,10 +1618,10 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         await saveCandidatesSnapshot(candidatesSnapshot)
         workflowState.progress.storiesTotal = candidateStories.length
         workflowState.progress.storiesProcessed = workflowState.cursor.storyIndex
-        workflowState.progress.storiesRelevant = 0
+        workflowState.progress.storiesCollected = 0
 
         if (testStep === 'stories') {
-          console.info('workflow test step "stories" completed, stopping before summarization', {
+          console.info('workflow test step "stories" completed, stopping before article collection', {
             totalStories: candidateStories.length,
             stories: candidateStories.map(s => ({ id: s.id, title: s.title, url: s.url, sourceName: s.sourceName })),
           })
@@ -1635,176 +1647,57 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           console.info(`newsletter: ${group.label} (${groupKey}) -> ${group.count} articles`)
         }
 
-        workflowState.stage = 'summarize_stories'
+        workflowState.stage = 'collect_articles'
         workflowState.cursor.storyIndex = 0
-        await saveWorkflowState('stage transition: expand_gmail -> summarize_stories')
+        await saveWorkflowState('stage transition: expand_gmail -> collect_articles')
         continue
       }
 
-      if (workflowState.stage === 'summarize_stories') {
-        const candidatesSnapshot = await loadCandidatesSnapshot()
-        const summarySnapshot = await loadSummarySnapshot()
-        const candidateStories = candidatesSnapshot.stories
-        workflowState.progress.storiesTotal = candidateStories.length
+      if (workflowState.stage === 'collect_articles') {
+        const candidates = await loadCandidatesSnapshot()
+        const materials = await loadArticleSnapshot()
+        workflowState.progress.storiesTotal = candidates.stories.length
         workflowState.progress.storiesProcessed = workflowState.cursor.storyIndex
-        workflowState.progress.storiesRelevant = summarySnapshot.keptStories.length
-        logWorkflowObservation({
-          jobId,
-          stage: workflowState.stage,
-          continuationSeq: workflowState.continuationSeq,
-          status: workflowState.status,
-          cursor: workflowState.cursor,
-          progress: workflowState.progress,
-          budget,
-          label: 'summarize snapshot loaded',
-          extra: {
-            summarySnapshot: {
-              candidatesTotal: candidateStories.length,
-              summariesTotal: summarySnapshot.allStories.length,
-              relevantTotal: summarySnapshot.keptStories.length,
-            },
-          },
-        })
+        workflowState.progress.storiesCollected = materials.stories.length
 
-        for (let storyIndex = workflowState.cursor.storyIndex; storyIndex < candidateStories.length; storyIndex += 1) {
-          const summarizeNextCost = BUDGET_COST.storyContent
-            + BUDGET_COST.storySummary
-            + BUDGET_COST.r2Write
-            + BUDGET_COST.workflowCreate
-          if (shouldHandoff(budget, summarizeNextCost)) {
-            await saveSummarySnapshot(summarySnapshot)
-            if (await maybeHandoff(
-              'summarize_stories',
-              BUDGET_COST.workflowCreate,
-              `summarize story index ${storyIndex}`,
-              { storyIndex },
-              { force: true },
-            )) {
+        for (let storyIndex = workflowState.cursor.storyIndex; storyIndex < candidates.stories.length; storyIndex++) {
+          const nextCost = BUDGET_COST.storyContent + BUDGET_COST.r2Write + BUDGET_COST.workflowCreate
+          if (shouldHandoff(budget, nextCost)) {
+            await saveArticleSnapshot(materials)
+            if (await maybeHandoff('collect_articles', BUDGET_COST.workflowCreate, `collect article index ${storyIndex}`, { storyIndex }, { force: true }))
               return
+          }
+          const story = candidates.stories[storyIndex]
+          const storyId = story.id || `story-${storyIndex + 1}`
+          try {
+            const article = await step.do(`collect full article ${storyId}: ${story.title}`, retryConfig, async () => {
+              const body = await getStoryArticle(story, this.env)
+              return body.trim() ? createEditorialArticle(story, body) : null
+            })
+            consumeBudget(budget, BUDGET_COST.storyContent, `collect article ${storyId}`, jobId)
+            if (article) {
+              materials.stories.push(story)
+              materials.articles.push(article)
             }
           }
-
-          const story = candidateStories[storyIndex]
-          const storyId = story.id || `story-${storyIndex + 1}`
-          let storyResponse = ''
-          try {
-            storyResponse = await step.do(`get story ${storyId}: ${story.title}`, retryConfig, async () => {
-              return await getStoryContent(story, maxTokens, this.env)
-            })
-            consumeBudget(budget, BUDGET_COST.storyContent, `get story ${storyId}`, jobId)
-          }
           catch (error) {
-            console.warn(`get story ${storyId} content failed, skip story`, {
-              title: story.title,
-              error: formatError(error),
-            })
-            workflowState.cursor.storyIndex = storyIndex + 1
-            workflowState.progress.storiesProcessed = workflowState.cursor.storyIndex
-            await step.sleep('Give AI a break', breakTime)
-            continue
+            if (isSubrequestLimitError(error))
+              throw error
+            console.warn('article body collection failed, skip article', { title: story.title, error: formatError(error) })
           }
-
-          if (!storyResponse.trim()) {
-            console.warn(`get story ${storyId} content empty, skip`, {
-              title: story.title,
-            })
-            workflowState.cursor.storyIndex = storyIndex + 1
-            workflowState.progress.storiesProcessed = workflowState.cursor.storyIndex
-            await step.sleep('Give AI a break', breakTime)
-            continue
-          }
-
-          await step.sleep('reset quota before summarize', breakTime)
-          let summaryResult: StorySummaryResult | null = null
-          try {
-            summaryResult = await step.do(`summarize story ${storyId}: ${story.title}`, { ...retryConfig, retries: withRetryLimit(2) }, async () => {
-              const { result, usage, finishReason } = await summarizeStoryWithRelevance({
-                env: this.env,
-                runtimeAi,
-                model: primaryModel,
-                instructions: runtimePrompts.summarizeStory,
-                input: storyResponse,
-                maxOutputTokens: maxTokens,
-              })
-              console.info(`get story ${storyId} summary success`, {
-                relevant: result.relevant,
-                reason: result.reason,
-                summaryLength: result.summary?.length || 0,
-                usage,
-                finishReason,
-              })
-              return result
-            })
-            consumeBudget(budget, BUDGET_COST.storySummary, `summarize story ${storyId}`, jobId)
-          }
-          catch (error) {
-            console.warn(`get story ${storyId} summary failed after retries`, {
-              title: story.title,
-              error: formatError(error),
-            })
-          }
-
-          if (!summaryResult || !summaryResult.relevant) {
-            workflowState.cursor.storyIndex = storyIndex + 1
-            workflowState.progress.storiesProcessed = workflowState.cursor.storyIndex
-            await step.sleep('Give AI a break', breakTime)
-            continue
-          }
-
-          const summaryText = summaryResult.summary?.trim()
-          if (!summaryText) {
-            workflowState.cursor.storyIndex = storyIndex + 1
-            workflowState.progress.storiesProcessed = workflowState.cursor.storyIndex
-            await step.sleep('Give AI a break', breakTime)
-            continue
-          }
-
-          summarySnapshot.allStories.push(`<story>${summaryText}</story>`)
-          summarySnapshot.keptStories.push(story)
           workflowState.cursor.storyIndex = storyIndex + 1
           workflowState.progress.storiesProcessed = workflowState.cursor.storyIndex
-          workflowState.progress.storiesRelevant = summarySnapshot.keptStories.length
-          await step.sleep('Give AI a break', breakTime)
+          workflowState.progress.storiesCollected = materials.stories.length
         }
-
-        await saveSummarySnapshot(summarySnapshot)
-        workflowState.progress.storiesRelevant = summarySnapshot.keptStories.length
-        logWorkflowObservation({
-          jobId,
-          stage: workflowState.stage,
-          continuationSeq: workflowState.continuationSeq,
-          status: workflowState.status,
-          cursor: workflowState.cursor,
-          progress: workflowState.progress,
-          budget,
-          label: 'summarize snapshot persisted',
-          extra: {
-            summarySnapshot: {
-              candidatesTotal: candidateStories.length,
-              summariesTotal: summarySnapshot.allStories.length,
-              relevantTotal: summarySnapshot.keptStories.length,
-            },
-          },
-        })
-        if (!summarySnapshot.keptStories.length) {
+        await saveArticleSnapshot(materials)
+        if (!materials.articles.length) {
           workflowState.status = 'done'
           workflowState.stage = 'done'
-          logWorkflowObservation({
-            jobId,
-            stage: workflowState.stage,
-            continuationSeq: workflowState.continuationSeq,
-            status: workflowState.status,
-            cursor: workflowState.cursor,
-            progress: workflowState.progress,
-            budget,
-            label: 'no relevant stories after summarize',
-          })
-          await saveWorkflowState('no relevant stories after summarize')
+          await saveWorkflowState('no article bodies available')
           return
         }
-
         workflowState.stage = 'compose_text'
-        await saveWorkflowState('stage transition: summarize_stories -> compose_text')
+        await saveWorkflowState('stage transition: collect_articles -> compose_text')
         continue
       }
 
@@ -1817,10 +1710,10 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           return
         }
 
-        const summarySnapshot = await loadSummarySnapshot()
-        const keptStories = summarySnapshot.keptStories
-        const allStories = summarySnapshot.allStories
-        workflowState.progress.storiesRelevant = keptStories.length
+        const articleSnapshot = await loadArticleSnapshot()
+        const keptStories = articleSnapshot.stories
+        const articles = articleSnapshot.articles
+        workflowState.progress.storiesCollected = keptStories.length
         const composeStepsTotal = 4
         const logComposeStep = (
           stepIndex: number,
@@ -1848,13 +1741,13 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             },
           })
         }
-        logComposeStep(0, 'prepare summary input', 'done', {
-          summarySnapshot: {
-            summariesTotal: allStories.length,
-            relevantTotal: keptStories.length,
+        logComposeStep(0, 'prepare full articles', 'done', {
+          articleSnapshot: {
+            articlesTotal: articles.length,
+            collectedTotal: keptStories.length,
           },
         })
-        if (!keptStories.length || !allStories.length) {
+        if (!keptStories.length || !articles.length) {
           workflowState.status = 'done'
           workflowState.stage = 'done'
           logWorkflowObservation({
@@ -1865,57 +1758,26 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
             cursor: workflowState.cursor,
             progress: workflowState.progress,
             budget,
-            label: 'compose skipped due to empty summary snapshot',
+            label: 'compose skipped due to empty article snapshot',
           })
-          await saveWorkflowState('summary snapshot empty before compose')
+          await saveWorkflowState('article snapshot empty before compose')
           return
         }
 
-        const blogStories = keptStories.map((story) => {
-          const resolvedLink = story.url || ''
-          return {
-            title: story.title || '',
-            link: resolvedLink,
-            url: resolvedLink,
-            publishedAt: story.publishedAt || '',
-          }
-        })
-
+        const articleInput = buildPodcastStoryInput(articles)
         await step.sleep('Give AI a break', breakTime)
 
-        logComposeStep(1, 'podcast content', 'start', {
-          inputStories: allStories.length,
-        })
+        logComposeStep(1, 'podcast content', 'start', { inputArticles: articles.length })
         const podcastContent = await step.do('create podcast content', { ...retryConfig, retries: withRetryLimit(3) }, async () => {
-          const attemptInputs: { label: string, stories: string[] }[] = [
-            { label: 'all', stories: allStories },
-          ]
-          if (!workflowState.replaySourceJobId && allStories.length > 6) {
-            attemptInputs.push({ label: 'first-6', stories: allStories.slice(0, 6) })
-          }
-
-          let lastError: unknown
-          for (const attempt of attemptInputs) {
-            const input = buildPodcastStoryInput(keptStories.slice(0, attempt.stories.length), attempt.stories)
-            try {
-              const { text } = await createResponseText({
-                env: this.env,
-                runtimeAi,
-                model: thinkingModel,
-                instructions: runtimePrompts.summarizePodcast,
-                input,
-                maxOutputTokens: maxTokens,
-              })
-              return text
-            }
-            catch (error) {
-              if (isSubrequestLimitError(error))
-                throw error
-              lastError = error
-              console.warn('podcast content generation attempt failed', { attempt: attempt.label, error: formatError(error) })
-            }
-          }
-          throw lastError || new Error('podcast content generation returned no usable output')
+          const { text } = await createResponseText({
+            env: this.env,
+            runtimeAi,
+            model: thinkingModel,
+            instructions: runtimePrompts.summarizePodcast,
+            input: articleInput,
+            maxOutputTokens: maxTokens,
+          })
+          return text
         })
         consumeBudget(budget, BUDGET_COST.llmCompose, 'create podcast content', jobId)
         logComposeStep(1, 'podcast content', 'done', {
@@ -1940,43 +1802,17 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
 
         await step.sleep('Give AI a break', breakTime)
 
-        logComposeStep(2, 'blog content', 'start', {
-          inputStories: allStories.length,
-        })
+        logComposeStep(2, 'blog content', 'start', { inputArticles: articles.length })
         const blogContent = await step.do('create blog content', { ...retryConfig, retries: withRetryLimit(3) }, async () => {
-          const attemptInputs: { label: string, storyMeta: typeof blogStories, stories: string[] }[] = [
-            { label: 'all', storyMeta: blogStories, stories: allStories },
-          ]
-          if (!workflowState.replaySourceJobId && allStories.length > 6) {
-            attemptInputs.push({
-              label: 'first-6',
-              storyMeta: blogStories.slice(0, 6),
-              stories: allStories.slice(0, 6),
-            })
-          }
-
-          let lastError: unknown
-          for (const attempt of attemptInputs) {
-            const input = `<stories>${JSON.stringify(attempt.storyMeta)}</stories>\n\n---\n\n${attempt.stories.join('\n\n---\n\n')}`
-            try {
-              const { text } = await createResponseText({
-                env: this.env,
-                runtimeAi,
-                model: thinkingModel,
-                instructions: runtimePrompts.summarizeBlog,
-                input,
-                maxOutputTokens: maxTokens,
-              })
-              return text
-            }
-            catch (error) {
-              if (isSubrequestLimitError(error))
-                throw error
-              lastError = error
-              console.warn('blog content generation attempt failed', { attempt: attempt.label, error: formatError(error) })
-            }
-          }
-          throw lastError || new Error('blog content generation returned no usable output')
+          const { text } = await createResponseText({
+            env: this.env,
+            runtimeAi,
+            model: thinkingModel,
+            instructions: runtimePrompts.summarizeBlog,
+            input: JSON.stringify({ articles: articles.map(({ source, title }) => ({ source, title })), conversation: podcastContent }),
+            maxOutputTokens: maxTokens,
+          })
+          return linkArticleHeadings(text, keptStories)
         })
         consumeBudget(budget, BUDGET_COST.llmCompose, 'create blog content', jobId)
         logComposeStep(2, 'blog content', 'done', {
@@ -2098,7 +1934,7 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
         })
         workflowState.contentKey = contentKey
         workflowState.podcastKey = podcastKey
-        workflowState.progress.storiesRelevant = keptStories.length
+        workflowState.progress.storiesCollected = keptStories.length
         workflowState.progress.ttsTotal = parsedConversations.length
         workflowState.progress.ttsProcessed = workflowState.cursor.ttsLineIndex
         logWorkflowObservation({
@@ -2111,9 +1947,9 @@ export class PodcastWorkflow extends WorkflowEntrypoint<Env, Params> {
           budget,
           label: 'compose stage complete',
           extra: {
-            summarySnapshot: {
-              summariesTotal: allStories.length,
-              relevantTotal: keptStories.length,
+            articleSnapshot: {
+              articlesTotal: articles.length,
+              collectedTotal: keptStories.length,
             },
             content: {
               title: episodeTitle,

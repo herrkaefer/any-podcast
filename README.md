@@ -4,7 +4,7 @@
 
 [中文](./README.zh-CN.md)
 
-An AI-powered, configurable podcast platform that aggregates content sources, generates summaries, and produces podcast audio. You can define different sources per topic and build your own podcast flow.
+An AI-powered, configurable podcast platform that aggregates content sources, writes conversations from complete articles, and produces podcast audio. You can define different sources per topic and build your own podcast flow.
 
 ## Philosophy
 
@@ -26,7 +26,7 @@ To prevent `Too many subrequests` failures in long runs (many sources, many stor
 
 Core approach:
 
-- Keep one `PodcastWorkflow` stage flow: `collect_candidates -> expand_gmail -> summarize_stories -> compose_text -> tts_render -> done`
+- Keep one `PodcastWorkflow` stage flow: `collect_candidates -> expand_gmail -> collect_articles -> compose_text -> tts_render -> done`
 - Track a subrequest budget during execution (soft limit `45`, reserve `6`)
 - Before high-cost work, estimate the next cost; if budget is near the threshold, checkpoint first and spawn a continuation instance
 - The continuation is still the same main workflow, reusing the same `jobId` and incrementing `continuationSeq` (instance ID like `<jobId>-c<seq>`)
@@ -36,7 +36,7 @@ State and snapshot storage:
 - **KV** stores lightweight workflow state (stage, cursor, progress, snapshot keys), under keys like `workflow:job:<jobId>:state`
 - **R2** stores larger stage snapshots under keys like `workflow/jobs/<jobId>/*.json`
   - `candidates.json`: candidate stories and pending Gmail expansions
-  - `summary.json`: story summary/relevance results
+  - `articles.json`: complete article bodies and internal source metadata
   - `compose.json`: composed podcast/blog text and TTS inputs
 
 This allows the run to automatically continue in a fresh workflow instance before hitting the hard limit, without losing progress, while still producing one logical episode output.
@@ -45,7 +45,7 @@ This allows the run to automatically continue in a fresh workflow instance befor
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) >= 18
+- [Node.js](https://nodejs.org/) >= 22.15
 - [pnpm](https://pnpm.io/)
 - A [Cloudflare](https://dash.cloudflare.com/) account
 - An [OpenCode Go API key](https://opencode.ai/docs/go/) (or a key for another supported text provider)
@@ -164,7 +164,7 @@ The web-based Admin console lets you configure everything at runtime without tou
    - **AI**: provider (OpenCode/Gemini/OpenAI/MiniMax) and model
    - **TTS**: provider (Gemini/Edge/MiniMax/Murf), language, voice for each host, audio quality, intro music
    - **Sources**: add RSS feeds, URLs, or Gmail labels
-   - **Prompts**: customize all AI prompts (story summary, podcast dialogue, blog post, intro, title)
+   - **Prompts**: customize all AI prompts (single-article diagnostic, podcast dialogue, show notes, intro, title)
    - **Locale**: language, timezone
 
 All changes are saved to KV and take effect immediately on the next workflow run.
@@ -183,11 +183,13 @@ Edit `workflow/sources/config.local.ts` to add your RSS feeds, URLs, or Gmail la
 
 The file `config.ts` contains static defaults for site metadata (title, description, SEO, theme). These are used as fallbacks when no runtime config exists in KV. For most cases, prefer configuring via the Admin console instead.
 
-Cloudflare rendering remains the preferred article extractor. The two Spectrum Workers share a Durable Object hosted by the Chinese Worker to serialize render calls with at least 11 seconds between starts. This interval follows the tested account response (`429`, `Retry-After: 10`); retries also honor the server's requested delay. Public static HTML and Jina are fallbacks. Articles with no extracted body are skipped, and summaries must not invent missing facts or reader comments.
+Cloudflare rendering remains the preferred article extractor. The two Spectrum Workers share a Durable Object hosted by the Chinese Worker to serialize render calls with at least 11 seconds between starts. This interval follows the tested account response (`429`, `Retry-After: 10`); retries also honor the server's requested delay. Public static HTML and Jina are fallbacks. Articles with no extracted body are skipped, and dialogue must preserve source facts.
 
 Edge synthesis uses the read-aloud endpoint with its October 2026 v2 signature; the signature adaptation and LGPL notice are in `workflow/edge-drm/`. Segments run serially with a three-second pause and exponential retries. Continuations load their authoritative checkpoints from R2, with KV retaining the Admin progress view. Publication invalidates RSS snapshots after KV propagation; temporary audio is deleted in one batch.
 
 Set the Worker variable `PODCAST_PUBLISH_MODE` to `preview` to generate audio and episode metadata under `previews/<jobId>/` without writing the public episode list or RSS. This hold also applies to scheduled runs. A preview job stays a preview across continuations. Use `publish` for new runs only after approving publication; the default when the variable is absent preserves the existing publication behavior.
+
+Episode composition uses complete article text, not per-article AI summaries. Each article sent to the dialogue model contains only `source`, `title` and `content`; URL destinations are removed while link text and all article content remain. The producer brief asks the model to ignore navigation, ads and footers, select topics and write the conversation in one pass. Complete materials are checkpointed in R2 for continuations and preview replay (`replayMaterialJobId`). No retry silently truncates articles or drops them to a six-story subset. Original URLs stay in internal metadata; public citations are added after show-note generation. The single-article summary prompt is only an optional Admin diagnostic.
 
 ### Generate a local preview with OpenCode Go and Edge TTS
 
@@ -215,7 +217,7 @@ pnpm tts:smoke http://localhost:8799
 pnpm podcast:preview tmp/preview/config.json articles.json tmp/preview/episode http://localhost:8799 https://your-podcast-worker.example.workers.dev
 ```
 
-The preview runs article relevance/summary, dialogue, title, description, show notes, each host's speech, MP3 concatenation and intro music mixing. It saves `podcast.mp3`, `dialogue.txt`, `show-notes.md`, and `manifest.json`, and requires a successful full audio decode. Omit the local Worker URL to synthesize in Node. The final URL argument resolves relative intro music URLs; it defaults to `PODCAST_WORKER_URL` from `worker/.env.local`.
+The preview writes the dialogue directly from complete articles, then generates the title, description and show notes, synthesizes each host’s speech, concatenates MP3 segments and mixes intro music. It saves `podcast.mp3`, `dialogue.txt`, `show-notes.md`, and `manifest.json`, and requires a successful full audio decode. Omit the local Worker URL to synthesize in Node. The final URL argument resolves relative intro music URLs; it defaults to `PODCAST_WORKER_URL` from `worker/.env.local`.
 
 For the two Spectrum deployments, `pnpm deploy:providers` securely uploads `OPENCODE_API_KEY` and `OPENCODE_MODEL` from `worker/.env.local` to both existing Workers. Pass `cn` or `en` to update one. Run it again after changing the key or model locally. An empty model restores the Admin setting.
 

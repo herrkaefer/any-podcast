@@ -572,9 +572,8 @@ export async function getContentFromFirecrawl(url: string, format: 'html' | 'mar
   }
 }
 
-export async function getStoryContent(
+export async function getStoryArticle(
   story: Story,
-  maxTokens: number,
   env: CloudflareMarkdownEnv & JinaEnv & FirecrawlEnv,
 ) {
   if (!story.url) {
@@ -598,6 +597,14 @@ export async function getStoryContent(
     return ''
   }
 
+  return article
+}
+
+// Kept for the optional single-article Admin diagnostic, not the episode workflow.
+export async function getStoryContent(story: Story, _maxTokens: number, env: CloudflareMarkdownEnv & JinaEnv & FirecrawlEnv) {
+  const article = await getStoryArticle(story, env)
+  if (!article)
+    return ''
   return [
     story.title
       ? `
@@ -609,7 +616,7 @@ ${story.title}
     article
       ? `
 <article>
-${article.substring(0, maxTokens * 5)}
+${article}
 </article>
 `
       : '',

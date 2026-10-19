@@ -230,13 +230,37 @@ test('preview hold overrides trigger and checkpoint defaults, and never writes t
   assert.deepEqual(puts, [{ key: 'previews/job-123/episode.json', body: JSON.stringify({ audio }) }])
 })
 
-test('editorial input preserves exact summaries and public attribution without private feed fields', async () => {
-  const { buildPodcastStoryInput } = await import('../workflow/editorial-input')
+test('editorial materials retain full bodies and only expose source, title and content', async () => {
+  const { buildPodcastStoryInput, createEditorialArticle } = await import('../workflow/editorial-input')
+  const content = `${'Long article with definitions and research limits. '.repeat(1200).trim()}\n\nFinal qualifying detail.`
   const story = { title: 'Research', sourceName: 'Publisher', url: 'https://example.com/article', sourceUrl: 'https://private.example/secret' }
-  const input = buildPodcastStoryInput([story], ['<story>4 months, 450 million dollars.</story>'])
-  assert.deepEqual(JSON.parse(input).stories[0], { title: story.title, publisher: story.sourceName, url: story.url, summary: '4 months, 450 million dollars.' })
+  const article = createEditorialArticle(story, content)
+  const input = buildPodcastStoryInput([{ ...article, ...story }])
+  assert.deepEqual(JSON.parse(input).articles[0], { source: 'Publisher', title: 'Research', content })
+  assert.ok(input.includes('Final qualifying detail.'))
+  assert.ok(!input.includes('https://'))
   assert.ok(!input.includes('secret'))
-  assert.throws(() => buildPodcastStoryInput([story], []), /same length/)
+  assert.throws(() => buildPodcastStoryInput([]), /No article bodies/)
+  assert.throws(() => createEditorialArticle(story, '<script>only boilerplate</script>'), /empty/)
+})
+
+test('body cleanup removes URLs while retaining link text, tables, facts and page text', async () => {
+  const { cleanArticleText } = await import('../workflow/html-content')
+  const cleaned = cleanArticleText('<nav>Subscribe</nav>\n\n# Research\n\n[Study details](https://example.com/a_(b)) report 450 million dollars.\n\n| Age | Count |\n| --- | --- |\n| 18–25 | 72 |\n\nSee https://example.com/more for details.\n\n<footer>Unsubscribe</footer>')
+  assert.match(cleaned, /Study details report 450 million dollars/)
+  assert.match(cleaned, /18–25.*72/)
+  assert.doesNotMatch(cleaned, /https?:/)
+  assert.match(cleaned, /Subscribe/)
+  assert.match(cleaned, /Unsubscribe/)
+})
+
+test('duplicate feed articles are fetched once and citations are attached after generation', async () => {
+  const { uniqueArticleStories, linkArticleHeadings } = await import('../workflow/editorial-input')
+  const stories = [{ title: 'Original title', url: 'https://example.com/a?id=1&utm_source=a' }, { title: 'Same story', url: 'https://example.com/a?utm_source=b&id=1#section' }, { title: 'Different page', url: 'https://example.com/a?id=2' }]
+  assert.equal(uniqueArticleStories(stories).length, 2)
+  const notes = linkArticleHeadings('## Original title\n\nNotes.\n\n## Unrelated', stories)
+  assert.match(notes, /## \[Original title\]\(https:\/\/example.com/)
+  assert.match(notes, /## Unrelated$/)
 })
 
 test('both editorial prompts render the real show name without legacy placeholders or fixed exchange counts', async () => {
